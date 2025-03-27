@@ -1,0 +1,15 @@
+ipykernel
+numpy
+matplotlib
+cartopy
+basemap
+basemap-data-hires
+xarray
+netcdf4
+geopandas
+threddsclient
+plotly
+seaborn
+regionmask
+boto3
+dask
