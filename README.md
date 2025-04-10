@@ -150,7 +150,7 @@ The following skill assessment run will use the example data ([Section 2.2](#22-
 You can start a skill assessment run by typing
 
 ```
-python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2023-11-29T00:00:00Z -e 2023-11-30T00:00:00Z -d MSL -ws [Nowcast,Forecast_b] -t stations
+python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2023-11-29T00:00:00Z -e 2023-11-30T00:00:00Z -d MSL -ws [Nowcast,Forecast_b] -t fields
 ```
 where 
 * _-o_ is the name of the OFS (in this case, CBOFS)
