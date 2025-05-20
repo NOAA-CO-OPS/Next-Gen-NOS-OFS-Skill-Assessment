@@ -35,7 +35,7 @@ Arguments:
  -o ofs, --ofs OFS     Choose from the list on the ofs_extents/ folder, you
                        can also create your own shapefile, add it top the
                        ofs_extents/ folder and call it here
- -p Path, --path PATH  Inventary File Path
+ -p Path, --path PATH  Inventory File Path
  -s StartDate_full, --StartDate STARTDATE
                        Start Date
  -e EndDate_full, --EndDate ENDDATE
