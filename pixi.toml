@@ -1,0 +1,33 @@
+[project]
+authors = ["Lucila Houttuijn Bloemendaal and Andrew Kammerer"]
+channels = ["conda-forge"]
+description = "The Ocean Forecast Model Skill Assessment and Processing Software"
+name = "ofs_dps_env"
+platforms = ["linux-64", "win-64", "osx-64", "osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+example = 'python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2023-11-29T00:00:00Z -e 2023-11-30T00:00:00Z -d MSL -ws "[Nowcast,Forecast_b]" -t fields'
+
+[dependencies]
+python = "3.12.*"
+ipykernel = "6.29.3.*"
+numpy = "1.26.4.*"
+matplotlib = "3.8.4.*"
+cartopy = "0.23.0.*"
+xarray = "2024.5.0.*"
+netcdf4 = "1.6.5.*"
+geopandas = "0.14.4.*"
+threddsclient = "0.4.5.*"
+siphon = "0.9.*"
+plotly = "5.22.0.*"
+seaborn = "0.13.2.*"
+regionmask = "0.12.1.*"
+boto3 = "1.34.113.*"
+dask = "2024.5.1.*"
+pylint = "3.3.1.*"
+intake = "2.0.7.*"
+intake-xarray = "2.0.0.*"
+pyinterp = "2024.11.0.*"
+basemap = ">=1.4.1,<2"
+basemap-data-hires = ">=1.3.2,<2"
