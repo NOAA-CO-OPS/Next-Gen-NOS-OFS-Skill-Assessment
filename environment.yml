@@ -1,0 +1,35 @@
+name: ofs_dps
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.9
+  - ipykernel=6.29.3
+  - numpy=2.3.0
+  - pandas=2.3.0
+  - matplotlib=3.8.4
+  - cartopy=0.23.0
+  - xarray=2024.5.0
+  - netcdf4=1.6.5
+  - geopandas=0.14.4
+  - threddsclient=0.4.5
+  - plotly=5.22.0
+  - seaborn=0.13.2
+  - regionmask=0.12.1
+  - boto3=1.34.113
+  - dask=2024.5.1
+  - basemap=2.0.0
+  - basemap-data-hires=2.0.0
+  - pylint=3.3.1
+  - intake=2.0.8
+  - conda-forge::intake-xarray=2.0.0
+  - pyinterp=2024.11.0
+  - searvey=0.3.16
+  - s3fs=2025.5.1
+  - h5netcdf
+  - jigsawpy
+  - ocsmesh
+  - pip
+  - pip:
+    - global-land-mask
+    - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git
