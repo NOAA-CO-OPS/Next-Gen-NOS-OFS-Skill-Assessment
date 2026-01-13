@@ -1,0 +1,57 @@
+name: ofs_dps
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - ipykernel
+  # --- Core Data Science ---
+  - numpy>=2.0.0          # Allow 2.x updates
+  - pandas=2.2.* # 2.2 is currently very stable. 2.3 is bleeding edge.
+  - xarray>=2024.5.0
+  - dask>=2024.5.1
+  - scipy
+
+  # --- Visualization ---
+  - matplotlib=3.8.*
+  - cartopy>=0.23.0
+  - plotly=5.*
+  - seaborn>=0.13.2
+
+  # --- Geospatial ---
+  - geopandas>=1.0.0      # CRITICAL: Must be 1.0+ for Numpy 2.0
+  - shapely>=2.0.0        # CRITICAL: Backend for Geopandas
+  - regionmask>=0.12.1
+  - pyinterp>=2024.11.0
+
+  # --- Data Access / IO ---
+  - netcdf4>=1.6.5
+  - h5netcdf
+  - intake>=2.0.0
+  - conda-forge::intake-xarray>=2.0.0
+  - s3fs>=2024.0.0
+  - boto3>=1.34.0
+  - threddsclient       # Deprecated - we could consider migrating to siphon
+  # - siphon              # Replacement for threddsclient
+
+  # --- Legacy Support (Risk Area) ---
+  # To be removed after migration to cartopy is complete.
+  - basemap=2.0.0
+  - basemap-data-hires=2.0.0
+
+  # --- Linting ---
+  - pylint>=3.3.*
+  - pytest>=7.4.*
+  - pytest-cov>=4.1.*
+  - pytest-xdist>=3.3.*
+
+
+  # --- Domain Specific ---
+  - searvey>=0.3.16
+  - jigsawpy
+  - ocsmesh
+
+  - pip
+  - pip:
+    - global-land-mask==1.0.0
+    - tkcalendar==1.6.1
+    - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git

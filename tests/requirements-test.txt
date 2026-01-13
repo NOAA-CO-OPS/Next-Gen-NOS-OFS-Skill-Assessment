@@ -1,0 +1,24 @@
+# Test dependencies for OFS Skill Assessment
+# Install with: pip install -r tests/requirements-test.txt
+
+flake8>=6.0.0
+
+# Code quality
+pylint>=3.0.0
+# Core testing framework
+pytest>=7.4.0
+
+# Optional: For test benchmarking
+pytest-benchmark>=4.0.0
+
+# Coverage reporting
+pytest-cov>=4.1.0
+
+# Test result reporting
+pytest-html>=4.0.0
+
+# Optional: For better test output formatting
+pytest-sugar>=0.9.7
+
+# Parallel test execution
+pytest-xdist>=3.3.0
