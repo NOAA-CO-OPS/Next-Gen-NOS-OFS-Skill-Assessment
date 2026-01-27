@@ -108,7 +108,7 @@ def create_gui(parser):
     # Set the protocol for handling the window close event
     root.protocol('WM_DELETE_WINDOW', on_closing)
     style = ttk.Style(root)
-    style.theme_use('vista')
+    style.theme_use('clam')
     # STYLING
     # Change the icon
     try:
