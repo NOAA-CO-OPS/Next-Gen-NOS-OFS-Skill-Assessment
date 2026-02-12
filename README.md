@@ -1,15 +1,3 @@
-## Build Status
-
-| Workflow | Status |
-| :--- | :--- |
-| **CI Pipeline (Main)** | [![CI Pipeline](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/ci-pipeline.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/ci-pipeline.yml) |
-| **Pre-Commit Hooks** | [![Pre-Commit Hooks](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/pre-commit.yml) |
-| **Build Python Environment** | [![CI Pipeline](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/ci-pipeline.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/ci-pipeline.yml) |
-| **CBOFS (1D Stations)** | [![Integration test - CBOFS - 1D - Stations](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-cbofs.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-cbofs.yml) |
-| **SFBOFS (1D Stations)** | [![Integration test - SFBOFS - 1D - Stations](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-sfbofs.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-sfbofs.yml) |
-| **CBOFS (2D)** | [![Integration test - CBOFS - 2D](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-cbofs-2d.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-cbofs-2d.yml) |
-| **SFBOFS (2D)** | [![Integration test - SFBOFS - 2D](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-sfbofs-2d.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev_NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/actions/workflows/integration_test-sfbofs-2d.yml) |
-
 # The Next Gen NOS Ocean Forecast Model Skill Assessment and Processing Software - Prototype
 # 1. Overview
 
