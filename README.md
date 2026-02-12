@@ -1,3 +1,5 @@
+**NOTE: Development of this package happens in [this fork](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment), which gets merged to the main branch for every release**
+
 ## Build Status
 
 | Workflow | Status |
