@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ofs-skill"
-dynamic = ["version"]
+version = "1.4.0"
 description = "Next-Gen NOS OFS Skill Assessment and Processing Software"
 authors = [
     {name = "NOAA CO-OPS", email = "co-ops.userservices@noaa.gov"}
@@ -23,7 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
 ]
 
 dependencies = [
@@ -42,7 +41,7 @@ dependencies = [
     "requests>=2.26.0",
     "boto3>=1.34.0",
     "s3fs>=2021.0.0",
-    "searvey @ git+https://github.com/oceanmodeling/searvey.git@USGS_api_updates",
+    "searvey>=0.3.0",
     "pyshp>=2.1.0",
     "intake>=0.6.4",
     "intake-xarray>=0.5.0",
@@ -53,16 +52,16 @@ dependencies = [
     "coastalmodeling-vdatum @ git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git",
     "cartopy>=0.23.0",
     "regionmask>=0.12.1",
+    "pyinterp>=2024.11.0",
     "global-land-mask>=1.0.0",
+    "utide>=0.3.0",
 ]
 
+[project.scripts]
+create-1dplot = "bin.visualization.create_1dplot:main"
+create-2dplot = "bin.visualization.create_2dplot:main"
+
 [project.optional-dependencies]
-spatial = [
-    "pyinterp>=2024.11.0",
-]
-all = [
-    "pyinterp>=2024.11.0",
-]
 dev = [
     "pytest>=6.2.0",
     "pytest-cov>=2.12.0",
@@ -71,12 +70,8 @@ dev = [
     "mypy>=0.910",
     "ipython>=7.26.0",
     "jupyter>=1.0.0",
-    "pyinterp>=2024.11.0",
+    "pre-commit>=3.0.0",
 ]
-
-[project.scripts]
-create-1dplot = "bin.visualization.create_1dplot:main"
-create-2dplot = "bin.visualization.create_2dplot:main"
 
 [project.urls]
 Homepage = "https://github.com/NOAA-CO-OPS/NOS_Shared_Cyberinfrastructure_and_Skill_Assessment"
@@ -90,9 +85,6 @@ include = ["ofs_skill*", "bin*"]
 
 [tool.setuptools.package-data]
 "ofs_skill" = ["py.typed"]
-
-[tool.setuptools.dynamic]
-version = {attr = "ofs_skill.__version__"}
 
 [tool.black]
 line-length = 88
@@ -117,6 +109,3 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "--verbose --cov=src/ofs_skill --cov-report=html --cov-report=term-missing"
-markers = [
-    "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
-]
