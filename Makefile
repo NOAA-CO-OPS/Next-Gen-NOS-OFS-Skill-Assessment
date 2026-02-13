@@ -13,10 +13,27 @@ SOLVER := $(shell \
 	else echo conda; \
 	fi)
 
-.PHONY: env install pre-commit setup clean
+.DEFAULT_GOAL := help
+
+.PHONY: help env install pre-commit setup info clean
+
+## Show available targets
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@echo "  setup        Full developer setup (env + install + pre-commit)"
+	@echo "  env          Create or update the conda environment"
+	@echo "  install      Install the package in development mode (pip install -e .[dev])"
+	@echo "  pre-commit   Install pre-commit git hooks"
+	@echo "  info         Show detected solver and environment info"
+	@echo "  clean        Remove the conda environment"
+	@echo ""
+	@echo "Solver: $(SOLVER)"
 
 ## Create or update the conda environment from environment.yml
 env:
+	@echo "Using solver: $(SOLVER)"
 	@if conda env list | grep -q "$(ENV_NAME)"; then \
 		echo "Environment '$(ENV_NAME)' exists. Updating..."; \
 		$(SOLVER) env update -f environment.yml -n $(ENV_NAME) --prune; \
