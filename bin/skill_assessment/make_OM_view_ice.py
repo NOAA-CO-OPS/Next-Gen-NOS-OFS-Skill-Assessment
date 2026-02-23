@@ -22,12 +22,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import savgol_filter
-import matplotlib.colors as mcolors
 
 from ofs_skill.model_processing import model_properties
 from ofs_skill.obs_retrieval import utils
@@ -225,24 +225,29 @@ def make_scatter_plot(prop, df, cast, logger):
     ncols = 2
     # Do stats time series
     fig = make_subplots(
-        rows=nrows, cols=ncols, vertical_spacing=0.1,
-        horizontal_spacing=0.1
+        rows=nrows, cols=ncols, vertical_spacing=0.11,
+        horizontal_spacing=0.1,
+        subplot_titles=list_ofs()
     )
 
     figtitle = 'GLOFS ' + cast.strip('_b') + ' ice conc.,<br>' + \
         prop.start_date_scorecard + ' - ' + prop.end_date_scorecard
-    ofs_colors = ['#e377c2','#17becf','#ff7f0e','#9467bd']
+    #ofs_colors = ['#e377c2','#17becf','#ff7f0e','#9467bd']
     x_names = ['', 'GLSEA daily mean ice conc. (%)']
     y_names = ['OFS daily mean ice conc. (%)', '']
     rownum = [1,1,2,2]
     colnum = [1,2,1,2]
     figheight=600
-    figwidth=figheight*1.08
+    figwidth=figheight*1.05
     for i,ofs in enumerate(list_ofs()):
         # Filter df by ofs
         df_filt = df[df['OFS'] == ofs]
+        #subtitle = ofs.capitalize()
+        color_scale = np.linspace(0,len(df_filt)-1,len(df_filt))
         axmax = 10*(np.ceil((df_filt[[
             'mod_meanicecover', 'obs_meanicecover']].max().max())/10))
+        if axmax > 100:
+            axmax = 100
         if df_filt.empty:
             # Add annotation that OFS is missing/has no data
             fig.add_annotation(
@@ -262,16 +267,54 @@ def make_scatter_plot(prop, df, cast, logger):
                 y=df_filt['mod_meanicecover'],
                 name=ofs.upper(),
                 mode='markers',
+                showlegend=False,
                 marker=dict(
-                    color=ofs_colors[i], # Sets all markers to red
-                    #size=10,
+                    color=color_scale, # Sets all markers to red
+                    colorscale='viridis',
+                    showscale=True,
+                    colorbar=dict(
+                        title='Days since<br>11/01',
+                        lenmode='fraction',
+                        len = 0.5,
+                        thickness=10,
+                        thicknessmode='pixels',
+                        tickfont=dict(size=12,color='black'),
+                        ),
                     line=dict(
                         color='black',
-                        width=0
+                        width=0.25
                         )
                     ),
                 hovertemplate='GLSEA: %{x:.2f}<br>OFS: %{y:.2f}<extra></extra>',
                 ), row=rownum[i], col=colnum[i]
+            )
+        # add the 1:1 line as a new scatter trace
+        fig.add_trace(
+            go.Scatter(
+                x=[0, axmax],
+                y=[0, axmax],
+                mode='lines',
+                showlegend=False,
+                #name='1:1 Line (y=x)',
+                line=dict(color='black', width=1)
+                ), row=rownum[i], col=colnum[i]
+            )
+        if rownum[i] == 1 and colnum[i] == 1:
+            fig.add_annotation(
+                    text='Model<br>over-icing',
+                    xref='x domain', yref='y domain',
+                    font=dict(size=12, color='black'),
+                    x=0, y=1,
+                    showarrow=False,
+                    row=1, col=1,
+            )
+            fig.add_annotation(
+                    text='Model<br>under-icing',
+                    xref='x domain', yref='y domain',
+                    font=dict(size=12, color='black'),
+                    x=1, y=0,
+                    showarrow=False,
+                    row=1, col=1,
             )
         fig.update_yaxes(
             title_text=y_names[colnum[i]-1],
@@ -318,16 +361,17 @@ def make_scatter_plot(prop, df, cast, logger):
         width=figwidth,
         autosize=False,
         yaxis=dict(
-            scaleanchor="x",
+            scaleanchor='x',
             scaleratio=1,
             ),
         template='plotly_white',
-        margin=dict(t=75, b=50, l=50, r=50),
+        margin=dict(t=100, b=50, l=50, r=50),
         legend=dict(
             font=dict(size=16, color='black'),
             bgcolor='rgba(0,0,0,0)',
         ),
     )
+
     # Write to file
     output_file = (
         f'{prop.om_files}/scatter_ice_{cast}_'
@@ -391,7 +435,7 @@ def make_summary_series(prop, df, cast, logger):
                 polyorder = 2
                 s = pd.Series(df_filt['csi_all'])
                 interpolated_s = s.bfill().ffill().interpolate()  # Fill NaNs
-                if interpolated_s.isna().all() == False:
+                if not interpolated_s.isna().all():
                     smoothed_y = savgol_filter(interpolated_s,
                                                window_length,
                                                polyorder)
@@ -630,8 +674,8 @@ def make_OM_view_ice(prop, logger):
                 'csi_falsealarms'].mean())
             stats_dict['Misses'].append(stats[
                 'csi_misses'].mean())
-            stats_dict['RMSE, all'].append(stats[
-                'rmse_all'].mean())
+            stats_dict['RMSE, all'].append(stats[stats['rmse_all']>0]['rmse_all'].mean())
+                #'rmse_all'].mean())
             stats_dict['RMSE, ice'].append(stats[
                 'rmse_either'].mean())
 

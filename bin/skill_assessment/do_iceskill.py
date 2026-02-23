@@ -978,10 +978,10 @@ def do_iceskill(prop, logger):
                     )
                     ice_2d_stats['obs_allmean'] = np.array(
                         np.nanmean(obs_all, axis=0),
-                    )+ice_2d_masks['openwater_mask']
+                    )+ice_2d_masks['noiceobs_mask']
                     ice_2d_stats['mod_allmean'] = np.array(
                         np.nanmean(mod_all, axis=0),
-                    )+ice_2d_masks['openwater_mask']
+                    )+ice_2d_masks['noicemod_mask']
                     # Do RMSE
                     ice_2d_stats['rmse_2d'] = np.array(
                         np.sqrt(
