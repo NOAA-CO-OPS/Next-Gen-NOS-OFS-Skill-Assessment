@@ -496,6 +496,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
 
                 elif prop.ofs == 'loofs2':
                     if prop.datum == 'IGLD85':
+                        # 74.2 m is the IGLD85 LWD offset for Lake Ontario
+                        # (LWD is 74.2 m below IGLD85 datum zero)
                         z = dummyval - 74.2
                     else:
                         _,_,z = vdatum.convert(

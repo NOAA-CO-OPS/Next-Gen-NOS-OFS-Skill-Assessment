@@ -14,10 +14,10 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from numpy import isnan
-from scipy import stats
 
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_stations
+from ofs_skill.skill_assessment import nos_metrics
 
 
 def find_ofs_ice_stations(
@@ -288,29 +288,21 @@ def find_ofs_ice_stations(
             if len(obs_series_nan) > 5:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
-                    r_value = stats.pearsonr(obs_series_nan, mod_series_nan)[0]
+                    r_value = nos_metrics.pearson_r(mod_series_nan, obs_series_nan)
                 r_stations.append(np.round(r_value, decimals=2))
             else:
                 r_value = np.nan
                 r_stations.append(r_value)
             # RMSE
             rmse_value = np.round(
-                (
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                mod_series-obs_series
-                            )**2,
-                        ),
-                    )
-                ), 2,
+                nos_metrics.rmse(mod_series, obs_series), 2,
             )
             rmse_stations.append(rmse_value)
             # Mean bias
-            bias_value = np.round(np.nanmean(mod_series-obs_series), 2)
+            bias_value = np.round(nos_metrics.mean_bias(mod_series - obs_series), 2)
             bias_stations.append(bias_value)
             # bias st dev
-            bias_stdev = np.round(np.nanstd(mod_series-obs_series), 2)
+            bias_stdev = np.round(nos_metrics.standard_deviation(mod_series - obs_series), 2)
             bias_stdev_stations.append(bias_stdev)
             # Model & obs means
             mod_mean = np.round(np.nanmean(mod_series), 2)

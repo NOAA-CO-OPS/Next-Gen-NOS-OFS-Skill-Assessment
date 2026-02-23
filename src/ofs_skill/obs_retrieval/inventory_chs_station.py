@@ -1,14 +1,11 @@
 """
-Created on Wed Feb  4 16:58:00 2026
-
-@author: PWL
-"""
-
-"""
-Create inventory of CHS (Canadaian Hydrographic Survey) stations.
+Create inventory of CHS (Canadian Hydrographic Service) stations.
 
 This module retrieves and parses the CHS station metadata XML to create
 an inventory of all buoy stations within specified geographic bounds.
+
+@author: PWL
+Created on Wed Feb  4 16:58:00 2026
 """
 
 import urllib.error

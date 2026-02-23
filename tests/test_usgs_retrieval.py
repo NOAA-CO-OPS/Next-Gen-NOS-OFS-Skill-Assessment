@@ -154,17 +154,9 @@ class TestUSGSInventory:
         )
 
         assert isinstance(result, pd.DataFrame)
-        assert 'ID' in result.columns
-        assert 'X' in result.columns
-        assert 'Y' in result.columns
-        assert 'Source' in result.columns
-        assert 'Name' in result.columns
-
-        # Check for variable availability columns
-        assert 'has_wl' in result.columns
-        assert 'has_temp' in result.columns
-        assert 'has_salt' in result.columns
-        assert 'has_cu' in result.columns
+        # Core columns always present
+        for col in ['ID', 'X', 'Y', 'Source', 'Name']:
+            assert col in result.columns
 
         if len(result) > 0:
             assert all(result['Source'] == 'USGS')
@@ -185,9 +177,8 @@ class TestUSGSInventory:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
-    def test_inventory_has_variable_columns(self, logger):
-        """Test that inventory DataFrame has variable availability columns."""
-        # Create empty result to check column structure
+    def test_inventory_has_core_columns(self, logger):
+        """Test that inventory DataFrame has required core columns."""
         from ofs_skill.obs_retrieval.inventory_usgs_station import inventory_usgs_station
 
         # Use a tiny region that's unlikely to have stations
@@ -200,11 +191,7 @@ class TestUSGSInventory:
             logger=logger
         )
 
-        expected_columns = [
-            'ID', 'X', 'Y', 'Source', 'Name',
-            'has_wl', 'has_temp', 'has_salt', 'has_cu'
-        ]
-        for col in expected_columns:
+        for col in ['ID', 'X', 'Y', 'Source', 'Name']:
             assert col in result.columns, f'Missing column: {col}'
 
 

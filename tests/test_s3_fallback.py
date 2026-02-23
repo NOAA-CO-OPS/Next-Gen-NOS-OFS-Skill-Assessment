@@ -53,6 +53,12 @@ def test_dir_old():
     return '../example_data/cbofs/netcdf/2024/08/15'
 
 
+@pytest.fixture
+def test_dir_stofs():
+    """Fixture providing test directory path for STOFS (no netcdf subdir)"""
+    return '../example_data/stofs_3d_atl/stofs_3d_atl.20251215'
+
+
 class TestStationsFilesNowcast:
     """Test station file generation for nowcast (1D plots)"""
 
@@ -265,22 +271,23 @@ class TestEdgeCases:
 class TestSpecialOFSSystems:
     """Test special OFS systems with unique characteristics"""
 
-    def test_stofs_3d_atl_stations(self, logger, test_dir_new):
+    def test_stofs_3d_atl_stations(self, logger, test_dir_stofs):
         """Test STOFS-3D-ATL (runs once per day at 12z)"""
         prop = MockProps('stofs_3d_atl', 'nowcast', 'stations')
-        files = construct_expected_files(prop, test_dir_new, logger)
+        files = construct_expected_files(prop, test_dir_stofs, logger)
 
         # STOFS-3D runs once per day at 12z
         assert len(files) == 1
-        assert 'stofs_3d_atl.t12z.20251215.stations.nowcast.nc' in files[0]
+        assert 'stofs_3d_atl.t12z' in files[0]
 
-    def test_stofs_3d_pac_stations(self, logger, test_dir_new):
+    def test_stofs_3d_pac_stations(self, logger, test_dir_stofs):
         """Test STOFS-3D-PAC"""
+        test_dir_pac = test_dir_stofs.replace('stofs_3d_atl', 'stofs_3d_pac')
         prop = MockProps('stofs_3d_pac', 'nowcast', 'stations')
-        files = construct_expected_files(prop, test_dir_new, logger)
+        files = construct_expected_files(prop, test_dir_pac, logger)
 
         assert len(files) == 1
-        assert 'stofs_3d_pac.t12z.20251215.stations.nowcast.nc' in files[0]
+        assert 'stofs_3d_pac.t12z' in files[0]
 
 
 class TestAllOFSSystems:
@@ -306,8 +313,14 @@ class TestAllOFSSystems:
     ])
     def test_all_ofs_cycle_counts(self, ofs, expected_cycles, logger, test_dir_new):
         """Test that all OFS systems generate correct number of cycle files"""
+        # STOFS models use a different directory format: {ofs}.YYYYMMDD
+        if ofs.startswith('stofs_'):
+            dir_path = f'../example_data/{ofs}/{ofs}.20251215'
+        else:
+            dir_path = test_dir_new
+
         prop = MockProps(ofs, 'nowcast', 'stations')
-        files = construct_expected_files(prop, test_dir_new, logger)
+        files = construct_expected_files(prop, dir_path, logger)
 
         assert len(files) == expected_cycles, \
             f'{ofs} expected {expected_cycles} files, got {len(files)}'

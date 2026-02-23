@@ -1,14 +1,10 @@
 """
-Created on Wed Feb  4 19:51:12 2026
-
-@author: PWL
-"""
-
-"""
-Retrieve CHS (Canadian Hydrographic Survey) station observations.
+Retrieve CHS (Canadian Hydrographic Service) station observations.
 
 This module uses SEARVEY to retrieve all CHS water level time series.
 
+@author: PWL
+Created on Wed Feb  4 19:51:12 2026
 """
 
 import time
@@ -87,11 +83,11 @@ def retrieve_chs_station(
             end_date=datetime.strftime(date_list[i+1],'%Y-%m-%d'),
             )
         if 'errors' in data_station.columns or data_station.empty is True:
-            break
+            continue
         data_all_append.append(data_station)
         time.sleep(0.33)
 
-    if 'errors' not in data_station.columns and data_station.empty is False:
+    if len(data_all_append) > 0:
         data_all = pd.concat(data_all_append, ignore_index=True)
         # Do a bunch of formatting
         data_all['DateTime'] = pd.to_datetime(data_all['eventDate'],
@@ -108,7 +104,7 @@ def retrieve_chs_station(
                                  inplace=True)
     else:
         data_all = None
-    if data_station is None:
+    if data_all is None:
         logger.error(
             'Retrieve CHS station %s failed for %s -- station contacted, '
             'but no data available.', str(id_number), variable)

@@ -70,8 +70,8 @@ dev = [
     "flake8>=3.9.0",
     "mypy>=0.910",
     "ipython>=7.26.0",
-    "jupyter>=1.0.0",
     "pyinterp>=2024.11.0",
+    "pre-commit>=3.0.0",
 ]
 
 [project.scripts]

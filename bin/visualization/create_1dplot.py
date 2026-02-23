@@ -346,7 +346,7 @@ def create_1dplot(prop, logger):
     # Format the other incoming arguments
     prop.ofs = prop.ofs.lower()
     prop.datum = prop.datum.upper()
-    prop.ofsfiletype = prop1.ofsfiletype.lower()
+    prop.ofsfiletype = prop.ofsfiletype.lower()
 
     logger.info('Starting parameter validation...')
 
@@ -456,23 +456,23 @@ def create_1dplot(prop, logger):
 
     # Date-gate for forecast horizon functionality
     if ((datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')-
-         datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')).days > 2
-        and (prop.horizonskill == True)):
+         datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')).days > 2
+        and prop.horizonskill):
         logger.error('Time range of %s days is too long for forecast '
                     'horizon skill! Resetting forecast horizon skill argument '
                     'to False.',str(
                         (datetime.strptime(prop.end_date_full,\
                                            '%Y-%m-%dT%H:%M:%SZ')-
-                         datetime.strptime(prop.end_date_full,\
+                         datetime.strptime(prop.start_date_full,\
                                            '%Y-%m-%dT%H:%M:%SZ')).days))
         prop.horizonskill = False
     # Cast-gate for nowcast horizon functionality
-    if ('forecast_b' not in prop.whichcasts) and (prop.horizonskill == True):
+    if ('forecast_b' not in prop.whichcasts) and prop.horizonskill:
         logger.error('Forecast horizon skill only works for forecast_b mode. '
                     'Resetting forecast horizon skill argument to False.')
         prop.horizonskill = False
     # file-gate for nowcast horizon functionality
-    if (prop.ofsfiletype == 'fields') and (prop.horizonskill == True):
+    if (prop.ofsfiletype == 'fields') and prop.horizonskill:
         logger.error('Forecast horizon skill only works for station files. '
                     'Resetting forecast horizon skill argument to False.')
         prop.horizonskill = False
@@ -494,10 +494,6 @@ def create_1dplot(prop, logger):
     if 'hindcast' in prop.whichcasts and prop.ofs != 'loofs2':
         logger.warning('Hindcast can only be used with loofs2! Switching to '
                        'nowcast + forecast_b...')
-        prop.whichcasts = ['nowcast', 'forecast_b']
-    if prop.ofs != 'loofs2' and 'hindcast' in prop.whichcasts:
-        logger.warning('Cannot do hindcast unless running for LOOFS2! '
-                       'Switching to nowcast and forecast_b...')
         prop.whichcasts = ['nowcast', 'forecast_b']
 
     # Handle variable input argument

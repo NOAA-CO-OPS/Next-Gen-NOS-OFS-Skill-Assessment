@@ -1,7 +1,7 @@
 name: ofs_dps
 channels:
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - python=3.11.*
   - ipykernel

@@ -94,6 +94,7 @@ from ofs_skill.model_processing import (
     model_source,
 )
 from ofs_skill.obs_retrieval import find_ofs_ice_stations, utils
+from ofs_skill.skill_assessment import nos_metrics
 from ofs_skill.visualization import make_ice_boxplots, make_ice_map
 
 
@@ -781,13 +782,7 @@ def do_iceskill(prop, logger):
                     ~isnan(icecover_o_mask),
             ) >= 2:
                 ice_1d_stats['rmse_all'].append(
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                icecover_m_mask-icecover_o_mask
-                            )**2,
-                        ),
-                    ),
+                    nos_metrics.rmse(icecover_m_mask, icecover_o_mask),
                 )
             else:
                 ice_1d_stats['rmse_all'].append(np.nan)
@@ -797,13 +792,7 @@ def do_iceskill(prop, logger):
                     ~isnan(icecover_o_mask2),
             ) >= 2:
                 ice_1d_stats['rmse_either'].append(
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                icecover_m_mask2-icecover_o_mask2
-                            )**2,
-                        ),
-                    ),
+                    nos_metrics.rmse(icecover_m_mask2, icecover_o_mask2),
                 )
             else:
                 ice_1d_stats['rmse_either'].append(np.nan)
