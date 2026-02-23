@@ -12,10 +12,10 @@ import argparse
 import logging
 import logging.config
 import os
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-import shutil
 
 import numpy as np
 import pandas as pd
@@ -128,21 +128,19 @@ def make_datetime_list(start_date, end_date, interval_hours):
 
 def copy_field_files(prop, filepath, destination, logger):
     '''
-
+    Copies raw SCHISM field output frm the filepath to the destination path,
+    and renames it in OFS-standard format.
 
     Parameters
     ----------
-    filepath : TYPE
-        DESCRIPTION.
-    filename : TYPE
-        DESCRIPTION.
-    logger : TYPE
-        DESCRIPTION.
+    prop : global input arguments/parameters/properties
+    filepath : path where the raw SCHISM output field files are located
+    destination : copy file destination, including new filename
+    logger : logger
 
     Returns
     -------
-    numpy arrays of time (t), the variable (var_field), and lat and lon (xy)
-
+    Nothing.
     '''
 
     cyc = filepath.split('/')[-3][-2:]
@@ -487,17 +485,18 @@ def process_schism_stations(prop, logger):
                     except Exception as ex:
                         logger.error('Error caught loading station files!'
                                      'Error: %s', ex)
-                # Now loop through field 2D/3D output
+                # Now loop through field 2D/3D output and copy it
                 for name in field_names:
                     filepath = Path(os.path.join(dir_path, name)).as_posix()
                     try:
-                        logger.info('Copying field files...')
+                        logger.info('Copying field files for %s and %s-%s...',
+                                    name, datestr,filepath.split('/')[-3][-2:])
                         copy_field_files(prop, filepath, dir_list_ofs[i], logger)
                     except Exception as ex:
                         logger.error('Error when copying SCHISM field files! '
                                      'Error: %s', ex)
                 # Now save stations to 6-hourly netcdfs
-                logger.info('Saving station files...')
+                logger.info('Saving all station files for %s...', datestr)
 
                 '''
                 Contents of station netcdf:
