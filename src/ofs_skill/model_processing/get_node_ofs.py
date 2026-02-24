@@ -94,29 +94,39 @@ def ofs_ctlfile_extract(prop, name_var, model, logger):
             write_ofs_ctlfile(prop, model, logger)
             prop.ctl_flag += 1 # Raise flag -- we've gone through ctl file production
 
-    with open(
-            filename, encoding='utf-8'
-    ) as file:
-        model_ctlfile = file.read()
-        lines = model_ctlfile.split('\n')
-        lines = [i.split(' ') for i in lines]
-        lines = [list(filter(None, i)) for i in lines]
-        nodes = np.array(lines[:-1])[:, 0]
-        nodes = [int(i) for i in nodes]
-        depths = np.array(lines[:-1])[:, 1]
-        depths = [int(i) for i in depths]
+    try:
+        with open(
+                filename, encoding='utf-8'
+        ) as file:
+            model_ctlfile = file.read()
+            lines = model_ctlfile.split('\n')
+            lines = [i.split(' ') for i in lines]
+            lines = [list(filter(None, i)) for i in lines]
+            nodes = np.array(lines[:-1])[:, 0]
+            nodes = [int(i) for i in nodes]
+            depths = np.array(lines[:-1])[:, 1]
+            depths = [int(i) for i in depths]
 
-        # this is the shift that can be applied to the ofs timeseries,
-        # for instance if there is a known bias in the model
-        shifts = np.array(lines[:-1])[:, -1]
-        shifts = [float(i) for i in shifts]
+            # this is the shift that can be applied to the ofs timeseries,
+            # for instance if there is a known bias in the model
+            shifts = np.array(lines[:-1])[:, -1]
+            shifts = [float(i) for i in shifts]
 
-        # This is the station id, of the nearest station to the mesh node
-        ids = np.array(lines[:-1])[:, -2]
-        ids = [str(i) for i in ids]
+            # This is the station id, of the nearest station to the mesh node
+            ids = np.array(lines[:-1])[:, -2]
+            ids = [str(i) for i in ids]
 
-        return lines, nodes, depths, shifts, ids
-
+            return lines, nodes, depths, shifts, ids
+    except IndexError:
+        logger.error('%s model ctl file is blank -- no '
+                     'model nodes/stations found! Moving on',
+                     name_var)
+        return None
+    except Exception as ex:
+        logger.error('Unexpected error when processing %s model ctl '
+                     'file! Error: %s',
+                     name_var, ex)
+        return None
 
 def roms_nodes(model, node_num):
     """
@@ -655,7 +665,7 @@ def get_node_ofs(prop, logger):
     for variable in prop.var_list:
         try:
             name_conventions = name_convent(variable)
-            if prop.user_input_location == False:
+            if not prop.user_input_location:
                 control_file = f'{prop.control_files_path}/{prop.ofs}_' \
                                f'{name_conventions[0]}_station.ctl'
                 if os.path.isfile(control_file) is False:
@@ -663,11 +673,13 @@ def get_node_ofs(prop, logger):
                                 'input file, then an observation control file '
                                 'must be present! Exiting...', control_file)
                     sys.exit()
-                if os.path.getsize(control_file):
+                if os.path.getsize(control_file): # Gets size of obs ctl file!
                     ofs_ctlfile = ofs_ctlfile_extract(
                         prop, name_conventions[0], model, logger)
+                    if ofs_ctlfile is None:
+                        continue
                 else:
-                    logger.info('%s ctl file is blank!', variable)
+                    logger.info('%s obs ctl file is blank!', variable)
                     logger.info('For GLOFS, salt and cu ctl files may be blank. '
                                 'If running with a single station provider/owner, '
                                 'ctl files may also be blank.')
@@ -795,7 +807,7 @@ def get_node_ofs(prop, logger):
                     datum_offsets.append(datum_offset)
                     model_stations.append(ofs_ctlfile[4][i])
                 if (prop.whichcast == 'forecast_a' and
-                    prop.horizonskill == False):
+                    not prop.horizonskill):
                     with open(
                         r''
                         + f'{prop.data_model_1d_node_path}'
@@ -821,7 +833,7 @@ def get_node_ofs(prop, logger):
                             prop.forecast_hr,
                             prop.ofsfiletype
                         )
-                elif (prop.horizonskill == True and os.path.isfile(
+                elif (prop.horizonskill and os.path.isfile(
                         f'{prop.data_model_1d_node_path}/'
                         f'{ofs_ctlfile[-1][i]}_{prop.ofs}_{name_conventions[0]}_'
                         f'{ofs_ctlfile[1][i]}_forecast_b_{prop.ofsfiletype}_'
@@ -882,7 +894,7 @@ def get_node_ofs(prop, logger):
                         )
 
             # Generate datum report
-            if prop.user_input_location == False:
+            if not prop.user_input_location:
                 datum_filename = (f'{prop.ofs}_wl_datum_report.csv')
                 filepath = os.path.join(prop.control_files_path,
                                         datum_filename)

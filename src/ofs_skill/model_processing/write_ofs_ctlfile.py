@@ -289,15 +289,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                 model_ctl_file = []
 
                 # Check for valid nodes
-                # For stations type, list_of_nearest_layer will be empty (valid)
-                # For fields type, check if all values are NaN (invalid)
-                if len(list_of_nearest_layer) > 0 and np.isnan(list_of_nearest_layer).all():
-                    logger.warning('No user input locations or model nodes '
-                                 'found for %s! Moving to next variable',
-                                 name_var)
-                    continue
-
-                if np.isnan(list_of_nearest_layer).all():
+                if len(list_of_nearest_node) > 0 and np.isnan(list_of_nearest_node).all():
                     logger.warning('No user input locations or model nodes '
                                  'found for %s! Moving to next variable',
                                  name_var)
@@ -305,7 +297,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                 length = len(list_of_nearest_layer)
                 if prop.model_source=='fvcom':
                     for i in range(0, length):
-                        if np.isnan(list_of_nearest_node[i]) == False:
+                        if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
                                 if name_var == 'cu':
                                     model_ctl_file.append(
@@ -337,7 +329,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
 
                 elif prop.model_source=='roms':
                     for i in range(length):
-                        if np.isnan(list_of_nearest_node[i]) == False:
+                        if not np.isnan(list_of_nearest_node[i]):
                             model_ctl_file.append(
                             f'{list_of_nearest_node[i]} '
                             f'{list_of_nearest_layer[i]} '
@@ -351,8 +343,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
 
                 elif prop.model_source=='schism':
                     for i in range(length):
-                        if (np.isnan(list_of_nearest_node[i]) == False and
-                            np.isnan(list_of_nearest_layer[i]) == False):
+                        if not np.isnan(list_of_nearest_node[i]) and \
+                            not np.isnan(list_of_nearest_layer[i]):
                             if prop.ofsfiletype == 'fields':
                                 if name_var == 'wl':
                                    x_var = model['SCHISM_hgrid_node_x']
