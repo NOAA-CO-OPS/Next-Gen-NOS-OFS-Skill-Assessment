@@ -1,0 +1,12 @@
+# Build/distribution stuff
+*.egg-info/
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OFS skill specific
+data/
+control_files/
+
