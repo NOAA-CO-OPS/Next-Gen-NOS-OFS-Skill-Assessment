@@ -78,6 +78,7 @@ dev = [
 [project.scripts]
 create-1dplot = "bin.visualization.create_1dplot:main"
 create-2dplot = "bin.visualization.create_2dplot:main"
+run-harmonic-analysis = "bin.tidal_analysis.run_harmonic_analysis:main"
 
 [project.urls]
 Homepage = "https://github.com/NOAA-CO-OPS/NOS_Shared_Cyberinfrastructure_and_Skill_Assessment"

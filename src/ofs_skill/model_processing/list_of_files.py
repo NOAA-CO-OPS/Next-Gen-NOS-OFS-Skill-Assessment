@@ -21,6 +21,7 @@ list_of_dir : Creates list of directories containing model netCDF files
 list_of_files : Lists and sorts all files inside model directories
 """
 
+import calendar
 import os
 from datetime import datetime, timedelta
 from logging import Logger
@@ -265,7 +266,26 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         cast_type = prop.whichcast
 
     # Construct file names based on format (new format after 9/1/2024)
-    date_obj = datetime.strptime(date_str, '%Y%m%d')
+    # Handle YYYYMM (old) vs YYYYMMDD date strings
+    if len(date_str) == 6:
+        # Old YYYYMM directory format — generate files for each day in the
+        # month that falls within the requested date range.
+        ym_obj = datetime.strptime(date_str, '%Y%m')
+        _, last_day = calendar.monthrange(ym_obj.year, ym_obj.month)
+        month_start = datetime(ym_obj.year, ym_obj.month, 1)
+        month_end = datetime(ym_obj.year, ym_obj.month, last_day)
+        range_start = datetime.strptime(prop.startdate[:8], '%Y%m%d')
+        range_end = datetime.strptime(prop.enddate[:8], '%Y%m%d')
+        eff_start = max(range_start, month_start)
+        eff_end = min(range_end, month_end)
+        date_objs = []
+        current = eff_start
+        while current <= eff_end:
+            date_objs.append(current)
+            current += timedelta(days=1)
+    else:
+        date_objs = [datetime.strptime(date_str, '%Y%m%d')]
+
     datechange = datetime.strptime('09/01/2024', '%m/%d/%Y')
 
     # Get hour strings based on OFS and whichcast
@@ -288,94 +308,91 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     else:
         fcstlength = 120
 
-    if prop.ofsfiletype == 'stations':
-        for cycle in fcstcycles:
+    for date_obj in date_objs:
+        day_date_str = date_obj.strftime('%Y%m%d')
 
-            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-                filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
-            else:
-                if date_obj >= datechange:
-                    # New format: cbofs.t00z.20251215.stations.nowcast.nc
-                    filename = f'{prop.ofs}.t{cycle}z.{date_str}.stations.{cast_type}.nc'
-                else:
-                    # Old format: nos.cbofs.stations.nowcast.20251215.t00z.nc
-                    filename = f'nos.{prop.ofs}.stations.{cast_type}.{date_str}.t{cycle}z.nc'
-
-            filepath = f'{dir_path}//{filename}'
-            files.append(filepath)
-
-    elif prop.ofsfiletype == 'fields':
-        # STOFS 3D models use different file naming pattern
-        if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-            # STOFS 3D variables
-            stofs_vars = ['out2d','horizontalVelX', 'horizontalVelY', 'salinity',
-                          'temperature', 'zCoordinates']
-
-            # Determine cast prefix and hour ranges
-            if prop.whichcast == 'nowcast':
-                cast_prefix = 'n'
-                # Nowcast: 12-hour ranges up to 24 hours
-                hour_ranges = [(1, 12), (13, 24)]
-            else:
-                cast_prefix = 'f'
-                # Forecast: 12-hour ranges up to forecast length
-                hour_ranges = []
-                for end_hr in range(12, fcstlength + 1, 12):
-                    start_hr = end_hr - 11
-                    hour_ranges.append((start_hr, end_hr))
-
+        if prop.ofsfiletype == 'stations':
             for cycle in fcstcycles:
-                for start_hr, end_hr in hour_ranges:
-                    hr_range = f'{cast_prefix}{str(start_hr).zfill(3)}_{str(end_hr).zfill(3)}'
-                    '''
-                    # 2D field file
-                    filename = f'{prop.ofs}.t{cycle}z.field2d_{hr_range}.nc'
-                    filepath = f'{dir_path}//{filename}'
-                    files.append(filepath)
-                    '''
-                    # 3D field files for each variable
-                    for var_name in stofs_vars:
-                        filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
+
+                if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                    filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
+                else:
+                    if date_obj >= datechange:
+                        # New format: cbofs.t00z.20251215.stations.nowcast.nc
+                        filename = f'{prop.ofs}.t{cycle}z.{day_date_str}.stations.{cast_type}.nc'
+                    else:
+                        # Old format: nos.cbofs.stations.nowcast.20251215.t00z.nc
+                        filename = f'nos.{prop.ofs}.stations.{cast_type}.{day_date_str}.t{cycle}z.nc'
+
+                filepath = f'{dir_path}//{filename}'
+                files.append(filepath)
+
+        elif prop.ofsfiletype == 'fields':
+            # STOFS 3D models use different file naming pattern
+            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                # STOFS 3D variables
+                stofs_vars = ['out2d','horizontalVelX', 'horizontalVelY', 'salinity',
+                              'temperature', 'zCoordinates']
+
+                # Determine cast prefix and hour ranges
+                if prop.whichcast == 'nowcast':
+                    cast_prefix = 'n'
+                    # Nowcast: 12-hour ranges up to 24 hours
+                    hour_ranges = [(1, 12), (13, 24)]
+                else:
+                    cast_prefix = 'f'
+                    # Forecast: 12-hour ranges up to forecast length
+                    hour_ranges = []
+                    for end_hr in range(12, fcstlength + 1, 12):
+                        start_hr = end_hr - 11
+                        hour_ranges.append((start_hr, end_hr))
+
+                for cycle in fcstcycles:
+                    for start_hr, end_hr in hour_ranges:
+                        hr_range = f'{cast_prefix}{str(start_hr).zfill(3)}_{str(end_hr).zfill(3)}'
+                        # 3D field files for each variable
+                        for var_name in stofs_vars:
+                            filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
+                            filepath = f'{dir_path}//{filename}'
+                            files.append(filepath)
+
+            else:
+                # Standard OFS file naming
+                if prop.whichcast == 'nowcast':
+                    # Nowcast uses n001, n002, etc.
+                    cast_prefix = 'n'
+                    if prop.ofs == 'wcofs':
+                        max_hours = int(24/len(fcstcycles))
+                    else:
+                        max_hours = int(24/len(fcstcycles))
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
+                elif prop.whichcast == 'forecast_a':
+                    # Forecast_a uses f001, f002, etc. up to forecast length
+                    cast_prefix = 'f'
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, fcstlength + 1, d_t)]
+                elif prop.whichcast == 'forecast_b':
+                    # Forecast_b uses f001-f006 (or f001-f024 for WCOFS)
+                    cast_prefix = 'f'
+                    if prop.ofs == 'wcofs':
+                        max_hours = 24
+                    else:
+                        max_hours = 6
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
+                else:
+                    cast_prefix = 'n'
+                    hrstrings = ['001']
+
+                for cycle in fcstcycles:
+                    for hrstring in hrstrings:
+                        if date_obj >= datechange:
+                            # New format: cbofs.t00z.20251215.fields.n001.nc
+                            filename = f'{prop.ofs}.t{cycle}z.{day_date_str}.fields.{cast_prefix}{hrstring}.nc'
+                        else:
+                            # Old format: nos.cbofs.fields.n001.20251215.t00z.nc
+                            filename = f'nos.{prop.ofs}.fields.{cast_prefix}{hrstring}.{day_date_str}.t{cycle}z.nc'
+
                         filepath = f'{dir_path}//{filename}'
                         files.append(filepath)
-
-        else:
-            # Standard OFS file naming
-            if prop.whichcast == 'nowcast':
-                # Nowcast uses n001, n002, etc.
-                cast_prefix = 'n'
-                if prop.ofs == 'wcofs':
-                    max_hours = int(24/len(fcstcycles))
-                else:
-                    max_hours = int(24/len(fcstcycles))
-                hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
-            elif prop.whichcast == 'forecast_a':
-                # Forecast_a uses f001, f002, etc. up to forecast length
-                cast_prefix = 'f'
-                hrstrings = [str(h).zfill(3) for h in range(d_t, fcstlength + 1, d_t)]
-            elif prop.whichcast == 'forecast_b':
-                # Forecast_b uses f001-f006 (or f001-f024 for WCOFS)
-                cast_prefix = 'f'
-                if prop.ofs == 'wcofs':
-                    max_hours = 24
-                else:
-                    max_hours = 6
-                hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
-            else:
-                cast_prefix = 'n'
-                hrstrings = ['001']
-
-            for cycle in fcstcycles:
-                for hrstring in hrstrings:
-                    if date_obj >= datechange:
-                        # New format: cbofs.t00z.20251215.fields.n001.nc
-                        filename = f'{prop.ofs}.t{cycle}z.{date_str}.fields.{cast_prefix}{hrstring}.nc'
-                    else:
-                        # Old format: nos.cbofs.fields.n001.20251215.t00z.nc
-                        filename = f'nos.{prop.ofs}.fields.{cast_prefix}{hrstring}.{date_str}.t{cycle}z.nc'
-
-                    filepath = f'{dir_path}//{filename}'
-                    files.append(filepath)
 
     return files
 
