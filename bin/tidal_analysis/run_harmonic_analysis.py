@@ -12,6 +12,35 @@ Abstract:
    variables as inputs, loads paired model+obs data, runs harmonic analysis,
    validates minimum record length, and writes constituent comparison tables.
 
+   Record-length guidance (NOS CO-OPS Tech Memo 0021; NOAA "About Harmonic
+   Constituents" page):
+
+     15-28 days   Equivalent to harm15.f.  Only ~9 of the NOS standard 37
+                  constituents can be computed directly; the rest must be
+                  inferred or will be dropped.
+
+     29-179 days  Equivalent to harm29d.f.  ~10 constituents computed
+                  directly; 14+ inferred.  This is the minimum recommended
+                  for routine skill assessment.
+
+     >= 180 days  Equivalent to lsqha.f (~6 months).  Progressively more
+     (~6 months)  of the full 37 constituents can be resolved directly.
+
+     >= 365 days  A full year is needed to directly observe all 37 NOS
+     (1 year)     standard constituents (NOAA CO-OPS recommendation).
+
+   Reference sources for the constituent comparison table:
+
+     Water levels  Reference = CO-OPS accepted harmonic constants from the
+                   Tides & Currents API (product=harcon).  These are derived
+                   from years of observations at permanent tide stations.
+
+     Currents      Reference = harmonic analysis of the observation time
+                   series from the same run period.  CO-OPS does not
+                   maintain long-term accepted constants for current
+                   stations (deployments are typically temporary), so both
+                   model and obs are analyzed over the same period.
+
 Language:  Python 3.9+
 
 Scripts/Programs Called:
@@ -768,7 +797,11 @@ def main():
         '--min-duration',
         type=float,
         default=15.0,
-        help='Minimum record length in days for HA (default 15.0)',
+        help='Minimum record length in days for HA (default 15.0). '
+             'NOS CO-OPS recommends: 29+ days for routine assessment '
+             '(~10 constituents resolved), 180+ days (~6 months) for '
+             'more complete resolution, 365+ days (1 year) to directly '
+             'observe all 37 NOS standard constituents.',
     )
     parser.add_argument(
         '--predictions',
