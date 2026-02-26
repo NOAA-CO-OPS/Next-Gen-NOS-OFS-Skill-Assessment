@@ -190,6 +190,7 @@ def run_harmonic_analysis_station_loop(
     stations_processed = 0
     stations_skipped = 0
     skip_reasons = []
+    get_skill_attempted = False
 
     for i in range(len(read_ofs_ctl_file[1])):
         station_id = read_ofs_ctl_file[-1][i]
@@ -222,18 +223,20 @@ def run_harmonic_analysis_station_loop(
             )
             pair_filepath = os.path.join(prop.data_skill_1d_pair_path, pair_filename)
 
-            # If paired data doesn't exist, try to create it
-            if not os.path.isfile(pair_filepath):
+            # If paired data doesn't exist, try to create it (once per variable)
+            if not os.path.isfile(pair_filepath) and not get_skill_attempted:
                 logger.warning(
-                    'Paired dataset %s not found. Calling get_skill...', pair_filename
+                    'Paired dataset %s not found. Calling get_skill to '
+                    'generate all paired data for %s...', pair_filename, variable
                 )
                 if prop.ofsfiletype == 'fields' or node_id >= 0:
                     get_skill(prop, logger)
+                get_skill_attempted = True
 
             # Check again after attempting to create
             if not os.path.isfile(pair_filepath):
                 logger.warning(
-                    'Paired dataset %s still not found after get_skill. '
+                    'Paired dataset %s not found. '
                     'Skipping station %s.', pair_filename, station_id
                 )
                 stations_skipped += 1
