@@ -791,6 +791,8 @@ def main():
     prop.min_duration_days = args.min_duration
     prop.do_predictions = args.predictions
     prop.user_input_location = False
+    prop.horizonskill = False
+    prop.forecast_hr = None
 
     logger = run_harmonic_analysis(prop, None)
     logger.info('Finished run_harmonic_analysis!')
