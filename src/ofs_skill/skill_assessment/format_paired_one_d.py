@@ -109,20 +109,20 @@ def paired_scalar(
 
     # Second we concat the ofs to the reference time, remove duplicates,
     # interpolate to the 6 min timestep, fill gaps, reindex
-    paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
-        by='DateTime'
-    )
-    paired_ofs = paired_ofs[
-        ~paired_ofs['DateTime'].duplicated(keep=False)
-        | paired_ofs[['OFS']].notnull().any(axis=1)
+    # paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
+    #     by='DateTime'
+    # )
+    paired_ofs = ofs_df[
+        ~ofs_df['DateTime'].duplicated(keep=False)
+        #| paired_ofs[['OFS']].notnull().any(axis=1)
     ]
     paired_ofs = (
         paired_ofs.sort_values(by='DateTime')
         .set_index('DateTime')
         .astype(float)
-        .interpolate(method='linear')
-        .ffill()
-        .bfill()
+        #.interpolate(method='linear')
+        #.ffill()
+        #.bfill()
         .reset_index()
     )
 
@@ -175,15 +175,15 @@ def paired_scalar(
             )
         )
     ]
-    julian = (
-        pd.array(paired['DateTime']).to_julian_date()
-        - pd.Timestamp(
-            datetime.strptime(
-                str(datetime.strptime(start_date_full,
-                                      '%Y%m%d-%H:%M:%S').year), '%Y'
-            )
-        ).to_julian_date()
-    )
+    # julian = (
+    #     pd.array(paired['DateTime']).to_julian_date()
+    #     - pd.Timestamp(
+    #         datetime.strptime(
+    #             str(datetime.strptime(start_date_full,
+    #                                   '%Y%m%d-%H:%M:%S').year), '%Y'
+    #         )
+    #     ).to_julian_date()
+    # )
 
     # Finally, we write the file and return the results
     paired = paired.drop(columns=['index', 'DateTime'])
@@ -308,14 +308,14 @@ def paired_vector(
                                     9: 'OFS_V'})
 
     # This is the reference time:
-    paired_start_time = datetime.strptime(start_date_full,
-                                          '%Y%m%d-%H:%M:%S').replace(
-        second=0,
-        microsecond=0,
-        minute=0,
-        hour=datetime.strptime(start_date_full,
-                               '%Y%m%d-%H:%M:%S').hour,
-    )
+    # paired_start_time = datetime.strptime(start_date_full,
+    #                                       '%Y%m%d-%H:%M:%S').replace(
+    #     second=0,
+    #     microsecond=0,
+    #     minute=0,
+    #     hour=datetime.strptime(start_date_full,
+    #                            '%Y%m%d-%H:%M:%S').hour,
+    # )
 
     paired_end_time = datetime.strptime(end_date_full,
         '%Y%m%d-%H:%M:%S').replace(
@@ -350,22 +350,23 @@ def paired_vector(
 
     # Second we concat the ofs to the reference time, remove duplicates,
     # interpolate to the 6 min timestep, fill gaps, reindex
-    paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
-        by='DateTime'
-    )
-    paired_ofs = paired_ofs[
-        ~paired_ofs['DateTime'].duplicated(keep=False)
-        | paired_ofs[['OFS']].notnull().any(axis=1)
+    # paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
+    #     by='DateTime'
+    # )
+    paired_ofs = ofs_df[
+        ~ofs_df['DateTime'].duplicated(keep=False)
+        #| paired_ofs[['OFS']].notnull().any(axis=1)
     ]
     paired_ofs = (
         paired_ofs.sort_values(by='DateTime')
         .set_index('DateTime')
         .astype(float)
-        .interpolate(method='linear')
-        .ffill()
-        .bfill()
+        #.interpolate(method='linear')
+        #.ffill()
+        #.bfill()
         .reset_index()
     )
+
 
     # Third we concat the observations to the ofs, group so same times
     # are combined, drop nan, reindex
