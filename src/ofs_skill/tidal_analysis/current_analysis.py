@@ -55,7 +55,7 @@ def compute_principal_direction(
 
     if len(u) != len(v):
         raise ValueError(
-            f"u ({len(u)}) and v ({len(v)}) must have the same length."
+            f'u ({len(u)}) and v ({len(v)}) must have the same length.'
         )
     if len(u) < 2:
         raise ValueError('At least 2 data points are required.')
@@ -82,7 +82,7 @@ def compute_principal_direction(
     # Normalize to [0, 360)
     direction_deg = direction_deg % 360.0
 
-    _log.info('Principal current direction: %.1f° True.', direction_deg)
+    _log.info('Principal current direction: %.1f deg True.', direction_deg)
     return float(direction_deg)
 
 
@@ -137,8 +137,8 @@ def current_harmonic_analysis(
 
     if len(time) != len(u) or len(time) != len(v):
         raise ValueError(
-            f"time ({len(time)}), u ({len(u)}), and v ({len(v)}) must have "
-            f"the same length."
+            f'time ({len(time)}), u ({len(u)}), and v ({len(v)}) must have '
+            f'the same length.'
         )
 
     mask = np.isfinite(u) & np.isfinite(v)
@@ -177,7 +177,7 @@ def current_harmonic_analysis(
     principal_dir = compute_principal_direction(u, v, logger=_log)
 
     _log.info(
-        '2D HA complete: %d constituents resolved, principal dir=%.1f°.',
+        '2D HA complete: %d constituents resolved, principal dir=%.1f deg.',
         len(ellipses), principal_dir,
     )
 

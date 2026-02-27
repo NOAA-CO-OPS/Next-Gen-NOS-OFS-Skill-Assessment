@@ -425,7 +425,7 @@ def _warn_record_length(duration_days: float, _log: logging.Logger) -> None:
         )
     elif duration_days < 365:
         _log.info(
-            'Record length %.1f days (≥ 180 days). Many constituents '
+            'Record length %.1f days (>= 180 days). Many constituents '
             'resolvable directly (equivalent to lsqha). A full year '
             '(365 days) is needed to directly observe all 37 NOS '
             'standard constituents.',
@@ -433,7 +433,7 @@ def _warn_record_length(duration_days: float, _log: logging.Logger) -> None:
         )
     else:
         _log.info(
-            'Record length %.1f days (≥ 1 year). Sufficient to directly '
+            'Record length %.1f days (>= 1 year). Sufficient to directly '
             'resolve all 37 NOS standard constituents.',
             duration_days,
         )
