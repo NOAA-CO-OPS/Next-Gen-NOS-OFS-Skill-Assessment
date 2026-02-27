@@ -177,7 +177,7 @@ def ice_climatology(prop, time_all_dt, ice_clim):
         dateindex.append(tempindex[0])
 
     dfsubset = df.iloc[dateindex]
-    icecover_hist = dfsubset[(prop.ofs).strip('2')].to_numpy()
+    icecover_hist = dfsubset[prop.ofs.removesuffix('2')].to_numpy()
 
     # Now do 2D
     filename = os.path.join(
@@ -556,7 +556,6 @@ def do_iceskill(prop, logger):
 
         # -- Read lat, lon and ice cover from GLSEA netCDF file (observations)
         lon_o = np.asarray(obsice.variables['lon'][:])
-        lon_o = lon_o
         lat_o = np.asarray(obsice.variables['lat'][:])
         icecover_o = np.asarray(obsice.variables['ice_concentration'][:, :, :])
         time_o = np.asarray(obsice.variables['time'][:])
@@ -651,7 +650,7 @@ def do_iceskill(prop, logger):
 
             # ---------INTERPOLATION-----------------
             # Create a map
-            map = Basemap(
+            ice_map = Basemap(
                 projection='merc',
                 resolution='i', area_thresh=1.0,
                 llcrnrlon=lon_o.min()-brdr,
@@ -661,9 +660,9 @@ def do_iceskill(prop, logger):
             )
 
             # Project GLSEA lon&lat onto xo&yo
-            xo, yo = map(lon_o, lat_o)
+            xo, yo = ice_map(lon_o, lat_o)
             # Project model lon&lat onto xm&ym
-            xm, ym = map(lon_m, lat_m)
+            xm, ym = ice_map(lon_m, lat_m)
             # Interpolate model data to GLSEA grid
             icecover_m_interp = interp.griddata(
                 (xm, ym), np.array(icecover_m[i, :]*100), (xo, yo),

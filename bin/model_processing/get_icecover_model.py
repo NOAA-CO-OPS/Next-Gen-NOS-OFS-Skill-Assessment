@@ -98,7 +98,7 @@ def _process_daily_composite(prop, logger, list_files, list_days, ice_name, x_na
                 daily_composite, lon_m, lat_m = df['daily_composite'], df['lon'], df['lat']
             else:
                 raise FileNotFoundError()
-        except:
+        except (FileNotFoundError, pd.errors.EmptyDataError, KeyError):
 
             date_indices = get_indices_for_day(list_files_datetime, day)
             if prop.model_source == 'schism':
@@ -126,10 +126,10 @@ def _process_daily_composite(prop, logger, list_files, list_days, ice_name, x_na
 
 
 def get_icecover_model(prop, logger):
-    """Main function to retrieve OFS FVCOM ice cover model data."""
+    """Main function to retrieve OFS ice cover model data."""
     prop.model_source = model_source.model_source(prop.ofs)
     logger = _setup_logger(logger)
-    logger.info('--- Starting OFS FVCOM ice cover process ---')
+    logger.info('--- Starting OFS ice cover process ---')
 
     # Reformat dates
     start_dt = datetime.strptime(prop.start_date_full.replace('-', '').replace('Z', '').replace('T', '-').split('-')[0], '%Y%m%d')
@@ -181,7 +181,7 @@ def get_icecover_model(prop, logger):
 
     try:
         icecover_m = np.asarray(concated_model.variables[ice_name][:])
-    except:
+    except KeyError:
         logger.error('No modeled ice concentration available! Abort')
         sys.exit(-1)
 
@@ -203,8 +203,8 @@ if __name__ == '__main__':
     )
     parser.add_argument('-o', '--OFS', required=True, help='OFS model name')
     parser.add_argument('-p', '--Path', required=False, help='Path to data')
-    parser.add_argument('-s', '--StartDate', required=True, help="Start Date YYYY-MM-DDThh:mm:ssZ")
-    parser.add_argument('-e', '--EndDate', required=True, help="End Date YYYY-MM-DDThh:mm:ssZ")
+    parser.add_argument('-s', '--StartDate', required=True, help='Start Date YYYY-MM-DDThh:mm:ssZ')
+    parser.add_argument('-e', '--EndDate', required=True, help='End Date YYYY-MM-DDThh:mm:ssZ')
     parser.add_argument('-w', '--Whichcasts', required=False, help='nowcast, forecast_a, forecast_b')
     parser.add_argument('-f', '--Forecast_Hr', required=False, help="'02hr', '06hr', '12hr', '24hr'")
 
