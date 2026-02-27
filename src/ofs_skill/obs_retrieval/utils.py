@@ -244,7 +244,7 @@ def load_api_keys(config_filename='conf/api_keys.conf'):
                     os.environ[key] = value
                     logger.info('Loaded %s from %s', key, config_path)
                 else:
-                    logger.info('%s already set in environment, skipping config file', key)
+                    logger.info('%s already set in environment, ignoring value from config file', key)
 
     if 'API_USGS_PAT' not in os.environ:
         logger.warning(
