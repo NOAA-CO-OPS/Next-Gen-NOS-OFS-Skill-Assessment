@@ -215,8 +215,10 @@ def load_api_keys(config_filename='conf/api_keys.conf'):
     -----
     - Lines starting with ``#`` and blank lines are skipped.
     - Keys with empty values (e.g., ``API_USGS_PAT=``) are skipped.
-    - If the file does not exist, this function returns silently.
+    - If the file does not exist, a debug message is logged.
     """
+    logger = logging.getLogger(__name__)
+
     config_path = Path(config_filename)
     if not config_path.is_absolute():
         # Navigate from src/ofs_skill/obs_retrieval/ up to project root
@@ -224,22 +226,31 @@ def load_api_keys(config_filename='conf/api_keys.conf'):
         config_path = (project_root / config_path).resolve()
 
     if not config_path.is_file():
-        return
+        logger.debug('API keys config file not found: %s', config_path)
+    else:
+        with open(config_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                key, _, value = line.partition('=')
+                key = key.strip()
+                value = value.strip()
+                if not key or not value:
+                    continue
+                if key not in os.environ:
+                    os.environ[key] = value
+                    logger.info('Loaded %s from %s', key, config_path)
+                else:
+                    logger.info('%s already set in environment, skipping config file', key)
 
-    with open(config_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' not in line:
-                continue
-            key, _, value = line.partition('=')
-            key = key.strip()
-            value = value.strip()
-            if not key or not value:
-                continue
-            if key not in os.environ:
-                os.environ[key] = value
+    if 'API_USGS_PAT' not in os.environ:
+        logger.warning(
+            'API_USGS_PAT is not set. USGS API requests will be limited to '
+            '50/hour. Set it in conf/api_keys.conf or as an environment variable.'
+        )
 
 
 def parse_arguments_to_list(
