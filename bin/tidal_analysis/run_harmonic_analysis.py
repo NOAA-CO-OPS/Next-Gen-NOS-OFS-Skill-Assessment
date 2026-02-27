@@ -408,25 +408,47 @@ def _run_ha_for_station(
                 min_duration_days=min_duration_days,
                 logger=logger,
             )
-            prediction = predict_tide(model_time, ha_result['coef'], logger=logger)
-            residual = compute_nontidal_residual(model_eq, prediction, logger=logger)
-
-            _write_timeseries_csv(
-                model_time, prediction,
-                os.path.join(
-                    prop.tidal_analysis_path,
-                    f'{out_prefix}_tidal_prediction.csv'
-                ),
-                'Tidal_Prediction', metadata, logger,
-            )
-            _write_timeseries_csv(
-                model_time, residual,
-                os.path.join(
-                    prop.tidal_analysis_path,
-                    f'{out_prefix}_nontidal_residual.csv'
-                ),
-                'Nontidal_Residual', metadata, logger,
-            )
+            # Use only constituents with SNR >= 2 for physically meaningful
+            # predictions.  Poorly separated pairs (e.g. S2/K2 with short
+            # records) produce large, compensating amplitudes and low SNR.
+            snr = ha_result['constituents']['SNR']
+            good_constits = ha_result['constituents'].loc[
+                snr >= 2.0, 'Name'
+            ].tolist()
+            if good_constits:
+                logger.info(
+                    'Predicting with %d of %d constituents (SNR >= 2).',
+                    len(good_constits), len(ha_result['constituents']),
+                )
+                prediction = predict_tide(
+                    model_time, ha_result['coef'],
+                    constit=good_constits, logger=logger,
+                )
+                residual = compute_nontidal_residual(
+                    model_eq, prediction, logger=logger,
+                )
+                _write_timeseries_csv(
+                    model_time, prediction,
+                    os.path.join(
+                        prop.tidal_analysis_path,
+                        f'{out_prefix}_tidal_prediction.csv'
+                    ),
+                    'Tidal_Prediction', metadata, logger,
+                )
+                _write_timeseries_csv(
+                    model_time, residual,
+                    os.path.join(
+                        prop.tidal_analysis_path,
+                        f'{out_prefix}_nontidal_residual.csv'
+                    ),
+                    'Nontidal_Residual', metadata, logger,
+                )
+            else:
+                logger.warning(
+                    'Station %s: no constituents with SNR >= 2. '
+                    'Skipping prediction/residual output.',
+                    station_id,
+                )
 
     elif variable == 'currents':
         obs_spd = paired_data['OBS_SPD'].values
@@ -466,25 +488,44 @@ def _run_ha_for_station(
                 min_duration_days=min_duration_days,
                 logger=logger,
             )
-            prediction = predict_tide(model_time, ha_result['coef'], logger=logger)
-            residual = compute_nontidal_residual(model_eq, prediction, logger=logger)
-
-            _write_timeseries_csv(
-                model_time, prediction,
-                os.path.join(
-                    prop.tidal_analysis_path,
-                    f'{out_prefix}_tidal_prediction.csv'
-                ),
-                'Tidal_Prediction', metadata, logger,
-            )
-            _write_timeseries_csv(
-                model_time, residual,
-                os.path.join(
-                    prop.tidal_analysis_path,
-                    f'{out_prefix}_nontidal_residual.csv'
-                ),
-                'Nontidal_Residual', metadata, logger,
-            )
+            snr = ha_result['constituents']['SNR']
+            good_constits = ha_result['constituents'].loc[
+                snr >= 2.0, 'Name'
+            ].tolist()
+            if good_constits:
+                logger.info(
+                    'Predicting with %d of %d constituents (SNR >= 2).',
+                    len(good_constits), len(ha_result['constituents']),
+                )
+                prediction = predict_tide(
+                    model_time, ha_result['coef'],
+                    constit=good_constits, logger=logger,
+                )
+                residual = compute_nontidal_residual(
+                    model_eq, prediction, logger=logger,
+                )
+                _write_timeseries_csv(
+                    model_time, prediction,
+                    os.path.join(
+                        prop.tidal_analysis_path,
+                        f'{out_prefix}_tidal_prediction.csv'
+                    ),
+                    'Tidal_Prediction', metadata, logger,
+                )
+                _write_timeseries_csv(
+                    model_time, residual,
+                    os.path.join(
+                        prop.tidal_analysis_path,
+                        f'{out_prefix}_nontidal_residual.csv'
+                    ),
+                    'Nontidal_Residual', metadata, logger,
+                )
+            else:
+                logger.warning(
+                    'Station %s: no constituents with SNR >= 2. '
+                    'Skipping prediction/residual output.',
+                    station_id,
+                )
 
 
 def _write_timeseries_csv(time, values, filepath, column_name, metadata, logger):

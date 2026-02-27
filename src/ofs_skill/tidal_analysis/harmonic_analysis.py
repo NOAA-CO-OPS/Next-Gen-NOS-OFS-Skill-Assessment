@@ -114,8 +114,8 @@ def harmonic_analysis(
     # ------------------------------------------------------------------
     if len(time) != len(values):
         raise ValueError(
-            f"time ({len(time)}) and values ({len(values)}) must have the "
-            f"same length."
+            f'time ({len(time)}) and values ({len(values)}) must have the '
+            f'same length.'
         )
 
     finite_mask = np.isfinite(values)
@@ -125,8 +125,8 @@ def harmonic_analysis(
     duration_days = (time[-1] - time[0]).total_seconds() / 86400.0
     if duration_days < min_duration_days:
         raise ValueError(
-            f"Record length {duration_days:.1f} days is less than the "
-            f"minimum {min_duration_days} days required for harmonic analysis."
+            f'Record length {duration_days:.1f} days is less than the '
+            f'minimum {min_duration_days} days required for harmonic analysis.'
         )
 
     # ------------------------------------------------------------------
@@ -153,6 +153,18 @@ def harmonic_analysis(
             constit = [c for c in constit if c in utide_names]
     except Exception:
         pass  # If we can't check, let UTide raise its own error
+
+    # When constit is an explicit list, UTide does NOT apply the Rayleigh
+    # criterion — it fits everything regardless, producing physically
+    # meaningless amplitudes for constituents that cannot be resolved.
+    #
+    # Two pre-filters:
+    # 1. Period filter: remove constituents whose period > record length
+    #    (handles SA, SSA, MSM, etc.)
+    # 2. Rayleigh filter: remove constituents that are too closely spaced
+    #    in frequency to be separated (handles S2/K2/T2/R2 aliasing, etc.)
+    constit = _filter_by_period(constit, duration_days, _log)
+    constit = _filter_by_rayleigh(constit, duration_days, _log=_log)
 
     requested_constituents = list(constit)
     method_label = _classify_method(duration_days)
@@ -216,6 +228,104 @@ def harmonic_analysis(
     }
 
 
+def _filter_by_rayleigh(
+    constit: list[str],
+    duration_days: float,
+    rayleigh_min: float = 0.9,
+    _log: logging.Logger | None = None,
+) -> list[str]:
+    """Remove constituents that cannot be separated by the Rayleigh criterion.
+
+    For each pair of constituents, the Rayleigh number is::
+
+        R = T_hours * |f1 - f2|
+
+    where *f* is in cycles per hour.  When R < *rayleigh_min*, the two
+    constituents cannot be independently resolved.  This function finds
+    groups of mutually inseparable constituents and keeps only the
+    highest-priority one (earliest in the input *constit* list, which
+    follows the NOS importance ordering).
+
+    Parameters
+    ----------
+    constit : list of str
+        Candidate constituent names (already period-filtered).
+    duration_days : float
+        Record length in days.
+    rayleigh_min : float
+        Minimum Rayleigh number (default 0.9).
+    _log : logging.Logger, optional
+        Logger for diagnostics.
+
+    Returns
+    -------
+    list of str
+        Filtered constituent list.
+    """
+    from collections import defaultdict
+
+    from .constituents import CONSTITUENT_SPEEDS
+
+    _log = _log or logging.getLogger(__name__)
+
+    T_hours = duration_days * 24.0
+    min_delta_f = rayleigh_min / T_hours  # cycles per hour
+
+    # Get frequencies for known constituents
+    freqs: dict[str, float] = {}
+    for c in constit:
+        speed = CONSTITUENT_SPEEDS.get(c)
+        if speed is not None:
+            freqs[c] = speed / 360.0  # deg/hr → cycles/hr
+
+    # Build adjacency graph of inseparable pairs
+    adj: dict[str, set[str]] = defaultdict(set)
+    names_with_freq = [c for c in constit if c in freqs]
+    for i, c1 in enumerate(names_with_freq):
+        for c2 in names_with_freq[i + 1:]:
+            if abs(freqs[c1] - freqs[c2]) < min_delta_f:
+                adj[c1].add(c2)
+                adj[c2].add(c1)
+
+    # Find connected components via BFS
+    visited: set[str] = set()
+    to_drop: set[str] = set()
+    for c in names_with_freq:
+        if c in visited:
+            continue
+        # BFS from this node
+        component: list[str] = []
+        queue = [c]
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            component.append(node)
+            queue.extend(adj[node] - visited)
+
+        if len(component) > 1:
+            # Sort by position in the original constit list (earlier = keep)
+            component.sort(key=lambda x: constit.index(x))
+            kept = component[0]
+            dropped = component[1:]
+            to_drop.update(dropped)
+            _log.warning(
+                'Inseparable constituents (Rayleigh < %.1f for %.0f-day '
+                'record): %s. Keeping %s, dropping %s.',
+                rayleigh_min, duration_days, component, kept, dropped,
+            )
+
+    if to_drop:
+        _log.warning(
+            'Dropped %d constituents due to Rayleigh criterion: %s',
+            len(to_drop), sorted(to_drop),
+        )
+
+    # Preserve original order; include unknowns that lack frequency info
+    return [c for c in constit if c not in to_drop]
+
+
 def _classify_method(duration_days: float) -> str:
     """Return a human-readable label for the effective HA method class.
 
@@ -230,6 +340,59 @@ def _classify_method(duration_days: float) -> str:
         return 'standard'
     else:
         return 'long_record_lsq'
+
+
+def _filter_by_period(
+    constit: list[str],
+    duration_days: float,
+    _log: logging.Logger,
+) -> list[str]:
+    """Remove constituents whose period exceeds the record length.
+
+    When an explicit constituent list is passed to UTide ``solve()``, the
+    Rayleigh criterion is **not** applied — UTide fits everything requested.
+    Constituents with periods longer than the record produce physically
+    meaningless amplitudes (sometimes millions of units) because the solver
+    cannot constrain them.  This helper drops those constituents before the
+    call to ``solve()``.
+
+    Parameters
+    ----------
+    constit : list of str
+        Candidate constituent names.
+    duration_days : float
+        Record length in days.
+    _log : logging.Logger
+        Logger for diagnostics.
+
+    Returns
+    -------
+    list of str
+        Filtered constituent list.
+    """
+    from .constituents import CONSTITUENT_SPEEDS
+
+    kept: list[str] = []
+    removed: list[str] = []
+    for c in constit:
+        speed = CONSTITUENT_SPEEDS.get(c)
+        if speed is None or speed == 0:
+            kept.append(c)  # unknown → let UTide decide
+            continue
+        period_days = 360.0 / (speed * 24.0)
+        if period_days > duration_days:
+            removed.append(c)
+        else:
+            kept.append(c)
+
+    if removed:
+        _log.warning(
+            'Dropping %d constituents whose period exceeds the %.1f-day '
+            'record: %s',
+            len(removed), duration_days, removed,
+        )
+
+    return kept
 
 
 def _warn_record_length(duration_days: float, _log: logging.Logger) -> None:

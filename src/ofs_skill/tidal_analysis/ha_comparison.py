@@ -72,18 +72,18 @@ def compare_harmonic_constants(
     if len(lengths) != 1:
         raise ValueError(
             'All input arrays must have the same length.  Got lengths: '
-            f"model_amp={len(model_amp)}, model_phase={len(model_phase)}, "
-            f"accepted_amp={len(accepted_amp)}, "
-            f"accepted_phase={len(accepted_phase)}."
+            f'model_amp={len(model_amp)}, model_phase={len(model_phase)}, '
+            f'accepted_amp={len(accepted_amp)}, '
+            f'accepted_phase={len(accepted_phase)}.'
         )
 
     n = len(model_amp)
     if constituents is None:
-        constituents = [f"C{i}" for i in range(n)]
+        constituents = [f'C{i}' for i in range(n)]
     elif len(constituents) != n:
         raise ValueError(
-            f"constituents list ({len(constituents)}) must match array "
-            f"length ({n})."
+            f'constituents list ({len(constituents)}) must match array '
+            f'length ({n}).'
         )
 
     # Amplitude difference
@@ -111,8 +111,23 @@ def compare_harmonic_constants(
         'Vector_Diff': vector_diff,
     })
 
-    _log.info(
-        'HA comparison: %d constituents, mean vector diff=%.4f.',
-        n, np.mean(vector_diff),
-    )
+    # Summary statistics using NaN-safe arithmetic
+    valid_mask = np.isfinite(vector_diff)
+    n_valid = int(np.sum(valid_mask))
+    n_missing = n - n_valid
+
+    if n_valid > 0:
+        mean_vd = float(np.nanmean(vector_diff))
+        _log.info(
+            'HA comparison: %d of %d constituents have valid vector diff '
+            '(mean=%.4f). %d constituents unresolved.',
+            n_valid, n, mean_vd, n_missing,
+        )
+    else:
+        _log.warning(
+            'HA comparison: all %d constituents have NaN vector diff. '
+            'No valid comparison could be computed.',
+            n,
+        )
+
     return df

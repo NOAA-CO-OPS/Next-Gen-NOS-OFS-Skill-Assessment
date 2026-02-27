@@ -474,11 +474,13 @@ def retrieve_harmonic_constants(
     from ofs_skill.tidal_analysis.constituents import normalize_constituent_name
 
     url_params = utils.Utils().read_config_section('urls', logger)
-    api_url = url_params['co_ops_api_base_url']
+    mdapi_url = url_params.get(
+        'co_ops_mdapi_base_url',
+        'https://api.tidesandcurrents.noaa.gov/mdapi/prod/',
+    )
 
     harcon_url = (
-        f'{api_url}/datagetter?station={station}'
-        f'&product=harcon&units={units}&format=json'
+        f'{mdapi_url}webapi/stations/{station}/harcon.json?units={units}'
     )
 
     try:
