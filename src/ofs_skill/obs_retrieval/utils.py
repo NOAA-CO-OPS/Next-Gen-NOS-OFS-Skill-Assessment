@@ -6,6 +6,7 @@ Utility class for configuration management and helper functions.
 
 import configparser
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Union
@@ -193,6 +194,52 @@ class Utils:
         except Exception as e:
             logger.error(f'Error reading configuration file: {e}', exc_info=True)
             return False
+
+
+def load_api_keys(config_filename='conf/api_keys.conf'):
+    """
+    Load API keys from a config file into environment variables.
+
+    Reads a simple KEY=VALUE config file and sets each key as an
+    environment variable, but only if it is not already set.
+    This allows environment variables (e.g., from conda or CI) to
+    take precedence over the config file.
+
+    Parameters
+    ----------
+    config_filename : str
+        Path to the config file, relative to the project root, or an
+        absolute path. Default: ``"conf/api_keys.conf"``.
+
+    Notes
+    -----
+    - Lines starting with ``#`` and blank lines are skipped.
+    - Keys with empty values (e.g., ``API_USGS_PAT=``) are skipped.
+    - If the file does not exist, this function returns silently.
+    """
+    config_path = Path(config_filename)
+    if not config_path.is_absolute():
+        # Navigate from src/ofs_skill/obs_retrieval/ up to project root
+        project_root = Path(__file__).parent.parent.parent.parent
+        config_path = (project_root / config_path).resolve()
+
+    if not config_path.is_file():
+        return
+
+    with open(config_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            key = key.strip()
+            value = value.strip()
+            if not key or not value:
+                continue
+            if key not in os.environ:
+                os.environ[key] = value
 
 
 def parse_arguments_to_list(

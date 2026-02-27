@@ -1,0 +1,8 @@
+# API Keys Configuration
+# Copy this file to api_keys.conf and fill in your keys.
+# api_keys.conf is git-ignored and will NOT be committed.
+#
+# USGS Water Data API key
+# Request a free key at: https://api.waterdata.usgs.gov
+# Without a key: 50 requests/hour. With a key: 1000 requests/hour.
+API_USGS_PAT=
