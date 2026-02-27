@@ -178,10 +178,14 @@ def ofs_ctlfile_extract(prop, name_var, model, logger):
 
             return lines, nodes, depths, shifts, ids
     except IndexError:
-        logger.error('%s model ctl file is blank -- no '
-                     'model nodes/stations found! Moving on',
+        logger.warning('%s model ctl file is blank -- no '
+                     'model nodes/stations found! Moving on...',
                      name_var)
         return None
+    except FileNotFoundError:
+        logger.warning('%s model ctl file is missing, probably because there '
+                       'are no matches between obs and model stations! '
+                       'Moving on...')
     except Exception as ex:
         logger.error('Unexpected error when processing %s model ctl '
                      'file! Error: %s',
@@ -498,12 +502,12 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             model_obs = model_obs + ofs_ctlfile[3][i]
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs - datum_offset
+                model_obs = model_obs + datum_offset*(int('stofs' in prop.ofs) - int('stofs' not in prop.ofs))
         elif prop.ofsfiletype == 'stations':
             model_time = np.array(model['time'])
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs - datum_offset
+                model_obs = model_obs + datum_offset*(int('stofs' in prop.ofs) - int('stofs' not in prop.ofs))
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
