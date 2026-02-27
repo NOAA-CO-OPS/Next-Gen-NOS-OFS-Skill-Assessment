@@ -220,15 +220,15 @@ def write_constituent_table_csv(
 
     header_lines = []
     if station_id:
-        header_lines.append(f"# Station: {station_id}")
+        header_lines.append(f'# Station: {station_id}')
     if data_type:
-        header_lines.append(f"# Data Type: {data_type}")
+        header_lines.append(f'# Data Type: {data_type}')
     header_lines.append(
         f"# Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     )
     if metadata:
         for key, value in metadata.items():
-            header_lines.append(f"# {key}: {value}")
+            header_lines.append(f'# {key}: {value}')
 
     # Format numeric columns to match Fortran convention:
     #   Amplitudes / vector diff: F7.4 (4 decimal places)
@@ -247,7 +247,7 @@ def write_constituent_table_csv(
                 lambda x: f'{x:.1f}' if pd.notna(x) else ''
             )
 
-    with open(path, 'w', newline='') as f:
+    with open(path, 'w', newline='', encoding='utf-8') as f:
         for line in header_lines:
             f.write(line + '\n')
         formatted.to_csv(f, index=False)

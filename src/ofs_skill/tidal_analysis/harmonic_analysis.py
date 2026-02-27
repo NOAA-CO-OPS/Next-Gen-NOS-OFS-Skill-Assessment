@@ -166,6 +166,12 @@ def harmonic_analysis(
     constit = _filter_by_period(constit, duration_days, _log)
     constit = _filter_by_rayleigh(constit, duration_days, _log=_log)
 
+    if not constit:
+        raise ValueError(
+            'No constituents remain after period and Rayleigh filtering. '
+            'The record length may be too short for harmonic analysis.'
+        )
+
     requested_constituents = list(constit)
     method_label = _classify_method(duration_days)
     _log.info(

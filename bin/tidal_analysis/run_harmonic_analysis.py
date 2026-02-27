@@ -100,7 +100,7 @@ from ofs_skill.tidal_analysis import (
     write_constituent_table_csv,
 )
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', module='utide')
 
 
 def ofs_ctlfile_read(prop, name_var, logger):
@@ -174,18 +174,17 @@ def run_harmonic_analysis_station_loop(
     )
 
     # Read obs station ctl file
-    try:
-        read_station_ctl_file = station_ctl_file_extract(
-            r'' + prop.control_files_path + '/' + prop.ofs + '_'
-            + name_var + '_station.ctl'
-        )
-        logger.info(
-            'Station ctl file (%s_%s_station.ctl) found.',
-            prop.ofs, name_var
-        )
-    except FileNotFoundError:
+    read_station_ctl_file = station_ctl_file_extract(
+        r'' + prop.control_files_path + '/' + prop.ofs + '_'
+        + name_var + '_station.ctl'
+    )
+    if read_station_ctl_file is None:
         logger.error('Station ctl file not found for %s. Skipping variable.', name_var)
         return
+    logger.info(
+        'Station ctl file (%s_%s_station.ctl) found.',
+        prop.ofs, name_var
+    )
 
     stations_processed = 0
     stations_skipped = 0
@@ -278,7 +277,7 @@ def run_harmonic_analysis_station_loop(
                     cast, logger
                 )
                 stations_processed += 1
-            except ValueError as ex:
+            except Exception as ex:
                 logger.error(
                     'HA failed for station %s (%s): %s. Skipping.',
                     station_id, cast, ex
@@ -378,6 +377,10 @@ def _run_ha_for_station(
                 'No CO-OPS harcon for station %s. Falling back to '
                 'obs-derived HA as reference.', station_id
             )
+            # Workaround: use data_type='currents' to force obs-vs-model HA
+            # comparison path, since accepted_constants is unavailable for
+            # this station.  The output CSV correctly labels this as
+            # water_level via write_constituent_table_csv below.
             table = build_constituent_table(
                 model_time=model_time,
                 model_values=model_eq,
@@ -402,6 +405,10 @@ def _run_ha_for_station(
 
         # Optional: predictions and residuals
         if do_predictions:
+            # NOTE: build_constituent_table runs HA internally but does not
+            # expose the coefficients.  This second HA call is needed for
+            # tidal prediction output.  A future refactor could eliminate
+            # this redundancy.
             ha_result = harmonic_analysis(
                 time=model_time, values=model_eq,
                 latitude=latitude,
@@ -482,6 +489,10 @@ def _run_ha_for_station(
 
         # Optional: predictions and residuals for current speed
         if do_predictions:
+            # NOTE: build_constituent_table runs HA internally but does not
+            # expose the coefficients.  This second HA call is needed for
+            # tidal prediction output.  A future refactor could eliminate
+            # this redundancy.
             ha_result = harmonic_analysis(
                 time=model_time, values=model_eq,
                 latitude=latitude,
@@ -542,7 +553,7 @@ def _write_timeseries_csv(time, values, filepath, column_name, metadata, logger)
         for key, value in metadata.items():
             header_lines.append(f'# {key}: {value}')
 
-    with open(path, 'w', newline='') as f:
+    with open(path, 'w', newline='', encoding='utf-8') as f:
         for line in header_lines:
             f.write(line + '\n')
         df.to_csv(f, index=False)
