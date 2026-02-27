@@ -721,23 +721,27 @@ def get_node_ofs(prop, logger):
     logging.info(f'Lazily loaded dataset complete for {prop.whichcast}!')
 
     # Write filenames to CSV
-    time_name = 'time'
-    if prop.model_source == 'roms':
-        time_name = 'ocean_time'
-    # Format time step
-    time_step = str(get_time_step(prop, logger)) + 'min'
-    serieskey = model[[time_name,'filename']].to_dataframe()
-    full_date_range = pd.date_range(start=serieskey.index.min(),
-                                    end=serieskey.index.max(), freq=time_step)
-    serieskey = serieskey.reindex(full_date_range)
-    # Write 'key' that lists all model files used to construct
-    # time series
     try:
+        time_name = 'time'
+        if prop.model_source == 'roms':
+            time_name = 'ocean_time'
+        # Format time step
+        time_step = str(get_time_step(prop, logger)) + 'min'
+        serieskey = model[[time_name,'filename']].to_dataframe()
+        full_date_range = pd.date_range(start=serieskey.index.min(),
+                                        end=serieskey.index.max(), freq=time_step)
+        serieskey = serieskey.reindex(full_date_range)
+        # Write 'key' that lists all model files used to construct
+        # time series
         logger.info('Writing model time series filename key!')
         filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
         filepath = Path(os.path.join(prop.data_model_1d_node_path,
                                      filename)).as_posix()
         serieskey.to_csv(filepath, index_label='DateTime')
+    except KeyError:
+        logger.error('No filename variable found in the lazy loaded model '
+                     'dataset! Cannot write filename time series key. '
+                     'Moving on...')
     except Exception as ex:
         logger.error('Error writing model time series filename '
                      'key: %s', ex)

@@ -210,6 +210,10 @@ def oned_scalar_plot(
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except ValueError:
+            namekey = [name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
         except AttributeError:
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
