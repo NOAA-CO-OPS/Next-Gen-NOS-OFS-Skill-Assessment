@@ -718,15 +718,12 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     # No files found after filtering, generate expected file names
                     logger.info(f'Directory exists but no {prop.whichcast} files found. Constructing expected file names: {dir_list[i_index]}')
                     files = construct_expected_files(prop, dir_list[i_index], logger)
-            elif prop.whichcast == 'hindcast':
 
+            elif prop.whichcast == 'hindcast':
                 all_files = listdir(dir_list[i_index])
                 files = []
                 hr_cyc_day = []
-                if prop.ofs == 'wcofs':
-                    ndays = 1
-                else:
-                    ndays = 0
+                ndays = 0
                 for af_name in all_files:
                     spltstr = af_name.split('.')
                     if ('stations.h' in af_name and
@@ -743,7 +740,20 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             ):
                             hr_cyc_day.append(checkstr)
                             files.append(af_name)
-
+                    elif ('out2d' in af_name and prop.ofsfiletype == 'fields'):
+                            checkstr = '999' + spltstr[-5][1:3] + \
+                                spltstr[-4][-2:]
+                            if (checkstr not in hr_cyc_day
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                     datetime.strptime
+                                     (prop.startdate[:-2], '%Y%m%d'))
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                     + timedelta(days=ndays))
+                                and checkstr[0:3] != '000'
+                                ):
+                                hr_cyc_day.append(checkstr)
+                                files.append(af_name)
                 files = [dir_list[i_index] + '//' + i for i in files]
 
                 # Only sort if we have files
