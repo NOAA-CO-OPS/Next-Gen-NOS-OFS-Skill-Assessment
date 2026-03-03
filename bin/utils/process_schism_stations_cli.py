@@ -535,7 +535,7 @@ def process_schism_stations(prop, logger):
                         time = ncfile.createVariable('time', np.float32, ('time'))
                         time.units = (f'seconds since {prop.start_date_full[0:4]}-'
                                       f'{prop.start_date_full[4:6]}-'
-                                      f'{prop.start_date_full[4:6]} '
+                                      f'{prop.start_date_full[6:8]} '
                                       f'{prop.start_date_full[-2:]}:00:00')
                         # Do rest of vars
                         lon = ncfile.createVariable('lon', np.float32, ('station'))
