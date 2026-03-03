@@ -225,16 +225,12 @@ def pair_ice(
         if prop.ice_dt == 'daily':
             time_all.append(my_obs_date)
             time_all_dt.append(
-                datetime.strptime(
-                    str(my_obs_date), '%Y-%m-%d %H:%M:%S',
-                ).date(),
-            )
-            icecover_o_pair.append(
-                np.array(icecover_o[j][:][:]),
-            )
-            icecover_m_pair.append(
-                np.array(icecover_m[j][:]),
-            )
+                datetime.strptime(str(my_obs_date), '%Y-%m-%d %H:%M:%S').date())
+            icecover_o_pair.append(np.array(icecover_o[j][:][:]))
+            try:
+                icecover_m_pair.append(np.array(icecover_m[j][:]))
+            except IndexError:
+                logger.error('Model and GLSEA ice arrays are different sizes!')
         if prop.ice_dt == 'hourly':
             for i in range(0, len(time_m)):
                 my_mod_date = pd.to_datetime(time_m[i])
@@ -245,21 +241,10 @@ def pair_ice(
                 ):
                     time_all.append(my_mod_date)
                     time_all_dt.append(
-                        datetime.strptime(
-                            str(my_mod_date),
-                            '%Y-%m-%d %H:%M:%S',
-                        ).date(),
-                    )
-                    icecover_o_pair.append(
-                        np.array(
-                            icecover_o[j][:][:],
-                        ),
-                    )
-                    icecover_m_pair.append(
-                        np.array(
-                            icecover_m[i][:],
-                        ),
-                    )
+                        datetime.strptime(str(my_mod_date),
+                            '%Y-%m-%d %H:%M:%S').date())
+                    icecover_o_pair.append(np.array(icecover_o[j][:][:]))
+                    icecover_m_pair.append(np.array(icecover_m[i][:]))
 
     icecover_o_pair = np.stack(icecover_o_pair)
     icecover_m_pair = np.stack(icecover_m_pair)
@@ -567,7 +552,21 @@ def do_iceskill(prop, logger):
         lat_o = np.transpose(lat_o)
         logger.info('GLSEA parsing complete')
 
-        # Pair model output to observations, get master time arrays
+        # First check time arrays for size compatibility
+        set_o = set(time_o)
+        set_m = set(time_m)
+        # Find dates in set_o but not in set_m
+        difference_o_minus_m = set_o - set_m
+        # Convert the result back to a list
+        result_o = list(difference_o_minus_m)
+        # Find dates in set_m but not in set_o
+        difference_m_minus_o = set_m - set_o
+        result_m = list(difference_m_minus_o)
+        if len(result_m) > 0 or len(result_o) > 0:
+            logger.error('Model & GLSEA dates are mismatched! Please '
+                         'delete the "data" directory and try again!')
+
+        # Now, pair model output to observations, get master time arrays
         icecover_o, icecover_m, time_all, time_all_dt, icecover_hist, \
             icecover_hist_2d = pair_ice(
                 time_m,
@@ -576,8 +575,7 @@ def do_iceskill(prop, logger):
                 icecover_o,
                 prop,
                 logger,
-                ice_clim,
-            )
+                ice_clim)
         logger.info('Done with data pairing')
 
         # Get OFS station inventory, find model & obs lat & lon nearest to
