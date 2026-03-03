@@ -25,7 +25,7 @@ Functions:
 Author: AJK
 Created: 09/2024
 Last Modified: 03/2025 - Renamed from 'leaflet_contour', updates for intake
-Last Modified: 01/2026 - Refactored and updated to process model data if 
+Last Modified: 01/2026 - Refactored and updated to process model data if
                          observations are missing.
 """
 from __future__ import annotations
@@ -703,8 +703,11 @@ def interp_grid(
     import pyinterp
     from global_land_mask import globe
 
+    # pyinterp >= 2026.2 renamed RTree -> RTree3D and changed IDW API
+    _new_pyinterp = hasattr(pyinterp, 'RTree3D')
+
     logger.info('--- Resampling grid ---')
-    mesh = pyinterp.RTree()
+    mesh = pyinterp.RTree3D() if _new_pyinterp else pyinterp.RTree()
     mesh.packing(np.vstack((lons, lats)).T, sst)
 
     # --- Estimate source spacing (in meters) ---
@@ -726,28 +729,40 @@ def interp_grid(
 
     # --- First pass (strict) ---
     targets = np.vstack((lon_grid.ravel(), lat_grid.ravel())).T
-    sst_out, _ = mesh.inverse_distance_weighting(
-        targets,
-        within=True,
-        radius=base_radius,
-        k=8,
-        num_threads=0,
-    )
+    if _new_pyinterp:
+        idw_config = pyinterp.core.config.rtree.InverseDistanceWeighting()
+        idw_config = (idw_config
+                      .with_k(8)
+                      .with_radius(base_radius)
+                      .with_num_threads(0)
+                      .with_boundary_check(
+                          pyinterp.core.config.rtree.BoundaryCheck.CONVEX_HULL))
+        sst_out, _ = mesh.inverse_distance_weighting(targets, idw_config)
+    else:
+        sst_out, _ = mesh.inverse_distance_weighting(
+            targets, within=True, radius=base_radius, k=8, num_threads=0,
+        )
     sst_out = sst_out.reshape(lon_grid.shape)
 
     # --- Second pass (fill remaining gaps) ---
     mask = np.isnan(sst_out)
     if np.any(mask):
         logger.debug(f'Filling {mask.sum()} NaN values with larger radius...')
-        sst_fill, _ = mesh.inverse_distance_weighting(
-            np.vstack((lon_grid[mask], lat_grid[mask])).T,
-            #targets[mask],
-            within=False,
-            #radius=100 * base_radius,
-            radius=None,
-            k=16,
-            num_threads=0,
-        )
+        fill_targets = np.vstack((lon_grid[mask], lat_grid[mask])).T
+        if _new_pyinterp:
+            idw_fill = pyinterp.core.config.rtree.InverseDistanceWeighting()
+            idw_fill = (idw_fill
+                        .with_k(16)
+                        .with_radius(None)
+                        .with_num_threads(0)
+                        .with_boundary_check(
+                            pyinterp.core.config.rtree.BoundaryCheck.NONE))
+            sst_fill, _ = mesh.inverse_distance_weighting(
+                fill_targets, idw_fill)
+        else:
+            sst_fill, _ = mesh.inverse_distance_weighting(
+                fill_targets, within=False, radius=None, k=16, num_threads=0,
+            )
         sst_out[mask] = sst_fill
 
     # ==========================================
