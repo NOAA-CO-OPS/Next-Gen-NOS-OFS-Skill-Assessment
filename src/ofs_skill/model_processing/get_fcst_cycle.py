@@ -11,7 +11,53 @@ from datetime import datetime, timedelta
 import numpy as np
 
 
-def get_fcst_cycle(
+def get_fcst_hours(ofs):
+    '''
+    Just what the name says -- gets model forecast cycle hours and forecast
+    length (max horizon) in hours.
+    Called by do_horizon_skill_utils.get_horizon_filenames
+
+    Parameters
+    ----------
+    ofs: string, model OFS
+    logger: logging interface
+
+    Returns
+    -------
+    fcstlength: max length of forecast in hours for OFS
+    fcstcycles: list of forecast cycle hours for OFS
+
+    '''
+
+    # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
+    if ofs in (
+        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
+        'lsofs', 'tbofs', 'necofs'
+    ):
+        fcstcycles = np.array([0, 6, 12, 18])
+    elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
+        fcstcycles = np.array([3, 9, 15, 21])
+    elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+        fcstcycles = 12
+    else:
+        fcstcycles = 3
+    # Now need to know forecast length in hours
+    if ofs in (
+        'cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
+        'tbofs', 'stofs_3d_pac',
+    ):
+        fcstlength = 48
+    elif ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
+        fcstlength = 72
+    elif ofs in ('stofs_3d_atl'):
+        fcstlength = 96
+    else: #WCOFS
+        fcstlength = 120
+
+    return fcstlength, fcstcycles
+
+
+def get_fcst_dates(
     ofs: str,
     start_date_full: str,
     forecast_hr: str,
@@ -89,31 +135,10 @@ def get_fcst_cycle(
     logger.info('Starting cycle and end date assignment for forecast_a...')
 
     # Define forecast cycle hours for each OFS group
-    if ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs',
-               'loofs', 'lsofs', 'tbofs'):
-        fcstcycles = np.array([0, 6, 12, 18, 24])
-        fcstcycless = ['00', '06', '12', '18', '00']
-    elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = np.array([-3, 3, 9, 15, 21])
-        fcstcycless = ['21','03', '09', '15', '21']
-    elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = np.array([12])
-        fcstcycless = ['12']
-    else:
-        fcstcycles = np.array([3])
-        fcstcycless = ['03']
+    fcstlength, fcstcycles = get_fcst_hours(ofs)
 
-    # Define forecast length in hours for each OFS group
-    if ofs in ('cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs', 'tbofs'):
-        fcstlength = 48
-    elif ofs in ('gomofs', 'wcofs'):
-        fcstlength = 72
-    elif ofs in ('stofs_3d_atl',):
-        fcstlength = 96
-    elif ofs in ('stofs_3d_pac',):
-        fcstlength = 48
-    else:
-        fcstlength = 120
+    # Convert forecast cycle ints to str
+    fcstcycless = [f'{item:02}' for item in fcstcycles]
 
     # Verify forecast hour input and adjust if necessary
     requested_hour = forecast_hr[:-2]  # Remove 'hr' suffix
