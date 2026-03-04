@@ -91,11 +91,11 @@ def get_fcst_cycle(
     # Define forecast cycle hours for each OFS group
     if ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs',
                'loofs', 'lsofs', 'tbofs'):
-        fcstcycles = np.array([0, 6, 12, 18])
-        fcstcycless = ['00', '06', '12', '18']
+        fcstcycles = np.array([0, 6, 12, 18, 24])
+        fcstcycless = ['00', '06', '12', '18', '00']
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = np.array([3, 9, 15, 21])
-        fcstcycless = ['03', '09', '15', '21']
+        fcstcycles = np.array([-3, 3, 9, 15, 21])
+        fcstcycless = ['21','03', '09', '15', '21']
     elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
         fcstcycles = np.array([12])
         fcstcycless = ['12']
@@ -117,27 +117,29 @@ def get_fcst_cycle(
 
     # Verify forecast hour input and adjust if necessary
     requested_hour = forecast_hr[:-2]  # Remove 'hr' suffix
+    sdate = start_date_full.split('T')[0]  # Extract date part
+    ftime = f'T{forecast_hr[:-2]}:00:00Z'
+    sdate = sdate + ftime
+    sdatetime = datetime.strptime(sdate, '%Y-%m-%dT%H:%M:%SZ')
     if requested_hour not in fcstcycless:
         # Find nearest valid cycle hour
         requested_hour_int = int(requested_hour)
-        dist = abs(fcstcycles - requested_hour_int)
-        mindex = np.nanargmin(dist)
-        forecast_hr = fcstcycless[mindex] + 'hr'
+        dist = fcstcycles - requested_hour_int
+        # Adjust start date to match forecast cycle
+        sdatetime = sdatetime + \
+            timedelta(hours=int(dist[np.nanargmin(abs(dist))]))
+        # Display warning
+        forecast_hr = sdatetime.strftime('%H')
         logger.info(
             f'Adjusted input forecast cycle hour from {requested_hour} to '
-            f'{forecast_hr[:-2]} for {ofs}')
-
-    # Adjust start date to match forecast cycle
-    sdate = start_date_full.split('T')[0]  # Extract date part
-    ftime = f'T{forecast_hr[:-2]}:00:00Z'
-    fcst_start = sdate + ftime
+            f'{forecast_hr} for {ofs}')
+    fcst_start = datetime.strftime(sdatetime, '%Y-%m-%dT%H:%M:%SZ')
 
     # Calculate end date based on forecast length
-    edate = datetime.strptime(fcst_start, '%Y-%m-%dT%H:%M:%SZ') + \
-            timedelta(hours=fcstlength)
+    edate = sdatetime + timedelta(hours=fcstlength)
     fcst_end = datetime.strftime(edate, '%Y-%m-%dT%H:%M:%SZ')
 
-    logger.info(f'Forecast cycle: {forecast_hr[:-2]}Z')
+    logger.info(f'Forecast cycle: {forecast_hr}Z')
     logger.info(f'Forecast length: {fcstlength} hours')
     logger.info(f'Forecast period: {fcst_start} to {fcst_end}')
     logger.info('Completed cycle and end date assignment for forecast_a!')
