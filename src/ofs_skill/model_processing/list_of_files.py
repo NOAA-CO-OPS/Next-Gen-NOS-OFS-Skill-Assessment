@@ -257,6 +257,10 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     else:
         fcstcycles = ['03']
 
+    # Switch fcstcycles if using forecast_a
+    if prop.whichcast == 'forecast_a':
+        fcstcycles = [prop.forecast_hr[:-2]]
+
     # Determine file type indicator
     if prop.whichcast == 'nowcast':
         cast_type = 'nowcast'
@@ -313,7 +317,6 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
 
         if prop.ofsfiletype == 'stations':
             for cycle in fcstcycles:
-
                 if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
                     filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
                 else:
