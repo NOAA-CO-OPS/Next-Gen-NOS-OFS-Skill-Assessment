@@ -77,7 +77,7 @@ def name_convent(variable):
 
 def get_time_step(prop, logger):
     '''
-    Gets the model time step epending on OFS and file type (fields or stations)
+    Gets the model time step depending on OFS and file type (fields or stations)
 
     Parameters
     ----------
@@ -89,11 +89,11 @@ def get_time_step(prop, logger):
     Time step in integer minutes
 
     '''
-    # Define your expected frequency (e.g. one day)
+    # Define your expected frequency in minutes (e.g. 6 minutes)
     exp_freq = 6
     if prop.ofsfiletype == 'fields':
-        if prop.ofs in ['gomofs','wcofs','ngofs2','necofs']:
-            exp_freq = int(60*3)
+        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2', 'necofs']:
+            exp_freq = 180
         else:
             exp_freq = 60
     return exp_freq
@@ -106,7 +106,7 @@ def find_time_gaps(prop, model, logger):
     ----------
     prop : main input arguments
     model : lazily loaded concatenated model dataset
-    logger : logger!
+    logger : logger
 
     Returns
     -------
@@ -122,18 +122,13 @@ def find_time_gaps(prop, model, logger):
     # Calculate time differences between consecutive time steps in minutes
     time_deltas = np.diff(model[time_name].values)/np.timedelta64(1, 'm')
 
-    # Define your expected frequency (e.g. one day)
+    # Define your expected frequency in minutes (e.g. 6 minutes)
     exp_freq = float(get_time_step(prop, logger))
-    #expected_delta = exp_freq
 
     # Check for gaps (where the delta is greater than expected)
     gaps = (time_deltas != exp_freq)
 
-    if np.any(gaps):
-        logger.warning('Gaps found in the model time dimension!')
-        return True
-    else:
-        return False
+    return bool(np.any(gaps))
 
 
 def ofs_ctlfile_extract(prop, name_var, model, logger):
@@ -185,7 +180,8 @@ def ofs_ctlfile_extract(prop, name_var, model, logger):
     except FileNotFoundError:
         logger.warning('%s model ctl file is missing, probably because there '
                        'are no matches between obs and model stations! '
-                       'Moving on...')
+                       'Moving on...', name_var)
+        return None
     except Exception as ex:
         logger.error('Unexpected error when processing %s model ctl '
                      'file! Error: %s',
@@ -502,12 +498,14 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             model_obs = model_obs + ofs_ctlfile[3][i]
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs + datum_offset*(int('stofs' in prop.ofs) - int('stofs' not in prop.ofs))
+                sign = 1 if 'stofs' in prop.ofs else -1
+                model_obs = model_obs + sign * datum_offset
         elif prop.ofsfiletype == 'stations':
             model_time = np.array(model['time'])
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs + datum_offset*(int('stofs' in prop.ofs) - int('stofs' not in prop.ofs))
+                sign = 1 if 'stofs' in prop.ofs else -1
+                model_obs = model_obs + sign * datum_offset
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -722,7 +720,7 @@ def get_node_ofs(prop, logger):
     list_files = list_of_files_func(prop, dir_list, logger)
     logging.info('About to start intake_scisa from get_node ...')
     model = intake_model(list_files, prop, logger)
-    logging.info(f'Lazily loaded dataset complete for {prop.whichcast}!')
+    logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
 
     # Write filenames to CSV
     try:
@@ -731,7 +729,7 @@ def get_node_ofs(prop, logger):
             time_name = 'ocean_time'
         # Format time step
         time_step = str(get_time_step(prop, logger)) + 'min'
-        serieskey = model[[time_name,'filename']].to_dataframe()
+        serieskey = model[[time_name, 'filename']].to_dataframe()
         full_date_range = pd.date_range(start=serieskey.index.min(),
                                         end=serieskey.index.max(), freq=time_step)
         serieskey = serieskey.reindex(full_date_range)
@@ -760,7 +758,7 @@ def get_node_ofs(prop, logger):
         if prop.model_source == 'roms':
             model = model.resample(
                 ocean_time=time_step).asfreq()
-        elif prop.model_source == 'fvcom' or prop.model_source == 'schism':
+        elif prop.model_source in ('fvcom', 'schism'):
             model = model.resample(
                 time=time_step).asfreq()
 

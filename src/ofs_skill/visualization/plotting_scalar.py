@@ -206,7 +206,7 @@ def oned_scalar_plot(
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
         # Parse filenames from key
         try:
-            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
@@ -583,6 +583,7 @@ def oned_scalar_plot(
     # Add annotation if datum mismatch
     if name_var == 'wl':
         filename = f'{prop.control_files_path}/{prop.ofs}_wl_datum_report.csv'
+        has_fail = pd.Series([False])
         try:
             df = pd.read_csv(filename)
             has_fail = df.loc[df[df['Station ID'] == int(
