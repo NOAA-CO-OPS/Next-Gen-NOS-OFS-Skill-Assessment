@@ -26,6 +26,7 @@ Created: 05/09/2025
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -175,16 +176,25 @@ def oned_vector_plot1(
         else:
             seriesname = prop.whichcasts[i].capitalize(
             ) + ' Guidance'  # + f"{i}",
-
+        # Parse filenames from key
+        try:
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+                       + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except AttributeError:
+            logger.error('No hoverinfo filenames available!')
+            hovertemplate='%{y:.2f}'
+            namekey = None
         fig.add_trace(
             go.Scattergl(
                 x=list(now_fores_paired[i].DateTime),
                 y=list(now_fores_paired[i].OFS_SPD),
                 name=seriesname,
+                text=namekey,
                 # Updated hover text to show Obs/Fore/Now values, not bias
-                # hovertext=list(now_fores_paired[0].OFS_DIR),
-                hovertemplate='%{y:.2f}',
-                connectgaps=connectgaps,
+                hovertemplate=hovertemplate,
+                connectgaps=False,
                 line=dict(
                     color=palette[i+1],
                     width=linewidth,
@@ -222,7 +232,7 @@ def oned_vector_plot1(
             y=list(now_fores_paired[0].OBS_DIR), name='Observations',
             # hovertext=list(now_fores_paired[0].OBS_DIR),
             hovertemplate='%{y:.2f}',
-            connectgaps=connectgaps,
+            connectgaps=False,
             opacity=lineopacity,
             showlegend=False,
             line=dict(color=palette[0], width=linewidth, dash='dash'),
@@ -248,21 +258,32 @@ def oned_vector_plot1(
         else:
             seriesname = prop.whichcasts[i].capitalize(
             ) + ' Guidance'  # + f"{i}",
-
+        # Parse filenames from key
+        try:
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+                       + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[0].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except AttributeError:
+            logger.error('No hoverinfo filenames available!')
+            hovertemplate='%{y:.2f}'
+            namekey = None
         fig.add_trace(
             go.Scattergl(
                 x=list(now_fores_paired[i].DateTime),
                 y=list(now_fores_paired[i].OFS_DIR),
                 name=seriesname,
+                text=namekey,
                 # Updated hover text to show Obs/Fore/Now values, not bias
                 # hovertext=list(now_fores_paired[0].OFS_DIR),
-                hovertemplate='%{y:.2f}',
+                hovertemplate=hovertemplate,
                 line=dict(
                     color=palette[i+1],
                     width=1.75, dash=linestyles[i],
                 ), mode='lines+markers',
                 # legendgroup=seriesname,
                 showlegend=False,
+                connectgaps=False,
                 marker=dict(
                     symbol=allmarkerstyles[i+1], size=marker_size,
                     color=palette[i+1],
@@ -291,6 +312,7 @@ def oned_vector_plot1(
                     )
                 ],
                 name=sdboxName,
+                connectgaps=False,
                 hovertemplate='%{y:.2f}',
                 mode='lines', line=dict(
                     color=palette[i+1],
@@ -938,17 +960,17 @@ def oned_vector_plot3(
     # Choose color & style for observation lines and marker fill.
     ncolors = len(prop.whichcasts) + 1
     palette, palette_rgb = make_cubehelix_palette(ncolors, 2, 0.4, 0.65)
-    linestyles = ['solid', 'dot', 'longdash', 'dashdot', 'longdashdot']
+    #linestyles = ['solid', 'dot', 'longdash', 'dashdot', 'longdashdot']
 
     # Convert wind directions to radians and calculate u and v component
     cur_dir_rad = np.deg2rad([270 - x for x in now_fores_paired[0].OBS_DIR])
     u = now_fores_paired[0].OBS_SPD * np.cos(cur_dir_rad)*-1
     v = now_fores_paired[0].OBS_SPD * np.sin(cur_dir_rad)*-1
-    obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
+    #obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
 
     dimN = np.asarray(u).shape[0]
     reshape_u = np.asarray(u).reshape((dimN, 1))
-    reshape_v = np.asarray(v).reshape((dimN, 1))
+    #reshape_v = np.asarray(v).reshape((dimN, 1))
 
     y = reshape_u*0
     date_time_array = np.array(
@@ -1219,7 +1241,7 @@ def oned_vector_diff_plot3(
     cur_dir_rad = np.deg2rad([270 - x for x in now_fores_paired[0].OBS_DIR])
     obs_u = now_fores_paired[0].OBS_SPD * np.cos(cur_dir_rad)*-1
     obs_v = now_fores_paired[0].OBS_SPD * np.sin(cur_dir_rad)*-1
-    obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
+    #obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
 
     dimN = np.asarray(obs_u).shape[0]
     reshape_u = np.asarray(obs_u).reshape((dimN, 1))

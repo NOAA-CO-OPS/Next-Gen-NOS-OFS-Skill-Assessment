@@ -23,6 +23,7 @@ Last Modified: 10/2025 - Split ice plotting into separate file
 from __future__ import annotations
 
 import configparser
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -167,7 +168,8 @@ def oned_scalar_plot(
         go.Scattergl(
             x=list(now_fores_paired[0].DateTime),
             y=list(now_fores_paired[0].OBS), name=obsname,
-            hovertemplate='%{y:.2f}', mode=modetype,
+            hovertemplate='%{y:.2f}',
+            mode=modetype,
             opacity=lineopacity,
             connectgaps=connectgaps,
             line=dict(color=palette[0], width=linewidth, dash=obslinestyle),
@@ -191,6 +193,7 @@ def oned_scalar_plot(
     )
 
     for i in range(len(prop.whichcasts)):
+
         # Change name of model time series to make more explanatory
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
@@ -201,6 +204,20 @@ def oned_scalar_plot(
             seriesname = 'Model Nowcast Guidance'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
+        # Parse filenames from key
+        try:
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+                       + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except ValueError:
+            namekey = [name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except AttributeError:
+            logger.error('No hoverinfo filenames available!')
+            hovertemplate='%{y:.2f}'
+            namekey = None
 
         fig.add_trace(
             go.Scattergl(
@@ -208,8 +225,10 @@ def oned_scalar_plot(
                 y=list(now_fores_paired[i].OFS),
                 name=seriesname,
                 opacity=lineopacity,
+                connectgaps=False,
                 # Updated hover text to show Obs/Fore/Now, not bias
-                hovertemplate='%{y:.2f}',
+                text=namekey,
+                hovertemplate=hovertemplate,
                 mode=modetype, line=dict(
                     color=palette[i+1],
                     width=linewidth,
@@ -358,9 +377,9 @@ def oned_scalar_plot(
                   distance_text = ''
 
               if used_datum == requested_datum:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br>Source: {source_text}{distance_text}<br>Datum: {used_datum}<extra></extra>'
+                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}<i><extra></extra>'
               else:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br>Source: {source_text}{distance_text}<br>Datum: {used_datum}(requested: {requested_datum})<extra></extra>'
+                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}(requested: {requested_datum})<i><extra></extra>'
 
               fig.add_trace(
                   go.Scattergl(
@@ -414,7 +433,7 @@ def oned_scalar_plot(
                     )
                 ],
                 name=sdboxName,
-                connectgaps=connectgaps,
+                connectgaps=False,
                 hovertemplate='%{y:.2f}',
                 mode=modetype, line=dict(
                     color=palette[i+1],
@@ -566,21 +585,22 @@ def oned_scalar_plot(
         filename = f'{prop.control_files_path}/{prop.ofs}_wl_datum_report.csv'
         try:
             df = pd.read_csv(filename)
+            has_fail = df.loc[df[df['Station ID'] == int(
+                station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
+        except ValueError:
             has_fail = df.loc[df[df['Station ID'] == str(
                 station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
-            if has_fail.bool():
-                fig.add_annotation(
-                    text='<b>Warning:<br>datum mismatch</b>',
-                    xref='x domain', yref='y domain',
-                    font=dict(size=14, color='red'),
-                    x=0, y=0.0,
-                    showarrow=False,
-                    row=1, col=1,
-                )
         except Exception as e_x:
-            logger.error(
-                'Cannot find station ID in datum report! '
-                'Exception: %s', e_x,
+            logger.error('Cannot find station ID in datum report! '
+                'Exception: %s', e_x,)
+        if has_fail.bool():
+            fig.add_annotation(
+                text='<b>Warning:<br>datum mismatch</b>',
+                xref='x domain', yref='y domain',
+                font=dict(size=14, color='red'),
+                x=0, y=0.0,
+                showarrow=False,
+                row=1, col=1,
             )
 
     # Set x-axis moving bar
