@@ -41,6 +41,7 @@ Revisions:
 
 from __future__ import annotations
 
+import os
 from logging import Logger
 from typing import Any
 
@@ -48,6 +49,15 @@ import intake
 import numpy as np
 import xarray as xr
 
+
+def preprocess_with_filename(ds):
+    """Preprocess an xarray dataset by adding a 'filename' coordinate.
+
+    Extracts the filename from the dataset's encoding source path
+    and assigns it as a coordinate.
+    """
+    filename = os.path.basename(ds.encoding['source'])
+    return ds.assign_coords(filename=filename)
 
 def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     """
@@ -186,6 +196,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'by_coords',  # <-- align files by coordinates
                         'engine': engine,
+                        'preprocess': preprocess_with_filename,
                         'drop_variables': drop_variables,
                         'chunks': {'time': 1},
                     },
@@ -196,6 +207,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'nested',
                         'engine': engine,
+                        'preprocess': preprocess_with_filename,
                         'concat_dim': time_name,
                         'decode_times': 'False',
                         'chunks': 'auto',  # Enables lazy loading with Dask
@@ -208,6 +220,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 xarray_kwargs={
                     'combine': 'nested',
                     'engine': engine,
+                    'preprocess': preprocess_with_filename,
                     'concat_dim': time_name,
                     'decode_times': 'False',
                     'drop_variables': drop_variables,
@@ -287,7 +300,6 @@ def fix_roms_uv(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
     logger.info('Applying adjustments for ROMS currents ...')
 
     if prop.ofsfiletype == 'fields':
-        ocean_time = data_set['ocean_time']
         mask_rho = None
         if len(data_set['ocean_time']) > 1:
             mask_rho = np.array(data_set.variables['mask_rho'][:][0])

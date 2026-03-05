@@ -213,9 +213,22 @@ def create_1dplot_2nd_part(
                     f'{prop.ofsfiletype}_pair.int',
                     sep=r'\s+', names=var_info[2],
                     header=0) #change to skip header for human readability
-                #print(read_ofs_ctl_file[-1][i])
+                # Format paired data dates
                 paired_data['DateTime'] = pd.to_datetime(
                     paired_data[['year', 'month', 'day', 'hour', 'minute']])
+                # Read time series key
+                filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
+                filepath = (Path(prop.data_model_1d_node_path) / filename).as_posix()
+                try:
+                    serieskey = pd.read_csv(filepath)
+                    serieskey['DateTime'] = pd.to_datetime(serieskey['DateTime'])
+                    # Now merge time series key to paired data
+                    paired_data = pd.merge(paired_data, serieskey, on='DateTime', how='inner')
+                except FileNotFoundError:
+                    logger.error('No model series filename key found! Skipping')
+                except Exception as ex:
+                    logger.error('Exception caught when loading and merging '
+                                 'model filename key! Error: %s', ex)
                 logger.info(
                     'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found in %s',
                     prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
