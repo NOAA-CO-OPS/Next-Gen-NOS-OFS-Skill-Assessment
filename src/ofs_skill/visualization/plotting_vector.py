@@ -178,7 +178,7 @@ def oned_vector_plot1(
             ) + ' Guidance'  # + f"{i}",
         # Parse filenames from key
         try:
-            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
@@ -260,7 +260,7 @@ def oned_vector_plot1(
             ) + ' Guidance'  # + f"{i}",
         # Parse filenames from key
         try:
-            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2],'%Y%m%d'),'%m-%d-%Y')\
+            namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[0].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
@@ -960,17 +960,14 @@ def oned_vector_plot3(
     # Choose color & style for observation lines and marker fill.
     ncolors = len(prop.whichcasts) + 1
     palette, palette_rgb = make_cubehelix_palette(ncolors, 2, 0.4, 0.65)
-    #linestyles = ['solid', 'dot', 'longdash', 'dashdot', 'longdashdot']
 
     # Convert wind directions to radians and calculate u and v component
     cur_dir_rad = np.deg2rad([270 - x for x in now_fores_paired[0].OBS_DIR])
     u = now_fores_paired[0].OBS_SPD * np.cos(cur_dir_rad)*-1
     v = now_fores_paired[0].OBS_SPD * np.sin(cur_dir_rad)*-1
-    #obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
 
     dimN = np.asarray(u).shape[0]
     reshape_u = np.asarray(u).reshape((dimN, 1))
-    #reshape_v = np.asarray(v).reshape((dimN, 1))
 
     y = reshape_u*0
     date_time_array = np.array(
@@ -1241,7 +1238,6 @@ def oned_vector_diff_plot3(
     cur_dir_rad = np.deg2rad([270 - x for x in now_fores_paired[0].OBS_DIR])
     obs_u = now_fores_paired[0].OBS_SPD * np.cos(cur_dir_rad)*-1
     obs_v = now_fores_paired[0].OBS_SPD * np.sin(cur_dir_rad)*-1
-    #obs_magnitude = [x for x in now_fores_paired[0].OBS_SPD]
 
     dimN = np.asarray(obs_u).shape[0]
     reshape_u = np.asarray(obs_u).reshape((dimN, 1))

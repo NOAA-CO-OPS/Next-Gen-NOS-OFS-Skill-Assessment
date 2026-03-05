@@ -646,6 +646,8 @@ def index_nearest_station(
 
     Parameters
     ----------
+    prop : Any
+        Program properties/configuration object
     ctl_file_extract : List[List[str]]
         Observation station locations
     model_netcdf : Dict[str, Any]
@@ -656,6 +658,8 @@ def index_nearest_station(
         Variable name
     logger : logging.Logger
         Logger instance
+    id_extract : List[List[str]]
+        Observation station IDs
 
     Returns
     -------
@@ -684,10 +688,10 @@ def index_nearest_station(
             if indices.size > 0:
                 index = indices[0]
                 index_min_dist.append(index)
-                logger.info(f'Nearest station found: station {obs_p + 1} of {length}')
+                logger.info('Nearest station found: station %s of %s', obs_p + 1, length)
             else:
                 index_min_dist.append(np.nan)
-                logger.info(f'Nearest station NOT found: station {obs_p + 1} of {length}')
+                logger.info('Nearest station NOT found: station %s of %s', obs_p + 1, length)
 
     elif model_source == 'fvcom' or model_source == 'schism':
         length = len(ctl_file_extract)

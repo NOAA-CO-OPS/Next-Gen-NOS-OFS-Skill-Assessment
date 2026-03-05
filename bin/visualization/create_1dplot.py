@@ -218,12 +218,10 @@ def create_1dplot_2nd_part(
                     paired_data[['year', 'month', 'day', 'hour', 'minute']])
                 # Read time series key
                 filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
-                filepath = Path(os.path.join(prop.data_model_1d_node_path,
-                                             filename)).as_posix()
+                filepath = (Path(prop.data_model_1d_node_path) / filename).as_posix()
                 try:
                     serieskey = pd.read_csv(filepath)
                     serieskey['DateTime'] = pd.to_datetime(serieskey['DateTime'])
-                    #serieskey = serieskey.rename(columns={'filename': f'{prop.whichcast}_filename'})
                     # Now merge time series key to paired data
                     paired_data = pd.merge(paired_data, serieskey, on='DateTime', how='inner')
                 except FileNotFoundError:
