@@ -33,8 +33,8 @@ def make_ice_map(
     titles, labels, etc. will be correct.
     '''
 
-    makestatic = True
-    makejson = False
+    makestatic = False
+    makejson = True
 
     brdr = 0.2
 
