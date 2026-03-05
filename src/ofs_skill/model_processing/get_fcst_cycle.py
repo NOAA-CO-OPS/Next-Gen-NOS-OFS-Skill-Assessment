@@ -38,9 +38,9 @@ def get_fcst_hours(ofs):
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
         fcstcycles = np.array([3, 9, 15, 21])
     elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = 12
+        fcstcycles = np.array([12])
     else:
-        fcstcycles = 3
+        fcstcycles = np.array([3])
     # Now need to know forecast length in hours
     if ofs in (
         'cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
@@ -138,7 +138,10 @@ def get_fcst_dates(
     fcstlength, fcstcycles = get_fcst_hours(ofs)
 
     # Convert forecast cycle ints to str
-    fcstcycless = [f'{item:02}' for item in fcstcycles]
+    if isinstance(fcstcycles, int):
+        fcstcycless = f'{fcstcycles:02}'
+    elif isinstance(fcstcycles, np.ndarray):
+        fcstcycless = [f'{item:02}' for item in fcstcycles]
 
     # Verify forecast hour input and adjust if necessary
     requested_hour = forecast_hr[:-2]  # Remove 'hr' suffix
@@ -147,12 +150,18 @@ def get_fcst_dates(
     sdate = sdate + ftime
     sdatetime = datetime.strptime(sdate, '%Y-%m-%dT%H:%M:%SZ')
     if requested_hour not in fcstcycless:
+        if fcstcycles[0] == 0:
+            fcstcycles = np.append(fcstcycles, 24)
+            fcstcycless.append('00')
+        elif fcstcycles[0] == 3 and len(fcstcycles)>1:
+            fcstcycles = np.concatenate(([-3], fcstcycles))
+            fcstcycless.insert(0, '21')
         # Find nearest valid cycle hour
         requested_hour_int = int(requested_hour)
-        dist = fcstcycles - requested_hour_int
+        dist = np.array([item - requested_hour_int for item in fcstcycles])
         # Adjust start date to match forecast cycle
         sdatetime = sdatetime + \
-            timedelta(hours=int(dist[np.nanargmin(abs(dist))]))
+            timedelta(hours=int(dist[np.nanargmin(np.abs(dist))]))
         # Display warning
         forecast_hr = sdatetime.strftime('%H')
         logger.info(
