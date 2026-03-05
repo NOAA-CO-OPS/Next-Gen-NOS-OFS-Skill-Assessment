@@ -136,7 +136,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ]
     elif prop.model_source == 'fvcom':
         time_name = 'time'
-    elif prop.model_source == 'schism' and prop.ofs != 'loofs-nextgen':
+    elif prop.model_source == 'schism':
         drop_variables = [
             'temp_surface', 'temp_bottom', 'salt_surface', 'salt_bottom',
             'uvel_surface', 'vvel_surface', 'uvel_bottom', 'vvel_bottom',
@@ -144,10 +144,8 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                           'SCHISM_hgrid_face_y','SCHISM_hgrid_face_x',
                           ]
         time_name = 'time'
-    elif prop.model_source == 'schism' and prop.ofs == 'loofs-nextgen':
-        time_name = 'time'
 
-    if prop.ofs == 'necofs':
+    if prop.ofs == 'necofs' or prop.ofs == 'loofs2' or prop.ofs == 'secofs':
         engine = 'netcdf4'
     else:
         engine = 'h5netcdf'
@@ -167,7 +165,14 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     dim_compat = True
 
     if prop.ofsfiletype == 'stations':
-        dim_compat, dim_ref = get_station_dim(engine, urlpaths, drop_variables, logger)
+        try:
+            dim_compat, dim_ref = get_station_dim(engine, urlpaths,
+                                                  drop_variables, logger)
+        except Exception as ex:
+            logger.warning('Could not check number of stations before '
+                           'combining netcdfs in intake! Error: %s. '
+                           'Continuing...',
+                           ex)
     if dim_compat:  # This will only be FALSE for stations files when
         # station dimensions do not match! Always True for fields
         # files

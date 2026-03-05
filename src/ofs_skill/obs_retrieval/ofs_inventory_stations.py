@@ -11,7 +11,7 @@ Abstract:
 
    This script is used to create a final inventory file, by combining
    all individual inventory dataframes
-   (T_C, NDBC, USGS...), and removing duplicates.
+   (T_C, NDBC, USGS, CHS...), and removing duplicates.
    Duplicates are removed based on location (lat, and long).
    Stations with the same lat and long
    (2 decimal degree precision). Precedent is given to Tides
@@ -31,6 +31,9 @@ Scripts/Programs Called:
 
  inventory_NDBC(lat1,lat2,lon1,lon2)
  --- This is to create the NDBC inventory
+
+ inventory_CHS(lat1,lat2,lon1,lon2)
+ --- This is to create the CHS inventory
 
  inventory_USGS(lat1,lat2,lon1,lon2,start_date,end_date)
  --- This is to create the USGS inventory
@@ -93,6 +96,7 @@ from ofs_skill.obs_retrieval import (
     utils,
 )
 from ofs_skill.obs_retrieval.filter_inventory import filter_inventory
+from ofs_skill.obs_retrieval.inventory_chs_station import inventory_chs_station
 from ofs_skill.obs_retrieval.inventory_ndbc_station import inventory_ndbc_station
 from ofs_skill.obs_retrieval.inventory_t_c_station import inventory_t_c_station
 from ofs_skill.obs_retrieval.inventory_usgs_station import inventory_usgs_station
@@ -148,6 +152,7 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
     t_c_future = None
     usgs_future = None
     ndbc_future = None
+    chs_future = None
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         if 'co-ops' in stationowner:
@@ -177,11 +182,23 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
             usgs_future = executor.submit(
                 inventory_usgs_station, argu_list, start_date, end_date, logger
             )
+        if 'chs' in stationowner:
+            logger.info(
+                'Retrieving CHS inventory for %s from %s to %s',
+                ofs, start_date, end_date
+            )
+            chs_future = executor.submit(
+                inventory_chs_station, lat1, lat2, lon1, lon2, logger
+            )
+            # chs = inventory_chs_station(
+            #     lat1, lat2, lon1, lon2, logger
+            # )
 
     # Collect results (blocks until each future completes)
     t_c = t_c_future.result() if t_c_future else None
     usgs = usgs_future.result() if usgs_future else None
     ndbc = ndbc_future.result() if ndbc_future else None
+    chs = chs_future.result() if chs_future else None
 
     if t_c is not None:
         logger.info('Finished retrieving Tides and Currents inventory!')
@@ -189,17 +206,19 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
         logger.info('Finished retrieving NDBC inventory!')
     if usgs is not None:
         logger.info('Finished retrieving USGS inventory!')
+    if chs is not None:
+        logger.info('Finished retrieving CHS inventory!')
 
-    return get_inventory_datasets(geo, t_c, usgs, ndbc, logger)
+    return get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger)
 
 
-def get_inventory_datasets(geo, t_c, usgs, ndbc, logger):
+def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
     """
      Then these inventories are concatenated in order of priority
-     t_c,usgs,ndbc.
+     t_c,usgs,ndbc,chs.
      If there is any duplicated data (same lat and lon with lat and long
      rounded to 2 decimals) t_c takes precedent over usgs, which takes
-     precedent over ndbc.
+     precedent over ndbc, which takes precedent over chs.
      The only diference between dataset and dataset_2 is that dataset_2 has
      lat and lon rounded to 2 decimal degrees,
      that is necessary to find duplicates.
@@ -213,13 +232,13 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, logger):
 
     # Ensure all dataframes have the variable availability columns
     var_cols = ['has_wl', 'has_temp', 'has_salt', 'has_cu']
-    for df in [t_c, usgs, ndbc]:
+    for df in [t_c, usgs, ndbc, chs]:
         if df is not None:
             for col in var_cols:
                 if col not in df.columns:
                     df[col] = True  # Default to True for backwards compatibility
 
-    dataset = pd.concat([t_c, usgs, ndbc], ignore_index=True)
+    dataset = pd.concat([t_c, usgs, ndbc, chs], ignore_index=True)
 
     # For duplicate removal, only deduplicate within the same source.
     # Different sources (CO-OPS, USGS, NDBC) may provide different
@@ -338,9 +357,7 @@ def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
 
         logger.info('Searching for duplicate stations in inventory file')
         #filter duplicate NDBC stations
-        dataset_final = filter_inventory(dataset_final,
-                                                          station_list,
-                                                          logger)
+        dataset_final = filter_inventory(dataset_final, station_list, logger)
         logger.info('Duplicate station filter complete!')
 
         dataset_final.to_csv(

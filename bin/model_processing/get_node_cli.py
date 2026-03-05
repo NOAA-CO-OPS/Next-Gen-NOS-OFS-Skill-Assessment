@@ -9,7 +9,9 @@ with the time series
 
 import argparse
 
+from ofs_skill.model_processing import model_properties
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
+from ofs_skill.model_processing.model_source import get_model_source
 
 if __name__ == '__main__':
 
@@ -27,7 +29,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-p', '--Path',
         required=True,
-        help='Inventory File path where ofs_extents/folder is located', )
+        help='Path to your working directory', )
     parser.add_argument(
         '-s', '--StartDate_full',
         required=True,
@@ -84,7 +86,7 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
-    prop1 = ModelProperties()
+    prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
     prop1.start_date_full = args.StartDate_full

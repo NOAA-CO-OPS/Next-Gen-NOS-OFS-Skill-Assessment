@@ -396,15 +396,15 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         return 0
 
     # If not STOFS, read the correct vdatum file from NODD S3 on-the-fly
-    if 'stofs' not in prop.ofs:
+    if 'stofs' not in prop.ofs and 'loofs2' not in prop.ofs:
         vdatums = read_vdatum_from_bucket(prop, logger)
         if isinstance(vdatums, int):
             return vdatums
     else:
-        logger.info('Doing datum conversion for STOFS!')
+        logger.info('Doing datum conversion for %s!', prop.ofs)
 
     # Set water levels to user-specified datum
-    if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs']:
+    if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
         # Deal with SSCOFS separately
         if prop.ofs == 'sscofs':
             # First get from model-0 to xgeoid -- the ofs-wide offset is
@@ -437,7 +437,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 logger.error('Wrong netcdf datum variable name!')
                 logger.error(f'Error: {e_x}')
                 return -9991
-    else:
+    elif prop.ofs != 'loofs2':
         try:
             datum_field = vdatums[f'{prop.datum.lower()}tolwd']
         except Exception as e_x:
@@ -484,7 +484,6 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         epoch=None
                                         )
                 elif prop.ofs == 'stofs_3d_pac':
-
                     _,_,z = vdatum.convert(
                                         nativedatum,
                                         prop.datum.lower(),
@@ -495,8 +494,22 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         epoch=None
                                         )
 
+                elif prop.ofs == 'loofs2':
+                    if prop.datum == 'IGLD85':
+                        # 74.2 m is the IGLD85 LWD offset for Lake Ontario
+                        # (LWD is 74.2 m below IGLD85 datum zero)
+                        z = dummyval - 74.2
+                    else:
+                        _,_,z = vdatum.convert(
+                                            nativedatum,
+                                            prop.datum.lower(),
+                                            model['lat'][0,node],
+                                            model['lon'][0,node],
+                                            dummyval, #use dummy value
+                                            online=True,
+                                            epoch=None
+                                            )
                 else:
-
                     _,_,z = vdatum.convert(
                                         nativedatum,
                                         prop.datum.lower(),
@@ -506,7 +519,6 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         online=True,
                                         epoch=None
                                         )
-
                 datum_offset = round(z-dummyval,2)
         except Exception as e_x:
             logger.error('Error getting datum offset from datum field for '

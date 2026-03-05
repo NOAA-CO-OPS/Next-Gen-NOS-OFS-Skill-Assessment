@@ -13,60 +13,11 @@ from typing import Any, Union
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 from scipy.stats import ConstantInputWarning
-from sklearn.metrics import root_mean_squared_error
+
+from ofs_skill.skill_assessment import nos_metrics
 
 warnings.simplefilter('ignore', ConstantInputWarning)
-
-
-def get_error_range(
-    name_var: str,
-    prop: Any,
-    logger: Logger,
-) -> tuple[float, float]:
-    """
-    Get error range thresholds for a given variable.
-
-    Reads error ranges from configuration file or uses default values if file
-    doesn't exist. Error ranges define acceptable model performance thresholds.
-
-    Parameters
-    ----------
-    name_var : str
-        Variable name ('wl', 'temp', 'salt', or 'cu')
-    prop : Any
-        Properties object containing path attribute
-    logger : Logger
-        Logger instance for logging messages
-
-    Returns
-    -------
-    Tuple[float, float]
-        Tuple of (X1, X2) where:
-        - X1: Primary error range threshold
-        - X2: Secondary error range threshold
-    """
-    filename = 'error_ranges.csv'
-    filepath = os.path.join(prop.path, 'conf', filename)
-    if os.path.isfile(filepath) is True:
-        # Dataframe of error range file!
-        df = pd.read_csv(filepath)
-        subs = df[df['name_var'] == name_var]
-
-    else:
-        # Make file using default values
-        errordata = [['salt', 3.5, 0.5], ['temp', 3, 0.5], ['wl', 0.15, 0.5],
-                     ['cu', 0.26, 0.5]]
-        df = pd.DataFrame(errordata, columns=['name_var', 'X1', 'X2'])
-        subs = df[df['name_var'] == name_var]
-        df.to_csv(filepath, index=False)
-
-    # Get error ranges for variable
-    X1 = pd.to_numeric(subs['X1']).values[0]
-    X2 = pd.to_numeric(subs['X2']).values[0]
-
-    return X1, X2
 
 
 def skill_scalar(
@@ -122,7 +73,8 @@ def skill_scalar(
     datathreshold = 5
 
     # Get target error range
-    X1, X2 = get_error_range(name_var, prop, logger)
+    X1, X2 = nos_metrics.get_error_threshold(
+        name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
 
     df_paired = df_paired.dropna(subset=['OBS', 'OFS'])
     # Update obs and ofs after handling NaN
@@ -132,11 +84,11 @@ def skill_scalar(
 
     if np.nansum(~np.isnan(obs)) >= datathreshold:
         # RMSE -- fixed 8/13/24
-        rmse = root_mean_squared_error(obs, ofs)
+        rmse = nos_metrics.rmse(ofs, obs)
         rmse = np.around(rmse, decimals=2)
 
         # Pearson's R
-        r_value = stats.pearsonr(obs, ofs)[0]
+        r_value = nos_metrics.pearson_r(ofs, obs)
         if math.isnan(r_value):
             logger.warning(
                 '%s -- The correlation coefficient could not be calculated (i.e. R=NaN)', name_var)
@@ -151,30 +103,23 @@ def skill_scalar(
         # Central frequency
         # Not using X2 right now, only X1
         npbias = np.array(df_bias)
-        cf = ((((-X1 < npbias) & (npbias < X1)).sum())/len(npbias))*100
+        cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
         # Pass or fail?
-        if cf >= 90:
-            cfpf = 'pass'
-        else:
-            cfpf = 'fail'
+        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
+        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
-        pof = (((2*X1 < npbias).sum())/len(npbias))*100
+        pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
-        if pof <= 1:
-            pofpf = 'pass'
-        else:
-            pofpf = 'fail'
-        nof = (((npbias < -2*X1).sum())/len(npbias))*100
+        nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        if nof <= 1:
-            nofpf = 'pass'
-        else:
-            nofpf = 'fail'
+        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
 
         # Standard deviation or error/bias
-        stdev = np.std(npbias)
+        stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
 
     else:
@@ -256,7 +201,8 @@ def skill_vector(
     datathreshold = 5
 
     # Get target error range
-    X1, X2 = get_error_range(name_var, prop, logger)
+    X1, X2 = nos_metrics.get_error_threshold(
+        name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
 
     df_paired = df_paired.dropna(subset=['OBS', 'OFS'])
     # Update obs and ofs after handling NaN
@@ -266,11 +212,11 @@ def skill_vector(
     dir_bias = df_paired['DIR_BIAS']
     if np.nansum(~np.isnan(obs)) >= datathreshold:
         # RMSE -- fixed 8/13/24
-        rmse = root_mean_squared_error(obs, ofs)
+        rmse = nos_metrics.rmse(ofs, obs)
         rmse = np.around(rmse, decimals=2)
 
         # Pearson's R
-        r_value = stats.pearsonr(obs, ofs)[0]
+        r_value = nos_metrics.pearson_r(ofs, obs)
         if math.isnan(r_value):
             logger.warning(
                 '%s -- The correlation coefficient could not be calculated (i.e. R=NaN)',
@@ -288,30 +234,23 @@ def skill_vector(
         # Central frequency
         # Not using X2 right now, only X1
         npbias = np.array(spd_bias)
-        cf = ((((-X1 <= npbias) & (npbias <= X1)).sum())/len(npbias))*100
+        cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
         # Pass or fail?
-        if cf >= 90:
-            cfpf = 'pass'
-        else:
-            cfpf = 'fail'
+        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
+        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
-        pof = (((2*X1 <= npbias).sum())/len(npbias))*100
+        pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
-        if pof <= 1:
-            pofpf = 'pass'
-        else:
-            pofpf = 'fail'
-        nof = (((npbias <= -2*X1).sum())/len(npbias))*100
+        nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        if nof <= 1:
-            nofpf = 'pass'
-        else:
-            nofpf = 'fail'
+        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
 
         # Standard deviation or error/bias
-        stdev = np.std(npbias)
+        stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
     else:
         nodatatext = '<' + str(datathreshold) + ' data points'

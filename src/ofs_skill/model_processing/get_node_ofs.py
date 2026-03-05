@@ -169,27 +169,25 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
                                  [:, int(ofs_ctlfile[1][i]),
                                   int(ofs_ctlfile[2][i])])
             model_obs = model_obs #+ ofs_ctlfile[3][i]
-            #else:
-            #    model_obs = None
     elif prop.model_source=='schism':
         if prop.ofsfiletype == 'fields':
             if model_var=='temp':
                model_var='temperature'
             model_time = np.array(model['time'])
-            #if int(ofs_ctlfile[1][i]) > -999:
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i]),
                                                   int(ofs_ctlfile[2][i])])
-            model_obs = model_obs #+ ofs_ctlfile[3][i]
-            #else:
-                #model_obs = None
+            model_obs = model_obs
         elif prop.ofsfiletype == 'stations':
-            if model_var=='temp':
-               model_var='temperature'
             model_time = np.array(model['time'])
-            #if int(ofs_ctlfile[1][i]) > -999:
-            model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
+            if 'stofs' in prop.ofs:
+                model_var = 'temperature'
+                model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
+            else:
+                model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i]),
+                                                      int(ofs_ctlfile[2][i])])
             invalid_mask = (model_obs <= -999) | (model_obs >= 999)
             model_obs[invalid_mask] = np.nan
+
     data_model = pd.DataFrame(
         {'DateTime': model_time,
          'OBS': model_obs}, columns=['DateTime', 'OBS']
@@ -320,18 +318,29 @@ def format_currents(prop, model, ofs_ctlfile, i):
             len(np.array(mfp.model_time)))])
             mfp.model_obs = mfp.model_obs #+ ofs_ctlfile[3][i]
         elif prop.ofsfiletype == 'stations':
-            u_i = np.array(
-                model['u'][:, int(ofs_ctlfile[1][i])]
-            )
-            v_i = np.array(
-                model['v'][:, int(ofs_ctlfile[1][i])]
-            )
+            if 'stofs' not in prop.ofs:
+                u_i = np.array(
+                    model['u'][:, int(ofs_ctlfile[2][i]),
+                               int(ofs_ctlfile[1][i])]
+                )
+                v_i = np.array(
+                    model['v'][:, int(ofs_ctlfile[2][i]),
+                               int(ofs_ctlfile[1][i])]
+                )
+            else:
+                u_i = np.array(
+                    model['u'][:, int(ofs_ctlfile[1][i])]
+                )
+                v_i = np.array(
+                    model['v'][:, int(ofs_ctlfile[1][i])]
+                )
+
             mfp.model_obs = np.array(u_i**2 + v_i**2) ** 0.5
             mfp.model_ang = np.array(
-            [math.atan2(u_i[t], v_i[t]) / math.pi * 180 % 360.0 for t in range(
-            len(np.array(mfp.model_time)))])
-
-
+                [math.atan2(u_i[t], v_i[t]) / math.pi * \
+                 180 % 360.0 for t in range(
+                    len(np.array(mfp.model_time)))])
+            mfp.model_obs = mfp.model_obs
             invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
             mfp.model_obs[invalid_mask] = np.nan
             mfp.model_ang[invalid_mask] = np.nan
@@ -419,14 +428,12 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             model_obs = model_obs + ofs_ctlfile[3][i]
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs + datum_offset
+                model_obs = model_obs - datum_offset
         elif prop.ofsfiletype == 'stations':
             model_time = np.array(model['time'])
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
-            #model_obs = model_obs + ofs_ctlfile[3][i]
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs + datum_offset
-
+                model_obs = model_obs - datum_offset
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -505,7 +512,7 @@ def parameter_validation(prop, dir_params, logger):
 
     # Whichcast validation
     if (prop.whichcast is not None) and (
-        prop.whichcast not in ['nowcast', 'forecast_a', 'forecast_b']
+        prop.whichcast not in ['nowcast', 'forecast_a', 'forecast_b', 'hindcast']
     ):
         error_message = f'Please check Whichcast - ' \
                         f"'{prop.whichcast}'. Abort!"
@@ -530,8 +537,7 @@ def parameter_validation(prop, dir_params, logger):
         logger.error(error_message)
         sys.exit()
     # Non-GLOFS datum validation
-    if (prop.datum.lower() in ('igld85', 'lwd') and prop.ofs not in
-        ['leofs','loofs','lmhofs','lsofs']):
+    if (prop.datum.lower() in ('igld85', 'lwd') and 'l' not in prop.ofs[0]):
         error_message = f'Do not use LWD or IGLD85 datums for {prop.ofs}!'
         logger.error(error_message)
         sys.exit()

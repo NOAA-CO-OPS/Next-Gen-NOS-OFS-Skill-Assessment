@@ -399,10 +399,11 @@ def oned_scalar_plot(
     for i in range(len(prop.whichcasts)):
         if prop.whichcasts[i].capitalize() == 'Nowcast':
             sdboxName = 'Nowcast - Obs.'
-        elif prop.whichcasts[i].capitalize() == 'Forecast_b':
+        elif (prop.whichcasts[i].capitalize() == 'Forecast_b' or
+              prop.whichcasts[i].capitalize() == 'Forecast_a'):
             sdboxName = 'Forecast - Obs.'
         else:
-            sdboxName = 'Model'+str(i+1)+' - Obs.'
+            sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
             go.Scattergl(
                 x=list(now_fores_paired[i].DateTime),
@@ -565,7 +566,7 @@ def oned_scalar_plot(
         filename = f'{prop.control_files_path}/{prop.ofs}_wl_datum_report.csv'
         try:
             df = pd.read_csv(filename)
-            has_fail = df.loc[df[df['Station ID'] == int(
+            has_fail = df.loc[df[df['Station ID'] == str(
                 station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
             if has_fail.bool():
                 fig.add_annotation(

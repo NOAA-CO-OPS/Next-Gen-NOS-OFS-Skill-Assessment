@@ -305,32 +305,6 @@ def create_1dplot_2nd_part(
                     'Fail to create the plot  \
     ---  %s ...Continuing to next plot', ex)
 
-    # # Add output skill tables to sqlite historical database, if option is True
-    # if prop.sqlite:
-    #     # Convert start/end dates to correct sqlite format:
-    #     # "YYYY-MM-DD HH:MM:SS.SSS"
-    #     if 'T' in prop.start_date_full:
-    #         start_date = prop.start_date_full.split('T')[0] + ' ' + \
-    #                 prop.start_date_full.split('T')[1].rstrip('Z')
-    #         end_date = prop.end_date_full.split('T')[0] + ' ' + \
-    #                 prop.end_date_full.split('T')[1].rstrip('Z')
-    #     else:
-    #         start_date = prop.start_date_full.split('-')[0][0:4] + '-' +\
-    #             prop.start_date_full.split('-')[0][4:6] + '-' +\
-    #                 prop.start_date_full.split('-')[0][6:] + ' ' +\
-    #                     prop.start_date_full.split('-')[1]
-    #         end_date = prop.end_date_full.split('-')[0][0:4] + '-' +\
-    #             prop.end_date_full.split('-')[0][4:6] + '-' +\
-    #                 prop.end_date_full.split('-')[0][6:] + ' ' +\
-    #                     prop.end_date_full.split('-')[1]
-    #     # Make db path
-    #     db_path = os.path.join(prop.path,'db',(prop.ofs + '.db'))
-    #     # Make skill table file path
-    #     insert_skill_stats.main([start_date, end_date],
-    #                             prop.data_skill_stats_path,
-    #                             db_path,
-    #                             prop.sqlite)
-
 
 def create_1dplot(prop, logger):
     '''
@@ -372,7 +346,7 @@ def create_1dplot(prop, logger):
     # Format the other incoming arguments
     prop.ofs = prop.ofs.lower()
     prop.datum = prop.datum.upper()
-    prop.ofsfiletype = prop1.ofsfiletype.lower()
+    prop.ofsfiletype = prop.ofsfiletype.lower()
 
     logger.info('Starting parameter validation...')
 
@@ -450,14 +424,22 @@ def create_1dplot(prop, logger):
 
     # Datum validations!
     if prop.datum not in prop.datum_list:
-        logger.error('Datum %s is not valid! Switching to MLLW...', prop.datum)
-        prop.datum = 'MLLW'
+        logger.error('Entered datum is not valid!')
+        if 'l' not in prop.ofs[0]:
+            prop.datum = 'MLLW'
+        else:
+            prop.datum = 'LWD'
+        logger.warning('Switching to %s', prop.datum)
     # Check vdatum file to see if the requested datum is available for this OFS
     vdatums = read_vdatum_from_bucket(prop,logger)
     try:
-        vdatums[f'{prop.datum.lower()}tomsl']
+        if 'l' not in prop.ofs[0]:
+            vdatums[f'{prop.datum.lower()}tomsl']
+        else:
+            if prop.datum.lower() != 'lwd':
+                vdatums[f'{prop.datum.lower()}tolwd']
         logger.info('Specified datum %s available for model conversion!',
-                    prop.datum)
+                prop.datum)
     except KeyError:
         if (prop.ofs.lower() not in ['loofs','lmhofs','leofs','lsofs'] and
             'stofs' not in prop.ofs.lower()):
@@ -474,23 +456,23 @@ def create_1dplot(prop, logger):
 
     # Date-gate for forecast horizon functionality
     if ((datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')-
-         datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')).days > 2
-        and (prop.horizonskill == True)):
+         datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')).days > 2
+        and prop.horizonskill):
         logger.error('Time range of %s days is too long for forecast '
                     'horizon skill! Resetting forecast horizon skill argument '
                     'to False.',str(
                         (datetime.strptime(prop.end_date_full,\
                                            '%Y-%m-%dT%H:%M:%SZ')-
-                         datetime.strptime(prop.end_date_full,\
+                         datetime.strptime(prop.start_date_full,\
                                            '%Y-%m-%dT%H:%M:%SZ')).days))
         prop.horizonskill = False
     # Cast-gate for nowcast horizon functionality
-    if ('forecast_b' not in prop.whichcasts) and (prop.horizonskill == True):
+    if ('forecast_b' not in prop.whichcasts) and prop.horizonskill:
         logger.error('Forecast horizon skill only works for forecast_b mode. '
                     'Resetting forecast horizon skill argument to False.')
         prop.horizonskill = False
     # file-gate for nowcast horizon functionality
-    if (prop.ofsfiletype == 'fields') and (prop.horizonskill == True):
+    if (prop.ofsfiletype == 'fields') and prop.horizonskill:
         logger.error('Forecast horizon skill only works for station files. '
                     'Resetting forecast horizon skill argument to False.')
         prop.horizonskill = False
@@ -505,6 +487,15 @@ def create_1dplot(prop, logger):
     else:
         prop.static_plots = False
 
+    # Hindcast validation -- LOOFS2 only! Also, LOOFS2 cannot use nowcast or
+    # forecast yet.
+    if prop.ofs == 'loofs2':
+        prop.whichcasts = ['hindcast']
+    if 'hindcast' in prop.whichcasts and prop.ofs != 'loofs2':
+        logger.warning('Hindcast can only be used with loofs2! Switching to '
+                       'nowcast + forecast_b...')
+        prop.whichcasts = ['nowcast', 'forecast_b']
+
     # Handle variable input argument
     correct_var_list = ['water_level','water_temperature',
                         'salinity','currents']
@@ -516,7 +507,7 @@ def create_1dplot(prop, logger):
         sys.exit()
     # If using 'list' for station providers, add all providers
     if 'list' in prop.stationowner:
-        prop.stationowner = 'co-ops,ndbc,usgs,list'
+        prop.stationowner = 'co-ops,ndbc,usgs,chs,list'
 
     logger.info('Parameter validation complete!')
     logger.info('Making directory tree...')
@@ -578,8 +569,8 @@ def create_1dplot(prop, logger):
         check_model_files(prop,logger)
         # if fails call nodd_otf
     except Exception as e_x:
-        logger.error('Error caught in check_model_files: %s', e_x)
-        logger.info('Warning: could not verify if all necessary model files '
+        logger.error('Error caught in check_model_files! %s', e_x)
+        logger.warning('Could not verify if all necessary model files '
                     'are present! Check final time series for accuracy.')
 
     for variable in prop.var_list:
@@ -672,9 +663,9 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        default='co-ops,ndbc,usgs',
+        default='co-ops,ndbc,usgs,chs',
         help='Input station provider to use in skill assessment: '
-        "'CO-OPS', 'NDBC', 'USGS',", )
+        "'CO-OPS', 'NDBC', 'USGS', 'CHS', 'list'", )
     parser.add_argument(
         '-hs',
         '--Horizon_Skill',

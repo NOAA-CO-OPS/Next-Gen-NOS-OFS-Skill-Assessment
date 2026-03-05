@@ -185,9 +185,9 @@ def get_forecast_hours(ofs):
     elif ofs in ('gomofs', 'wcofs', 'sscofs'):
         fcstlength = 72
     elif ofs in ('stofs_3d_atl'):
-        fcstcycles = 96
+        fcstlength = 96
     elif ofs in ('stofs_3d_pac'):
-        fcstcycles = 48
+        fcstlength = 48
     else:
         fcstlength = 120
 

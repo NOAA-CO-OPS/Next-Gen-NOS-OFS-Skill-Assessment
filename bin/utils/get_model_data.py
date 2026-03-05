@@ -102,7 +102,7 @@ def get_ofs_cycle(prop, logger):
 
     # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
     if prop.ofs in (
-        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
+        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
         'lsofs', 'tbofs', 'necofs',
     ):
         fcstcycles = ['00', '06', '12', '18']
@@ -129,7 +129,7 @@ def get_ofs_cycle(prop, logger):
     # Get hour strings & time steps (dt)
     if prop.ofs in (
         'cbofs', 'ciofs', 'creofs', 'dbofs', 'sfbofs', 'tbofs',
-        'leofs', 'lmhofs', 'loofs', 'lsofs', 'sscofs',
+        'leofs', 'lmhofs', 'loofs', 'loofs2', 'lsofs', 'sscofs',
     ):
         d_t = 1
     elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
@@ -147,7 +147,7 @@ def get_ofs_cycle(prop, logger):
             sys.exit(-1)
         hrstrings = np.linspace(d_t, fcstlength, int(fcstlength/d_t)).\
             astype(int).astype(str)
-    elif prop.whichcast in ['nowcast', 'forecast_b']:
+    elif prop.whichcast in ['nowcast', 'forecast_b', 'hindcast']:
         hrstrings = np.linspace(
             d_t, int(24/len(fcstcycles)),
             int(24/len(fcstcycles)/d_t),
@@ -268,7 +268,6 @@ def make_file_list(prop, dates, dir_list, logger):
     depending on file type (fields vs stations), OFS, and whichcast (nowcast,
     forecast_a, forecast_b)
     '''
-
     # First get cycle & forecast horizon info for the OFS
     fcstcycles, hrstrings = get_ofs_cycle(prop, logger)
 
@@ -318,8 +317,8 @@ def make_file_list(prop, dates, dir_list, logger):
                             replace('\\', '/')
                         file_list.append(file_name)
                         '''
-                        for var_name in {"out2d","horizontalVelX", "horizontalVelY" ,
-                                         "salinity","temperature","zCoordinates"}:
+                        for var_name in {'out2d','horizontalVelX', 'horizontalVelY' ,
+                                         'salinity','temperature','zCoordinates'}:
                             file_name = f'{prop.ofs}.t{cycle}z.fields.' + \
                                 f'{var_name}_f{hrstring0}_{hrstring}.nc'
                             file_name = os.path.join(dir_list[i], file_name). \
@@ -380,7 +379,7 @@ def make_file_list(prop, dates, dir_list, logger):
                             replace('\\', '/')
                         file_list.append(file_name)
                         '''
-                        for var_name in {"out2d",
+                        for var_name in {'out2d',
                             'horizontalVelX', 'horizontalVelY',
                             'salinity', 'temperature', 'zCoordinates',
                         }:
@@ -408,8 +407,9 @@ def make_file_list(prop, dates, dir_list, logger):
         logger.error('This option is not ready yet!')
         sys.exit(-1)
     else:
-        logger.error('Not sure how you got this far, but whichcast is wrong.')
-        sys.exit(-1)
+        logger.error('Whichcast %s does not work in get_model_data!',
+                     prop.whichcast)
+        raise Exception
 
     logger.info('Created list of files for downloading. Here they are:')
     for j in file_list:

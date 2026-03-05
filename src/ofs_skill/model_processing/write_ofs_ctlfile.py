@@ -297,12 +297,13 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                  name_var)
                     continue
 
-                # For stations, use nearest_node length; for fields, use nearest_layer length
-                if prop.ofsfiletype == 'stations':
-                    length = len(list_of_nearest_node)
-                else:
-                    length = len(list_of_nearest_layer)
-                if prop.model_source == 'fvcom':
+                if np.isnan(list_of_nearest_layer).all():
+                    logger.warning('No user input locations or model nodes '
+                                 'found for %s! Moving to next variable',
+                                 name_var)
+                    continue
+                length = len(list_of_nearest_layer)
+                if prop.model_source=='fvcom':
                     for i in range(0, length):
                         if np.isnan(list_of_nearest_node[i]) == False:
                             if prop.ofsfiletype == 'fields':
@@ -323,127 +324,126 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                             else:
-                                # For stations type, depth layer is not used (set to 0)
-                                layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
-                                depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
                                 model_ctl_file.append(
                                     f'{list_of_nearest_node[i]} '
-                                    f'{layer} '
+                                    f'{list_of_nearest_layer[i]} '
                                     f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
                                     f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - 360:.3f}  "
-                                    f'{station_id[i]}  {depth:.1f}\n'
+                                    f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                 )
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
 
-                elif prop.model_source == 'roms':
+                elif prop.model_source=='roms':
                     for i in range(length):
                         if np.isnan(list_of_nearest_node[i]) == False:
-                            # For stations type, depth layer is not used (set to 0)
-                            layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
-                            depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
                             model_ctl_file.append(
                             f'{list_of_nearest_node[i]} '
-                            f'{layer} '
+                            f'{list_of_nearest_layer[i]} '
                             f"{float(model['lat_rho'][np.unravel_index(list_of_nearest_node[i],np.shape(model['lon_rho']))]):.3f}  "
                             f"{float(model['lon_rho'][np.unravel_index(list_of_nearest_node[i],np.shape(model['lon_rho']))]):.3f}  "
-                            f'{station_id[i]}  {depth:.1f}\n'
+                            f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                             )
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
 
-                elif prop.model_source == 'schism':
+                elif prop.model_source=='schism':
                     for i in range(length):
-                        if np.isnan(list_of_nearest_node[i]) == False:
+                        if (np.isnan(list_of_nearest_node[i]) == False and
+                            np.isnan(list_of_nearest_layer[i]) == False):
                             if prop.ofsfiletype == 'fields':
-
                                 if name_var == 'wl':
-                                    x_var = model['SCHISM_hgrid_node_x']
-                                    y_var = model['SCHISM_hgrid_node_y']
+                                   x_var = model['SCHISM_hgrid_node_x']
+                                   y_var = model['SCHISM_hgrid_node_y']
 
-                                    if 'time' in x_var.dims:
-                                        for t in range(x_var.sizes['time']):
-                                            test_slice = x_var.isel(time=t)
-                                            if not test_slice.isnull().all():
-                                                break
-                                        x_val = x_var.isel(time=t, nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                        y_val = y_var.isel(time=t, nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                    else:
-                                        x_val = x_var.isel(nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                        y_val = y_var.isel(nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                   if 'time' in x_var.dims:
+                                       for t in range(x_var.sizes['time']):
+                                           test_slice = x_var.isel(time=t)
+                                           if not test_slice.isnull().all():
+                                              break
+                                       x_val = x_var.isel(time=t,
+                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                       y_val = y_var.isel(time=t,
+                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                   else:
+                                       x_val = x_var.isel(
+                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                       y_val = y_var.isel(
+                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
 
-                                    # For stations type, depth layer is not used (set to 0)
-                                    layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
-                                    model_ctl_file.append(
-                                        f'{list_of_nearest_node[i]} '
-                                        f'{layer} '
-                                        f'{y_val:.3f}  '
-                                        f'{x_val:.3f}  '
-                                        f'{station_id[i]}  0.0\n'
-                                    )
+                                   model_ctl_file.append(
+                                       f'{list_of_nearest_node[i]} '
+                                       f'{list_of_nearest_layer[i]} '
+                                       f'{y_val:.3f}  '
+                                       f'{x_val:.3f}  '
+                                       f'{station_id[i]}  0.0\n'
+                                   )
 
                                 else:
-                                    if not np.isnan(list_of_nearest_node[i]):
-                                        x_var = model['SCHISM_hgrid_node_x']
-                                        y_var = model['SCHISM_hgrid_node_y']
+                                   if not np.isnan(list_of_nearest_node[i]):
+                                      x_var = model['SCHISM_hgrid_node_x']
+                                      y_var = model['SCHISM_hgrid_node_y']
 
-                                        if 'time' in x_var.dims:
-                                            for t in range(x_var.sizes['time']):
-                                                test_slice = x_var.isel(time=t)
-                                                if not test_slice.isnull().all():
-                                                    break
-                                            x_val = x_var.isel(time=t, nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                            y_val = y_var.isel(time=t, nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                        else:
-                                            x_val = x_var.isel(nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                            y_val = y_var.isel(nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                        # For stations type, depth layer is not used (set to 0)
-                                        layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
-                                        depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
-                                        model_ctl_file.append(
-                                            f'{list_of_nearest_node[i]} '
-                                            f'{layer} '
-                                            f'{y_val:.3f}  '
-                                            f'{x_val:.3f}  '
-                                            f'{station_id[i]}  {depth:.1f}\n'
-                                        )
-
-                            else:
-                                # For stations type, depth layer is not used (set to 0)
-                                layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
-                                depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
+                                      if 'time' in x_var.dims:
+                                          for t in range(x_var.sizes['time']):
+                                              test_slice = x_var.isel(time=t)
+                                              if not test_slice.isnull().all():
+                                                 break
+                                          x_val = x_var.isel(time=t,
+                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                          y_val = y_var.isel(time=t,
+                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                      else:
+                                          x_val = x_var.isel(
+                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                          y_val = y_var.isel(
+                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                      model_ctl_file.append(
+                                          f'{list_of_nearest_node[i]} '
+                                          f'{list_of_nearest_layer[i]} '
+                                          f'{y_val:.3f}  '
+                                          f'{x_val:.3f}  '
+                                          f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                      )
+                            elif prop.ofsfiletype == 'stations':
+                                if 'stofs' not in prop.ofs:
+                                    model_ctl_file.append(
+                                        f'{list_of_nearest_node[i]} '
+                                        f'{list_of_nearest_layer[i]} '
+                                        f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f"{model['lon'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                    )
                                 # A mistake in post-processing of stofs-3d-atl
-                                if prop.ofs == 'stofs_3d_atl' and model['x'][0,list_of_nearest_node[i]].data.compute()>0 :
+                                elif prop.ofs == 'stofs_3d_atl' and \
+                                    model['x'][0,list_of_nearest_node[i]].data.compute()>0 :
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
-                                        f'{layer} '
+                                        f'{list_of_nearest_layer[i]} '
                                         f"{model['x'][0,list_of_nearest_node[i]].data.compute():.3f}  "
                                         f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f'{station_id[i]}  {depth:.1f}\n'
+                                        f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                     )
 
-                                elif prop.ofs == 'stofs_3d_atl' and model['x'][0,list_of_nearest_node[i]].data.compute()<0 :
-
+                                elif prop.ofs == 'stofs_3d_atl' and \
+                                    model['x'][0,list_of_nearest_node[i]].data.compute()<0 :
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
-                                        f'{layer} '
+                                        f'{list_of_nearest_layer[i]} '
                                         f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
                                         f"{model['x'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f'{station_id[i]}  {depth:.1f}\n'
+                                        f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                     )
-
                                 elif prop.ofs == 'stofs_3d_pac':
-
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
-                                        f'{layer} '
+                                        f'{list_of_nearest_layer[i]} '
                                         f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
                                         f"{model['x'][0,list_of_nearest_node[i]].data.compute() - 360:.3f}  "
-                                        f'{station_id[i]}  {depth:.1f}\n'
+                                        f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                     )
-
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])

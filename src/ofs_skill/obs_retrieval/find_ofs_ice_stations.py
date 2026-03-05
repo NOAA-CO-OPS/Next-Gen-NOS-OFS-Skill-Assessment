@@ -14,10 +14,10 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from numpy import isnan
-from scipy import stats
 
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_stations
+from ofs_skill.skill_assessment import nos_metrics
 
 
 def find_ofs_ice_stations(
@@ -81,7 +81,7 @@ def find_ofs_ice_stations(
                 'This might take a couple of minutes',
             )
             ofs_inventory_stations(
-                ofs, start_date, end_date, path, ['co-ops', 'ndbc', 'usgs'],
+                ofs, start_date, end_date, path, ['co-ops', 'ndbc', 'usgs', 'chs'],
                 logger,
             )
             inventory = pd.read_csv(
@@ -103,12 +103,10 @@ def find_ofs_ice_stations(
     stationlonlat = np.array(inventory[['X', 'Y']])
     modellonlat = np.array([lon_m, lat_m])
     modellonlat = modellonlat.T
-    modellonlat[:, 0] = modellonlat[:, 0] - 360
     lon_o_flat = lon_o.flatten()
     lat_o_flat = lat_o.flatten()
     obslonlat = np.array([lon_o_flat, lat_o_flat])
     obslonlat = obslonlat.T
-    obslonlat[:, 0] = obslonlat[:, 0] - 360
     ###
     # Start looping through station coords and finding the minimum distance
     # between station (target) --> model and station (target) --> observed.
@@ -134,7 +132,7 @@ def find_ofs_ice_stations(
             mod_xy.append(modellonlat[np.argmin(moddistances), :])
             obs_mindist = np.argmin(obsdistances)
             obs_targetlatlon = obslonlat[obs_mindist, :]
-            lontemp = lon_o[0, :]-360
+            lontemp = lon_o[0, :]
             lattemp = lat_o[:, 0]
             lon_index_value = (
                 list(np.where(lontemp == obs_targetlatlon[0])[0]))
@@ -163,10 +161,10 @@ def find_ofs_ice_stations(
 
                     # Some arbitrarily big number
                     obsdistances[obs_mindist] = 100000
-                    if np.min(obsdistances) <= 0.01:
+                    if np.min(obsdistances) <= 0.05:
                         obs_mindist = np.argmin(obsdistances)
                         obs_targetlatlon = obslonlat[obs_mindist, :]
-                        lontemp = lon_o[0, :]-360
+                        lontemp = lon_o[0, :]
                         lattemp = lat_o[:, 0]
                         lon_index_value = (
                             list(np.where(lontemp == obs_targetlatlon[0])[0]))
@@ -288,29 +286,21 @@ def find_ofs_ice_stations(
             if len(obs_series_nan) > 5:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
-                    r_value = stats.pearsonr(obs_series_nan, mod_series_nan)[0]
+                    r_value = nos_metrics.pearson_r(mod_series_nan, obs_series_nan)
                 r_stations.append(np.round(r_value, decimals=2))
             else:
                 r_value = np.nan
                 r_stations.append(r_value)
             # RMSE
             rmse_value = np.round(
-                (
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                mod_series-obs_series
-                            )**2,
-                        ),
-                    )
-                ), 2,
+                nos_metrics.rmse(mod_series, obs_series), 2,
             )
             rmse_stations.append(rmse_value)
             # Mean bias
-            bias_value = np.round(np.nanmean(mod_series-obs_series), 2)
+            bias_value = np.round(nos_metrics.mean_bias(mod_series - obs_series), 2)
             bias_stations.append(bias_value)
             # bias st dev
-            bias_stdev = np.round(np.nanstd(mod_series-obs_series), 2)
+            bias_stdev = np.round(nos_metrics.standard_deviation(mod_series - obs_series), 2)
             bias_stdev_stations.append(bias_stdev)
             # Model & obs means
             mod_mean = np.round(np.nanmean(mod_series), 2)

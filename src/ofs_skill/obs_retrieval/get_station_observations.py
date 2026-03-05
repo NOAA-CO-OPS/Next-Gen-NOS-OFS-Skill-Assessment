@@ -107,6 +107,7 @@ from ofs_skill.obs_retrieval import (
     utils,
     vector,
 )
+from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
 from ofs_skill.obs_retrieval.retrieve_t_and_c_station import retrieve_t_and_c_station
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
@@ -296,6 +297,8 @@ def get_station_observations(prop,logger):
         # Fix datum for CO-OPS API calls
             if datum.lower() == 'igld85':
                 datum = 'IGLD'
+            if datum.lower() == 'navd88':
+                datum = 'NAVD'
             name_var = 'wl'
             logger.info('Making water level station '
                         'ctl file.')
@@ -692,7 +695,73 @@ def get_station_observations(prop,logger):
                         )
                         logger.error('Caught an exception: %s',
                                      e_x)
+                elif read_station_ctl_file[0][i][3] == 'CHS':
+                    try:
+                        data_station = retrieve_chs_station(
+                            start_date,
+                            end_date,
+                            str(station_id),
+                            variable,
+                            logger
+                            )
 
+                        if data_station is None:
+                            continue
+                        timeseries = data_station
+                        timeseries = \
+                            timeseries[timeseries['OBS'].notna()]
+                        if (
+                            variable == 'water_level'
+                        ):  # apply datum shift (if any)
+                            # This is only important for water level, this shift
+                            # will be applied to the water level time series if
+                            # datum_shift != zero
+                            datum_shift = \
+                                read_station_ctl_file[1][i][2]
+
+                            if is_number(datum_shift):
+                                timeseries['OBS'] = timeseries['OBS'] + float(
+                                    datum_shift
+                                )
+                                logger.info(
+                                    'A datum shift of '
+                                    '%s meters was '
+                                    'applied to the water '
+                                    'level data for station '
+                                    '%s (%s) as '
+                                    'specified in '
+                                    '%s_wl_station.',
+                                    datum_shift,
+                                    str(station_id),
+                                    read_station_ctl_file\
+                                        [0][i][3],
+                                    ofs
+                                )
+                            else:
+                                logger.info(
+                                    'No datum shift was read '
+                                    'for station %s (%s) '
+                                    'from %s_wl_station). '
+                                    'No datum shift applied.',
+                                    str(station_id),
+                                    read_station_ctl_file\
+                                        [0][i][3],
+                                    ofs
+                                )
+
+                            formatted_series = \
+                                scalar(
+                                timeseries,
+                                start_date_full,
+                                end_date_full
+                            )
+                    except Exception as e_x:
+                        logger.error('Fail when getting CHS %s '
+                                     'data for station %s',
+                                     variable, station_id
+                        )
+                        logger.error('Caught an exception: %s',
+                                     e_x)
                 else:
                     logger.error(
                         'The second item on the first line of '

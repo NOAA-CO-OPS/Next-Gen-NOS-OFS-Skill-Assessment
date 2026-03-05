@@ -95,6 +95,7 @@ import argparse
 import socket
 
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
+from ofs_skill.model_processing import model_properties
 
 # Import directly from module to avoid circular import
 
@@ -139,7 +140,7 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        help="'CO-OPS', 'NDBC', 'USGS',", )
+        help="'CO-OPS', 'NDBC', 'USGS', 'CHS'", )
     parser.add_argument(
         '-vs',
         '--Var_Selection',
@@ -150,7 +151,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    prop1 = ModelProperties()
+    prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
     prop1.start_date_full = args.StartDate_full
@@ -159,7 +160,7 @@ if __name__ == '__main__':
 
     # Make all station owners default, unless user specifies station owners
     if args.Station_Owner is None:
-        prop1.stationowner = 'co-ops,ndbc,usgs'
+        prop1.stationowner = 'co-ops,ndbc,usgs,chs'
     elif args.FileType is not None:
         prop1.stationowner = args.Station_Owner.lower()
 
