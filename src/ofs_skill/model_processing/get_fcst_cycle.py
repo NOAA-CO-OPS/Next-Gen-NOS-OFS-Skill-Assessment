@@ -20,7 +20,6 @@ def get_fcst_hours(ofs):
     Parameters
     ----------
     ofs: string, model OFS
-    logger: logging interface
 
     Returns
     -------
@@ -31,8 +30,9 @@ def get_fcst_hours(ofs):
 
     # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
     if ofs in (
-        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
-        'lsofs', 'tbofs', 'necofs'
+        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs',
+        'lmhofs', 'loofs', 'loofs2', 'lsofs', 'tbofs',
+        'necofs'
     ):
         fcstcycles = np.array([0, 6, 12, 18])
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
@@ -51,7 +51,7 @@ def get_fcst_hours(ofs):
         fcstlength = 72
     elif ofs in ('stofs_3d_atl'):
         fcstlength = 96
-    else: #WCOFS
+    else:  # Default / catch-all
         fcstlength = 120
 
     return fcstlength, fcstcycles
@@ -116,21 +116,21 @@ def get_fcst_dates(
     --------
     >>> import logging
     >>> logger = logging.getLogger(__name__)
-    >>> start, end = get_fcst_cycle('cbofs', '2025-07-15T05:00:00Z', '06hr', logger)
+    >>> start, end = get_fcst_dates('cbofs', '2025-07-15T05:00:00Z', '06hr', logger)
     >>> print(f"Start: {start}")
     Start: 2025-07-15T06:00:00Z
     >>> print(f"End: {end}")
     End: 2025-07-17T06:00:00Z
 
     >>> # Invalid cycle hour gets adjusted
-    >>> start, end = get_fcst_cycle('cbofs', '2025-07-15T05:00:00Z', '05hr', logger)
+    >>> start, end = get_fcst_dates('cbofs', '2025-07-15T05:00:00Z', '05hr', logger)
     INFO: Adjusted input forecast cycle hour from 05 to 06 for cbofs
     >>> print(f"Start: {start}")
     Start: 2025-07-15T06:00:00Z
 
     See Also
     --------
-    get_forecast_hours : Get list of forecast hours for a run
+    get_fcst_hours : Get list of forecast hours for a run
     """
     logger.info('Starting cycle and end date assignment for forecast_a...')
 
@@ -138,10 +138,7 @@ def get_fcst_dates(
     fcstlength, fcstcycles = get_fcst_hours(ofs)
 
     # Convert forecast cycle ints to str
-    if isinstance(fcstcycles, int):
-        fcstcycless = f'{fcstcycles:02}'
-    elif isinstance(fcstcycles, np.ndarray):
-        fcstcycless = [f'{item:02}' for item in fcstcycles]
+    fcstcycless = [f'{item:02}' for item in fcstcycles]
 
     # Verify forecast hour input and adjust if necessary
     requested_hour = forecast_hr[:-2]  # Remove 'hr' suffix
@@ -153,7 +150,7 @@ def get_fcst_dates(
         if fcstcycles[0] == 0:
             fcstcycles = np.append(fcstcycles, 24)
             fcstcycless.append('00')
-        elif fcstcycles[0] == 3 and len(fcstcycles)>1:
+        elif fcstcycles[0] == 3 and len(fcstcycles) > 1:
             fcstcycles = np.concatenate(([-3], fcstcycles))
             fcstcycless.insert(0, '21')
         # Find nearest valid cycle hour

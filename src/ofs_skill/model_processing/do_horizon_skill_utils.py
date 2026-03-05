@@ -5,7 +5,6 @@ do_horizon_skill and/or get_node_ofs, the functions are
 described below and include:
     -pandas_merge
     -pandas_processing
-    -get_forecast_hours
     -get_horizon_filenames
 
 Created on Wed Jan 14 08:24:39 2026
