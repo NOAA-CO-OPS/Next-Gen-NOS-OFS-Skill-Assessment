@@ -14,6 +14,7 @@ Provides functionality for:
 
 # Core classes (most commonly used)
 # Model file validation
+from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.check_model_files import check_model_files
 
 # Datum conversions
@@ -26,8 +27,7 @@ from ofs_skill.model_processing.get_datum_offset import (
 )
 
 # Forecast cycle management
-from ofs_skill.model_processing.get_fcst_cycle import get_fcst_cycle
-from ofs_skill.model_processing import do_horizon_skill
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates, get_fcst_hours
 
 # Model node extraction
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
@@ -84,7 +84,8 @@ __all__ = [
     'write_ofs_ctlfile',
     'user_input_extract',
     # Forecast cycle
-    'get_fcst_cycle',
+    'get_fcst_dates',
+    'get_fcst_hours',
     'do_horizon_skill',
     # Model node extraction
     'get_node_ofs',

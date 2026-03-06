@@ -18,7 +18,7 @@ from urllib.error import HTTPError
 
 import numpy as np
 
-from ofs_skill.model_processing import model_properties
+from ofs_skill.model_processing import get_fcst_cycle, model_properties
 from ofs_skill.obs_retrieval import utils
 
 TIMEOUT_SEC = 60  # default API timeout in seconds
@@ -101,30 +101,11 @@ def get_ofs_cycle(prop, logger):
     hrstrings = None
 
     # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
-    if prop.ofs in (
-        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
-        'lsofs', 'tbofs', 'necofs',
-    ):
-        fcstcycles = ['00', '06', '12', '18']
-    elif prop.ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = ['03', '09', '15', '21']
-    elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = ['12']
-    else:
-        fcstcycles = ['03']
+    # Define forecast cycle hours for each OFS group
+    fcstlength, fcstcycles = get_fcst_cycle.get_fcst_hours(prop.ofs)
 
-    # Now need to know forecast length in hours
-    if prop.ofs in (
-        'cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-        'tbofs', 'stofs_3d_pac',
-    ):
-        fcstlength = 48
-    elif prop.ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
-        fcstlength = 72
-    elif prop.ofs in ('stofs_3d_atl'):
-        fcstlength = 96
-    else:
-        fcstlength = 120
+    # Forecast cycles from int to str
+    fcstcycles = [f'{item:02}' for item in fcstcycles]
 
     # Get hour strings & time steps (dt)
     if prop.ofs in (

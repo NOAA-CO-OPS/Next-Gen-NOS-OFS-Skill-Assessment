@@ -76,7 +76,7 @@ import pandas as pd
 
 from ofs_skill.model_processing import (
     check_model_files,
-    get_fcst_cycle,
+    get_fcst_dates,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
@@ -381,7 +381,8 @@ def create_1dplot(prop, logger):
                 sys.exit(-1)
             if prop.forecast_hr[-2:] == 'hr':
                 prop.start_date_full, prop.end_date_full =\
-                get_fcst_cycle(prop.ofs,prop.start_date_full,prop.forecast_hr,logger)
+                get_fcst_dates(prop.ofs, prop.start_date_full, prop.forecast_hr, logger)
+                prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'hr'
                 logger.info(f'Forecast_a: end date reassigned to '
                                  f'{prop.end_date_full}')
             else:
