@@ -23,7 +23,8 @@ Last Modified: 10/2025 - Split ice plotting into separate file
 from __future__ import annotations
 
 import configparser
-from datetime import datetime
+from datetime import datetime, timezone, UTC
+import pytz
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -92,6 +93,7 @@ def oned_scalar_plot(
 
     # Get target error range
     X1, X2 = get_error_range(name_var, prop, logger)
+
 
     """
     Adjust marker sizes dynamically based on the number of data points.
@@ -199,12 +201,13 @@ def oned_scalar_plot(
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
             seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
-                'z cycle'
+                'Z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
         # Parse filenames from key
+        namekey = None
         try:
             namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
@@ -418,9 +421,10 @@ def oned_scalar_plot(
     for i in range(len(prop.whichcasts)):
         if prop.whichcasts[i].capitalize() == 'Nowcast':
             sdboxName = 'Nowcast - Obs.'
-        elif (prop.whichcasts[i].capitalize() == 'Forecast_b' or
-              prop.whichcasts[i].capitalize() == 'Forecast_a'):
+        elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
+        elif prop.whichcasts[i].capitalize() == 'Forecast_a':
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-2] + 'Z - Obs.'
         else:
             sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
@@ -497,6 +501,18 @@ def oned_scalar_plot(
             annotation_font_size=12,
             row=2, col=1,
         )
+        # Check if end datetime is > current date
+        #max_datetime = now_fores_paired[0].DateTime.max()
+        max_datetime = pytz.timezone("UTC").localize(now_fores_paired[0].DateTime.max())
+        if max_datetime > datetime.now(UTC):
+            fig.add_vline(
+                x=datetime.now(UTC).timestamp() * 1000,
+                line_width=1,
+                #line_dash="dash",
+                line_color="gray",
+                annotation_text="Current time",
+                annotation_position="top right"
+            )
 
         fig.add_trace(
             go.Box(

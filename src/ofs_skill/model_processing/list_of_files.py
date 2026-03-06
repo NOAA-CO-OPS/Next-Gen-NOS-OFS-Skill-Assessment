@@ -28,6 +28,10 @@ from logging import Logger
 from os import listdir
 from pathlib import Path
 from typing import Any, Optional
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from ofs_skill.obs_retrieval import utils
 
@@ -96,7 +100,10 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
 
         # Construct full S3 URL
         s3_url = f'{url_root}{ofs_relative_path}'
-
+        # Check if it exists on the S3 bucket
+        is_exist = check_s3_for_file(s3_url, logger)
+        if not is_exist:
+            raise Exception
         return s3_url
 
     except Exception as e:
@@ -164,6 +171,22 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> lis
 
     return dates
 
+def check_s3_for_file(file, logger):
+
+    s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    try:
+        s3.head_object(Bucket=file.split('//')[1].split('.')[0],
+                       Key=file.split('//')[1].split('/',1)[1])
+        return True
+    except ClientError as e:
+        # If a ClientError is raised, check the error code
+        # '404' indicates the object does not exist
+        if e.response['Error']['Code'] == '404':
+            logger.warning('S3 file not found! Removing it from file list...')
+            return False
+        else:
+            # Raise other errors, if you want?
+            return False
 
 def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[str]:
     """
@@ -514,13 +537,13 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
                 # Backup also not found, fall back to S3
                 logger.info('Backup dir not found either. S3 fallback enabled - will use expected directory path for URL construction')
             else:
-                # No S3 fallback and backup not found - error out
-                logger.error(
+                # No S3 fallback and backup not found
+                logger.warning(
                     'Model file path ' + model_dir + ' not found, and backup '
-                    + backup_model_dir + ' also not found. Abort!')
-                raise SystemExit(-1)
+                    + backup_model_dir + ' also not found.')
+                model_dir = None
 
-        if model_dir not in dir_list:
+        if model_dir and model_dir not in dir_list:
             dir_list.append(model_dir)
             if os.path.exists(model_dir):
                 logger.info('Found model output dir: %s', model_dir)
@@ -1063,12 +1086,13 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     missing_count += 1
                 else:
                     logger.error(f'Could not construct S3 URL for: {file_path}')
-                    final_list.append(file_path)  # Keep original, will fail downstream
+                    #final_list.append(file_path)  # Keep original, will fail downstream
 
         if missing_count > 0:
             logger.info(f'Using S3 URLs for {missing_count} missing local files')
         else:
-            logger.info('All model files found locally')
+            logger.info('All model files found locally, or are unavailable '
+                        'on the S3 bucket!')
 
         return final_list
     else:

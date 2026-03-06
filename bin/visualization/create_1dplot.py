@@ -393,7 +393,7 @@ def create_1dplot(prop, logger):
     # Start Date and End Date validation
     # Enforce end date for whichcasts other than forecast_a
     if prop.end_date_full is None:
-        print('If not using forecast_a, you must set an end date! Abort.')
+        logger.error('If not using forecast_a, you must set an end date! Abort.')
         sys.exit(-1)
     try:
         prop.start_date_full_before = prop.start_date_full
@@ -406,7 +406,6 @@ def create_1dplot(prop, logger):
                          f'{prop.end_date_full}. Abort!')
         logger.error(error_message)
         sys.exit(-1)
-
     if datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.strptime(
         prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
@@ -414,6 +413,13 @@ def create_1dplot(prop, logger):
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
         sys.exit(-1)
+    if datetime.strptime(
+            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.now():
+        logger.error('Start date is in the future! Unless your DeLorean can '
+                     'hit 88 mph with 1.21 gigwatts to power the flux capacitor, '
+                     'please set a start date that is before the current date.'
+                     )
+        raise SystemExit
 
     if prop.path is None:
         prop.path = dir_params['home']

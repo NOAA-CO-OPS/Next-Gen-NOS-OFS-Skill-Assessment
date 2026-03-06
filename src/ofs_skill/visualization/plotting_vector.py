@@ -300,6 +300,8 @@ def oned_vector_plot1(
             sdboxName = 'Nowcast - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
+        elif prop.whichcasts[i].capitalize() == 'Forecast_a':
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-2] + 'Z - Obs.'
         else:
             sdboxName = 'Model'+str(i+1)+' - Obs.'
         fig.add_trace(
