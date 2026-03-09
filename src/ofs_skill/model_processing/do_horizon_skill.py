@@ -14,14 +14,16 @@ import copy
 import os
 import sys
 from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
 
+from ofs_skill.model_processing import do_horizon_skill_utils, get_fcst_cycle
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
-from ofs_skill.model_processing import do_horizon_skill_utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-from ofs_skill.skill_assessment.get_skill import ofs_ctlfile_extract, name_convent
+from ofs_skill.skill_assessment.get_skill import name_convent, ofs_ctlfile_extract
 from ofs_skill.visualization import plot_forecast_hours
+
 
 def make_horizon_series(prop, logger):
     '''
@@ -78,7 +80,7 @@ def make_horizon_series(prop, logger):
     # Assign relevant things to prop11
     prop11.datecycles = datecycles
     prop11.whichcast = 'forecast_a'
-    fcstlength, _ = do_horizon_skill_utils.get_forecast_hours(prop.ofs)
+    fcstlength, _ = get_fcst_cycle.get_fcst_hours(prop.ofs)
     for i, filename in enumerate(filenames):
         if 'nowcast' in str(filename.split('.')):
             continue  # Skip any nowcasts
@@ -393,7 +395,7 @@ def horizon_skill(prop, df, info, logger):
     '''
 
     # Get number of columns that have horizon series
-    fcstlength, _ = do_horizon_skill_utils.get_forecast_hours(prop.ofs)
+    fcstlength, _ = get_fcst_cycle.get_fcst_hours(prop.ofs)
     forecast_cols = [col for col in df.columns if 'forecast' in col]
     bins = np.arange(0, fcstlength+6, 6)
     for fcst_col in forecast_cols:
