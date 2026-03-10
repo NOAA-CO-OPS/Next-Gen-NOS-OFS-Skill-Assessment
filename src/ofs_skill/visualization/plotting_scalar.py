@@ -23,13 +23,14 @@ Last Modified: 10/2025 - Split ice plotting into separate file
 from __future__ import annotations
 
 import configparser
-from datetime import datetime, timezone, UTC
-import pytz
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
+import pytz
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
@@ -108,20 +109,26 @@ def oned_scalar_plot(
     data_count = 48
     min_size = 1
     gap_length = 10
-    if len(list(now_fores_paired[0].DateTime)) > data_count:
+    marker_size = 6
+    marker_size_obs = 9
+    # Find maximum length of time series
+    maxlen = len(now_fores_paired[0].DateTime)
+    index = 0
+    for i in range(len(now_fores_paired)):
+        if len(now_fores_paired[i].DateTime) > maxlen:
+            index = i
+    if len(list(now_fores_paired[index].DateTime)) > data_count:
         marker_size = (
-            6**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+            marker_size**(
+                data_count/len(list(now_fores_paired[index].DateTime))
             )
         ) + (min_size-1)
         marker_size_obs = (
-            9**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+            marker_size_obs**(
+                data_count/len(list(now_fores_paired[index].DateTime))
             )
         ) + (min_size-1)
-    else:
-        marker_size = 6
-        marker_size_obs = 9
+
     # Check for long data gaps
     if find_max_data_gap(now_fores_paired[0].OBS) > gap_length:
         connectgaps = False
@@ -163,13 +170,13 @@ def oned_scalar_plot(
         shared_yaxes=True, horizontal_spacing=0.05,
         vertical_spacing=0.05,
         shared_xaxes=xaxis_share,
-        # subplot_titles = ['Observed','OFS Model'],
     )
 
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[0].DateTime),
-            y=list(now_fores_paired[0].OBS), name=obsname,
+            x=list(now_fores_paired[index].DateTime),
+            y=list(now_fores_paired[index].OBS),
+            name=obsname,
             hovertemplate='%{y:.2f}',
             mode=modetype,
             opacity=lineopacity,
@@ -186,7 +193,7 @@ def oned_scalar_plot(
     # Adding boxplots
     fig.add_trace(
         go.Box(
-            y=now_fores_paired[0]['OBS'], boxmean='sd',
+            y=now_fores_paired[index]['OBS'], boxmean='sd',
             name=obsname, showlegend=False, legendgroup='obs',
             width=.7, line=dict(color=palette[0], width=1.5),
             # fillcolor = 'black',
@@ -200,7 +207,7 @@ def oned_scalar_plot(
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
                 'Z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
@@ -248,7 +255,11 @@ def oned_scalar_plot(
                 ),
             ), 1, 1,
         )
-
+        if 'Z' in seriesname:
+            seriesname = seriesname.split(' ')[1] + ' ' +\
+                seriesname.split(' ')[3]
+        else:
+            seriesname= seriesname.split(' ')[1]
         fig.add_trace(
             go.Box(
                 y=now_fores_paired[i]['OFS'], boxmean='sd',
@@ -278,7 +289,7 @@ def oned_scalar_plot(
           station_source = str(station_id[2]) if len(station_id) > 2 else 'CO-OPS'
 
           # Get date range from actual paired data to ensure tidal predictions cover plotted range
-          data_times = now_fores_paired[0].DateTime
+          data_times = now_fores_paired[index].DateTime
           start_dt = data_times.min().to_pydatetime()
           end_dt = data_times.max().to_pydatetime()
           #start_dt = datetime.strptime(prop.start_date_full, "%Y-%m-%dT%H:%M:%SZ")
@@ -424,7 +435,7 @@ def oned_scalar_plot(
         elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Forecast_a':
-            sdboxName = 'Forecast ' + prop.forecast_hr[:-2] + 'Z - Obs.'
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'Z - Obs.'
         else:
             sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
@@ -502,16 +513,24 @@ def oned_scalar_plot(
             row=2, col=1,
         )
         # Check if end datetime is > current date
-        #max_datetime = now_fores_paired[0].DateTime.max()
-        max_datetime = pytz.timezone("UTC").localize(now_fores_paired[0].DateTime.max())
+        max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
+        for i in range(len(now_fores_paired)):
+            if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+                max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
         if max_datetime > datetime.now(UTC):
+            dt = datetime.now(ZoneInfo('America/New_York')) - timedelta(
+                hours=int(datetime.now(UTC).astimezone(ZoneInfo(
+                    'America/New_York')).utcoffset().total_seconds()/60/60))
             fig.add_vline(
-                x=datetime.now(UTC).timestamp() * 1000,
+                x=dt.timestamp() * 1000,
                 line_width=1,
                 #line_dash="dash",
-                line_color="gray",
-                annotation_text="Current time",
-                annotation_position="top right"
+                line_color='gray',
+                annotation_text='Current UTC time',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=1, col=1
             )
 
         fig.add_trace(

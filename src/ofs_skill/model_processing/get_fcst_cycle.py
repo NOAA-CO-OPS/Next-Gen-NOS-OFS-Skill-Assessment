@@ -141,9 +141,9 @@ def get_fcst_dates(
     fcstcycless = [f'{item:02}' for item in fcstcycles]
 
     # Verify forecast hour input and adjust if necessary
-    requested_hour = forecast_hr[:-2]  # Remove 'hr' suffix
+    requested_hour = forecast_hr[:-1]  # Remove 'z' suffix
     sdate = start_date_full.split('T')[0]  # Extract date part
-    ftime = f'T{forecast_hr[:-2]}:00:00Z'
+    ftime = f'T{forecast_hr[:-1]}:00:00Z'
     sdate = sdate + ftime
     sdatetime = datetime.strptime(sdate, '%Y-%m-%dT%H:%M:%SZ')
     if requested_hour not in fcstcycless:
@@ -170,7 +170,7 @@ def get_fcst_dates(
     edate = sdatetime + timedelta(hours=fcstlength)
     fcst_end = datetime.strftime(edate, '%Y-%m-%dT%H:%M:%SZ')
 
-    logger.info(f'Forecast cycle: {forecast_hr}Z')
+    logger.info(f'Forecast cycle: {forecast_hr}')
     logger.info(f'Forecast length: {fcstlength} hours')
     logger.info(f'Forecast period: {fcst_start} to {fcst_end}')
     logger.info('Completed cycle and end date assignment for forecast_a!')

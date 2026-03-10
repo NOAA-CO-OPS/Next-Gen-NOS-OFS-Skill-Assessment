@@ -28,11 +28,13 @@ from logging import Logger
 from os import listdir
 from pathlib import Path
 from typing import Any, Optional
+
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from ofs_skill.model_processing import get_fcst_cycle
 from ofs_skill.obs_retrieval import utils
 
 
@@ -269,20 +271,13 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         logger.error(f'Unable to extract date from path: {dir_path}')
         return files
 
-    # Get forecast cycles based on OFS
-    if prop.ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
-                    'loofs2','lsofs', 'tbofs', 'necofs'):
-        fcstcycles = ['00', '06', '12', '18']
-    elif prop.ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = ['03', '09', '15', '21']
-    elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = ['12']
-    else:
-        fcstcycles = ['03']
+    fcstlength, fcstcycles = get_fcst_cycle.get_fcst_hours(prop.ofs)
+    # Forecast cycles from int to str
+    fcstcycles = [f'{item:02}' for item in fcstcycles]
 
     # Switch fcstcycles if using forecast_a
     if prop.whichcast == 'forecast_a':
-        fcstcycles = [prop.forecast_hr[:-2]]
+        fcstcycles = [prop.forecast_hr[:-1]]
 
     # Determine file type indicator
     if prop.whichcast == 'nowcast':
@@ -324,16 +319,6 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     else:
         d_t = 3
 
-    # Get forecast length
-    if prop.ofs in ('cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-                    'tbofs', 'stofs_3d_pac'):
-        fcstlength = 48
-    elif prop.ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
-        fcstlength = 72
-    elif prop.ofs in ('stofs_3d_atl'):
-        fcstlength = 96
-    else:
-        fcstlength = 120
 
     for date_obj in date_objs:
         day_date_str = date_obj.strftime('%Y%m%d')
@@ -806,7 +791,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 all_files = listdir(dir_list[i_index])
                 files = []
                 hr_cyc_day = []
-                cycle_z = prop.forecast_hr[:-2] + 'z'
+                cycle_z = prop.forecast_hr.lower()
                 for af_name in all_files:
                     spltstr = af_name.split('.')
                     # First do old file names

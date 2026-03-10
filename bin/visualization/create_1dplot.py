@@ -69,10 +69,11 @@ import logging.config
 import os
 import sys
 import warnings
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+import pytz
 
 from ofs_skill.model_processing import (
     check_model_files,
@@ -373,16 +374,16 @@ def create_1dplot(prop, logger):
             sys.exit(-1)
         elif prop.forecast_hr is not None:
             try:
-                int(prop.forecast_hr[:-2])
+                int(prop.forecast_hr[:-1])
             except ValueError:
                 error_message = (f'Please check Forecast Hr format - '
                                  f'{prop.forecast_hr}. Abort!')
                 logger.error(error_message)
                 sys.exit(-1)
-            if prop.forecast_hr[-2:] == 'hr':
+            if prop.forecast_hr[-1:].lower() == 'z':
                 prop.start_date_full, prop.end_date_full =\
                 get_fcst_dates(prop.ofs, prop.start_date_full, prop.forecast_hr, logger)
-                prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'hr'
+                prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
                 logger.info(f'Forecast_a: end date reassigned to '
                                  f'{prop.end_date_full}')
             else:
@@ -414,10 +415,9 @@ def create_1dplot(prop, logger):
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
         sys.exit(-1)
-    if datetime.strptime(
-            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.now():
-        logger.error('Start date is in the future! Unless your DeLorean can '
-                     'hit 88 mph with 1.21 gigwatts to power the flux capacitor, '
+    if pytz.timezone('UTC').localize(datetime.strptime(
+            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')) > datetime.now(UTC):
+        logger.error('Start date is in the future! Unless you have a time machine, '
                      'please set a start date that is before the current date.'
                      )
         raise SystemExit
