@@ -187,6 +187,12 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
                                                       int(ofs_ctlfile[2][i])])
             invalid_mask = (model_obs <= -999) | (model_obs >= 999)
             model_obs[invalid_mask] = np.nan
+    elif prop.model_source == 'adcirc':
+        if prop.ofs == 'stofs_2d_glo':
+            # We raise en exception here for STOFS-2D-Global because it does 
+            # not have temp/sal data, and logic elsewhere should steer users
+            # away from calling this function with STOFS-2D-Global.
+            raise ValueError('Temperature and salinity data are not available for STOFS-2D-Global.')
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -344,6 +350,12 @@ def format_currents(prop, model, ofs_ctlfile, i):
             invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
             mfp.model_obs[invalid_mask] = np.nan
             mfp.model_ang[invalid_mask] = np.nan
+    elif prop.model_source == 'adcirc':
+        if prop.ofs == 'stofs_2d_glo':
+            # We raise en exception here for STOFS-2D-Global because it does 
+            # not have current data, and logic elsewhere should steer users
+            # away from calling this function with STOFS-2D-Global.
+            raise ValueError('Current data are not available for STOFS-2D-Global.')
 
     mfp.data_model = pd.DataFrame(
         {'DateTime': mfp.model_time,
@@ -434,6 +446,11 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             if datum_offset > -999 and datum_offset < 999:
                 model_obs = model_obs - datum_offset
+    elif prop.model_source=='adcirc':
+        model_time = np.array(model['time'])
+        model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
+        if datum_offset > -999 and datum_offset < 999:
+            model_obs = model_obs - datum_offset
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -575,6 +592,13 @@ def parameter_validation(prop, dir_params, logger):
                      'Please use %s. Exiting...', list_diff,
                      correct_var_list)
         sys.exit()
+    if prop.ofs == 'stofs_2d_glo':
+        if set(prop.var_list) != set(['water_level']):
+            logger.warning('"water_level" is the only available variable for STOFS-2D-Global: '
+                           'Removing other variables from list.')
+            prop.var_list = ['water_level']
+            # I think we can alter its state here, but maybe there's a reason not to?
+            
 
 def get_node_ofs(prop, logger):
     """
@@ -747,27 +771,37 @@ def get_node_ofs(prop, logger):
                              freq='6min',
                          )
             elif prop.model_source=='schism':
-
+                #TODO: This line doesn't look right. Maybe:
+                # >>> if prop.ofsfiletype in ('fields', 'stations'):
+                # But then also, why not just get rid of it because they're
+                # the only two options?
                 if prop.ofsfiletype == 'fields' and 'stations':
                     if prop.whichcast != 'nowcast' and variable == 'water_level':
-                       # Go 25 hours from the current 'start' time for STOFS_3d_atl
-                       # as it start from nowcast period
-                       base_date_str = model.time.attrs['base_date']
-                       try:
-                           # Try the standard format first
-                           base_date = datetime.strptime(base_date_str, '%Y-%m-%d %H:%M:%S %Z')
-                       except ValueError:
-                           # Fallback to the space-separated format
-                           base_date = datetime.strptime(base_date_str, '%Y %m %d %H %M')
-                       start_time_one_day_forward = base_date + timedelta(days=1, hours=1)
-                       model['time'] = pd.date_range(
-                       start=start_time_one_day_forward,
-                       periods=model.sizes['time'],
-                       freq='H',
-                       )
+                        # Go 25 hours from the current 'start' time for STOFS_3d_atl
+                        # as it start from nowcast period
+                        base_date_str = model.time.attrs['base_date']
+                        try:
+                            # Try the standard format first
+                            base_date = datetime.strptime(base_date_str, '%Y-%m-%d %H:%M:%S %Z')
+                        except ValueError:
+                            # Fallback to the space-separated format
+                            base_date = datetime.strptime(base_date_str, '%Y %m %d %H %M')
+                        start_time_one_day_forward = base_date + timedelta(days=1, hours=1)
+                        model['time'] = pd.date_range(
+                            start=start_time_one_day_forward,
+                            periods=model.sizes['time'],
+                            freq='H',
+                        )
 
                     else:
                        model['time'] = model['time']
+
+            elif prop.model_source=='adcirc':
+                if variable != 'water_level':
+                    logger.warning('ADCIRC data are only available for water level. '
+                                   'Skipping variable %s...', variable)
+                    continue
+
             datum_offsets = []
             model_stations = []
             for i in range(len(ofs_ctlfile[1])):

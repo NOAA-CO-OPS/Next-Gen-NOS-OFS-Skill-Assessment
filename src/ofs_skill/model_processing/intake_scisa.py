@@ -89,6 +89,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     - ROMS: Drops many auxiliary variables to reduce memory
     - FVCOM: Minimal dropping (siglay/siglev handled separately)
     - SCHISM: Drops surface/bottom variables
+    - ADCIRC: Drops some mesh/connectivity variables
 
     Time handling:
     - Rounds all times to nearest minute
@@ -141,8 +142,14 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             'temp_surface', 'temp_bottom', 'salt_surface', 'salt_bottom',
             'uvel_surface', 'vvel_surface', 'uvel_bottom', 'vvel_bottom',
             'uvel4.5','vvel4.5','crs', 'SCHISM_hgrid_edge_x','SCHISM_hgrid_edge_y',
-                          'SCHISM_hgrid_face_y','SCHISM_hgrid_face_x',
-                          ]
+            'SCHISM_hgrid_face_y','SCHISM_hgrid_face_x',
+        ]
+        time_name = 'time'
+    elif prop.model_source == 'adcirc':
+        drop_variables = [
+            'nvel', 'element', 'adcirc_mesh', 'nvell', 'max_nvell',
+            'ibtype', 'nbvv'
+        ]
         time_name = 'time'
 
     if prop.ofs == 'necofs' or prop.ofs == 'loofs2' or prop.ofs == 'secofs':

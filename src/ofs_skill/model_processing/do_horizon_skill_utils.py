@@ -167,7 +167,7 @@ def get_forecast_hours(ofs):
     # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
     if ofs in (
         'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
-        'lsofs', 'tbofs',
+        'lsofs', 'tbofs', 'stofs_2d_glo'
     ):
         fcstcycles = np.array([0, 6, 12, 18])
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
@@ -188,6 +188,8 @@ def get_forecast_hours(ofs):
         fcstlength = 96
     elif ofs in ('stofs_3d_pac'):
         fcstlength = 48
+    elif ofs in ('stofs_2d_glo'):
+        fcstlength = 180
     else:
         fcstlength = 120
 

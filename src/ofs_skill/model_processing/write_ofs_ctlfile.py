@@ -18,7 +18,7 @@ write_ofs_ctlfile : Main function to create or verify model control files
 Notes
 -----
 This module is called by get_node_ofs.py when the OFS control file is not found.
-It handles multiple model sources (FVCOM, ROMS, SCHISM) and file types (fields, stations).
+It handles multiple model sources (FVCOM, ROMS, SCHISM, ADCIRC) and file types (fields, stations).
 
 Control file format (space-delimited):
 node_index layer_index latitude longitude station_id depth
@@ -150,7 +150,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
         - user_input_location : bool
             True to use user-specified locations instead of observation stations
         - model_source : str
-            Model type ('fvcom', 'roms', 'schism')
+            Model type ('fvcom', 'roms', 'schism', 'adcirc')
     model : xarray.Dataset
         Model dataset containing grid information
     logger : Logger
@@ -166,7 +166,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     - Control files are named: {ofs}_{var}_model.ctl (fields) or {ofs}_{var}_model_station.ctl (stations)
     - Variable name mappings: water_level->wl, water_temperature->temp, salinity->salt, currents->cu
     - If observation control file is blank, creates blank model control file
-    - Different coordinate extraction methods for FVCOM, ROMS, and SCHISM models
+    - Different coordinate extraction methods for FVCOM, ROMS, SCHISM, and ADCIRC models
     - Skips stations where no matching model node can be found
 
     Examples
@@ -246,42 +246,42 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                 if prop.ofsfiletype == 'fields':
                     list_of_nearest_node = \
                         indexing.index_nearest_node(
-                        extract[-1],
-                        model,
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            extract[-1],
+                            model,
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
                     list_of_nearest_layer, list_of_depths = \
                         indexing.index_nearest_depth(
-                        prop,
-                        list_of_nearest_node,
-                        model,
-                        extract[-1],
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            prop,
+                            list_of_nearest_node,
+                            model,
+                            extract[-1],
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
                 elif prop.ofsfiletype == 'stations':
                     list_of_nearest_node = \
                         indexing.index_nearest_station(
-                        extract[-1],
-                        model,
-                        prop.model_source,
-                        name_var,
-                        logger,
-                        extract[0]
-                    )
+                            extract[-1],
+                            model,
+                            prop.model_source,
+                            name_var,
+                            logger,
+                            extract[0]
+                        )
                     list_of_nearest_layer, list_of_depths = \
                         indexing.index_nearest_depth(
-                        prop,
-                        list_of_nearest_node,
-                        model,
-                        extract[-1],
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            prop,
+                            list_of_nearest_node,
+                            model,
+                            extract[-1],
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
 
                 logger.info('Extracting data found in the Model Control File')
 
@@ -447,6 +447,26 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
+                            
+                elif prop.model_source == 'adcirc':
+                    if prop.ofs == 'stofs_2d_glo':
+                        for i in range(length):
+                            if ~np.isnan(list_of_nearest_node[i]):
+                                model_ctl_file.append(
+                                    f'{list_of_nearest_node[i]} '
+                                    f'{list_of_nearest_layer[i]} '
+                                    f"{model['y'][list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f"{model['x'][list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                )
+                            else:
+                                logger.info('No matching model station found for '
+                                            'obs station %s.', station_id[i])
+                    else:
+                        # STOFS-2D-Global is the only ADCIRC implemented, so it's 
+                        # not clear how someone would even get here, but we raise 
+                        # an exception just in case.
+                        raise NotImplementedError('ADCIRC control file writing not yet implemented for models other than STOFS-2D-Global.')
 
                 if prop.ofsfiletype == 'fields':
                     with open(

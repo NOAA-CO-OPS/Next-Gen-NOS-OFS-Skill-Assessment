@@ -331,7 +331,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         - ofsfiletype : str
             'stations' or 'fields'
         - model_source : str
-            'fvcom', 'roms', or 'schism'
+            'fvcom', 'roms', 'schism', or 'adcirc'
         - path : str
             Base path for auxiliary files (WCOFS MSL conversion)
     node : int
@@ -363,9 +363,12 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         * If datum='LWD', returns 0 (no conversion needed)
         * Otherwise converts via '{datum}toLWD' field
         * Sign is inverted except for LEOFS
-    - STOFS models:
+    - STOFS-3D models:
         * Native datum is XGEOID20B
         * If datum='XGEOID20B', returns 0
+    - STOFS-2D-Global:
+        * Native datum is LMSL
+        * If datum='MSL', returns 0 (no conversion needed).
     - SSCOFS:
         * Model-0 is 0.23m below XGEOID20B
         * Converts via XGEOID20B as intermediate
@@ -384,7 +387,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     # If doing GLOFS and using the LWD datum, no correction is necessary.
     if prop.datum.lower() == 'lwd':
         return 0
-    # If doing STOFS and using the xgeoid20b datum, no correction is necessary.
+    # If doing STOFS-3D and using the xgeoid20b datum, no correction is necessary.
     if (prop.ofs in  ['stofs_3d_atl', 'stofs_3d_pac'] and prop.ofsfiletype == 'fields' and
         prop.datum.lower() == 'xgeoid20b'):
         return 0
@@ -393,6 +396,9 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         return 0
     if (prop.ofs == 'stofs_3d_pac' and prop.ofsfiletype == 'stations' and
         prop.datum.lower() == 'msl'):
+        return 0
+    # If doing STOFS-2D-Global and using MSL, no conversion.
+    if prop.ofs == 'stofs_2d_glo' and prop.datum.lower() == 'msl':
         return 0
 
     # If not STOFS, read the correct vdatum file from NODD S3 on-the-fly
@@ -520,6 +526,24 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         epoch=None
                                         )
                 datum_offset = round(z-dummyval,2)
+
+            elif prop.model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    nativedatum = 'msl'
+                    dummyval = 10.0
+                    _,_,z = vdatum.convert(
+                                        nativedatum,
+                                        prop.datum.lower(),
+                                        model['y'][0,node],
+                                        model['x'][0,node],
+                                        dummyval,
+                                        online=True,
+                                        epoch=None
+                                        )
+                    datum_offset = round(z - dummyval, 2)
+                else:
+                    raise NotImplementedError('ADCIRC datum offset not defined for models other than STOFS-2D-Global.')
+
         except Exception as e_x:
             logger.error('Error getting datum offset from datum field for '
                          'stations files and %s: %s', prop.model_source, e_x)
@@ -549,6 +573,23 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                     epoch=None
                                     )
                 datum_offset = round(z-dummyval,2)
+            if prop.model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    nativedatum = 'msl'
+                    dummyval = 10
+                    _,_,z = vdatum.convert(
+                        nativedatum,
+                        prop.datum.lower(),
+                        model['y'][0,node],
+                        model['x'][0,node],
+                        dummyval,
+                        online=True,
+                        epoch=None
+                    )
+                    datum_offset = round(z - dummyval, 2)
+                else:
+                    raise NotImplementedError('ADCIRC datum offset not defined for models other than STOFS-2D-Global.')
+
         except Exception as e_x:
             logger.error('Error getting datum offset from datum field for '
                          'fields files and %s: %s', prop.model_source, e_x)

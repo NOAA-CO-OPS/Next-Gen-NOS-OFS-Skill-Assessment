@@ -30,6 +30,8 @@ def get_fcst_cycle(
         OFS identifier (e.g., 'cbofs', 'ngofs2')
     start_date_full : str
         Start date in ISO format (YYYY-MM-DDTHH:MM:SSZ)
+        Note that the hours, minutes, and seconds ("HH:MM:SSZ")
+        are ignored, even though they are required in the format.
     forecast_hr : str
         Requested forecast hour with 'hr' suffix (e.g., '00hr', '06hr')
     logger : logging.Logger
@@ -46,7 +48,8 @@ def get_fcst_cycle(
     -----
     **Forecast Cycle Hours:**
 
-    - CBOFS, DBOFS, GOMOFS, CIOFS, LEOFS, LMHOFS, LOOFS, LSOFS, TBOFS:
+    - CBOFS, DBOFS, GOMOFS, CIOFS, LEOFS, LMHOFS, LOOFS, LSOFS, 
+      TBOFS, STOFS_2D_GLO:
       00Z, 06Z, 12Z, 18Z
     - CREOFS, NGOFS2, SFBOFS, SSCOFS:
       03Z, 09Z, 15Z, 21Z
@@ -61,6 +64,7 @@ def get_fcst_cycle(
     - GOMOFS, WCOFS: 72 hours
     - STOFS_3D_ATL: 96 hours
     - STOFS_3D_PAC: 48 hours
+    - STOFS_2D_GLO: 180 hours
     - Others: 120 hours
 
     If the requested forecast hour doesn't match a valid cycle for the OFS,
@@ -90,7 +94,7 @@ def get_fcst_cycle(
 
     # Define forecast cycle hours for each OFS group
     if ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs',
-               'loofs', 'lsofs', 'tbofs'):
+               'loofs', 'lsofs', 'tbofs', 'stofs_2d_glo'):
         fcstcycles = np.array([0, 6, 12, 18])
         fcstcycless = ['00', '06', '12', '18']
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
@@ -112,6 +116,8 @@ def get_fcst_cycle(
         fcstlength = 96
     elif ofs in ('stofs_3d_pac',):
         fcstlength = 48
+    elif ofs in ('stofs_2d_glo',):
+        fcstlength = 180
     else:
         fcstlength = 120
 
