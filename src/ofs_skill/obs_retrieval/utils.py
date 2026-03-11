@@ -253,6 +253,89 @@ def load_api_keys(config_filename='conf/api_keys.conf'):
         )
 
 
+def get_parallel_config(logger=None):
+    """
+    Read parallelization settings from the [parallelization] config section.
+
+    Returns a dict with integer worker counts and boolean flags.
+    If the section is missing or unreadable, returns safe defaults
+    (parallel_enabled=True with conservative worker counts).
+
+    Parameters
+    ----------
+    logger : logging.Logger or None
+        Logger instance. If None, a module-level logger is used.
+
+    Returns
+    -------
+    dict
+        Keys: parallel_enabled (bool), obs_coops_workers, obs_usgs_workers,
+        obs_ndbc_workers, obs_chs_workers, model_download_workers,
+        skill_workers, ha_workers, plot_workers (all int),
+        parallel_variables (bool).
+    """
+    defaults = {
+        'parallel_enabled': True,
+        'obs_coops_workers': 6,
+        'obs_usgs_workers': 2,
+        'obs_ndbc_workers': 6,
+        'obs_chs_workers': 1,
+        'model_download_workers': 4,
+        'skill_workers': 4,
+        'ha_workers': max(1, min((os.cpu_count() or 2) - 1, 8)),
+        'plot_workers': 4,
+        'parallel_variables': False,
+    }
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    raw = Utils().read_config_section('parallelization', logger)
+    if not raw:
+        return defaults
+
+    result = dict(defaults)
+
+    # Parse parallel_enabled
+    val = raw.get('parallel_enabled', 'true').strip().lower()
+    result['parallel_enabled'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_variables
+    val = raw.get('parallel_variables', 'false').strip().lower()
+    result['parallel_variables'] = val in ('true', '1', 'yes')
+
+    # Parse integer worker counts
+    int_keys = [
+        'obs_coops_workers', 'obs_usgs_workers', 'obs_ndbc_workers',
+        'obs_chs_workers', 'model_download_workers', 'skill_workers',
+        'plot_workers',
+    ]
+    for key in int_keys:
+        val = raw.get(key, '').strip()
+        if val:
+            try:
+                result[key] = max(1, int(val))
+            except ValueError:
+                pass
+
+    # Parse ha_workers (supports "auto")
+    val = raw.get('ha_workers', 'auto').strip().lower()
+    if val == 'auto':
+        result['ha_workers'] = max(1, min((os.cpu_count() or 2) - 1, 8))
+    else:
+        try:
+            result['ha_workers'] = max(1, int(val))
+        except ValueError:
+            pass
+
+    # If parallelization is globally disabled, force all workers to 1
+    if not result['parallel_enabled']:
+        for key in int_keys + ['ha_workers']:
+            result[key] = 1
+
+    return result
+
+
 def parse_arguments_to_list(
     argument: Union[str, list[str]],
     logger: logging.Logger

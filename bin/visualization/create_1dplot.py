@@ -63,12 +63,14 @@ Remarks:
 """
 
 import argparse
+import copy
 import gc
 import logging
 import logging.config
 import os
 import sys
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -83,6 +85,7 @@ from ofs_skill.model_processing import (
 )
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
 from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector
 
@@ -133,6 +136,214 @@ def ofs_ctlfile_read(prop, name_var, logger):
     {name_var} from {prop.control_files_path}')
     return None
 
+def _process_station_plot(
+        i, read_ofs_ctl_file, read_station_ctl_file, prop, var_info, logger):
+    """
+    Process a single station's plots. Designed to run inside a
+    ThreadPoolExecutor.  Returns the station ID on success, None on failure.
+
+    A shallow copy of ``prop`` is used so that ``prop.whichcast`` can be
+    set per-cast without racing against other threads.
+    """
+    station_prop = copy.copy(prop)
+    station_id_val = read_ofs_ctl_file[-1][i]
+
+    try:
+        obs_row = [y[0] for y in read_station_ctl_file[0]].index(
+            station_id_val)
+        if read_station_ctl_file[0][obs_row][0] != station_id_val:
+            raise Exception
+    except Exception:
+        logger.error('Could not match station ID %s between control '
+                     'file in get_node_ofs!', station_id_val)
+        return None
+
+    now_fores_paired = []
+    deltat = 0
+    for cast in station_prop.whichcasts:
+        paired_data = None
+        current_cast = cast.lower()
+        station_prop.whichcast = current_cast
+
+        pair_file = (
+            f'{station_prop.data_skill_1d_pair_path}/'
+            f'{station_prop.ofs}_{var_info[1]}_{station_id_val}_'
+            f'{read_ofs_ctl_file[1][i]}_{current_cast}_'
+            f'{station_prop.ofsfiletype}_pair.int'
+        )
+
+        if not os.path.isfile(pair_file):
+            logger.error(
+                'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found '
+                'in %s. ',
+                station_prop.ofs, var_info[1], station_id_val,
+                read_ofs_ctl_file[1][i], current_cast,
+                station_prop.ofsfiletype,
+                station_prop.visuals_1d_station_path)
+        else:
+            paired_data = pd.read_csv(
+                pair_file,
+                sep=r'\s+', names=var_info[2],
+                header=0)
+            # Format paired data dates
+            paired_data['DateTime'] = pd.to_datetime(
+                paired_data[['year', 'month', 'day', 'hour', 'minute']])
+            # Read time series key
+            filename = (
+                f'{station_prop.ofs}_{current_cast}_filename_key.csv')
+            filepath = (
+                Path(station_prop.data_model_1d_node_path) / filename
+            ).as_posix()
+            try:
+                serieskey = pd.read_csv(filepath)
+                serieskey['DateTime'] = pd.to_datetime(
+                    serieskey['DateTime'])
+                paired_data = pd.merge(
+                    paired_data, serieskey, on='DateTime', how='inner')
+            except FileNotFoundError:
+                logger.error(
+                    'No model series filename key found! Skipping')
+            except Exception as ex:
+                logger.error(
+                    'Exception caught when loading and merging '
+                    'model filename key! Error: %s', ex)
+            logger.info(
+                'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found '
+                'in %s',
+                station_prop.ofs, var_info[1], station_id_val,
+                read_ofs_ctl_file[1][i], current_cast,
+                station_prop.ofsfiletype,
+                station_prop.visuals_1d_station_path)
+        if paired_data is not None:
+            # Subsample time series if using 6-minute resolution
+            deltat = (paired_data['DateTime'].iloc[-1]
+                      - paired_data['DateTime'].iloc[0]).days
+            if (station_prop.ofsfiletype == 'stations'
+                    and deltat > 185):
+                paired_data = paired_data.loc[
+                    paired_data.groupby(
+                        ['year', 'month', 'day', 'hour'],
+                        observed=True)['minute'].idxmin()]
+            now_fores_paired.append(paired_data)
+
+    if len(now_fores_paired) > 0:
+        try:
+            if var_info[1] in ('wl', 'temp', 'salt'):
+                logger.info(
+                    'Trying to build timeseries %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_scalar.oned_scalar_plot(
+                    now_fores_paired, var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+            elif var_info[1] == 'cu':
+                logger.info(
+                    'Trying to build timeseries %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_vector.oned_vector_plot1(
+                    now_fores_paired, var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+
+                logger.info(
+                    'Trying to build wind rose %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_vector.oned_vector_plot2b(
+                    plotting_vector.oned_vector_plot2a(
+                        now_fores_paired, logger),
+                    var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+                if deltat <= -1:
+                    logger.info(
+                        'Trying to build stick %s plot for paired '
+                        'dataset: %s_%s_%s_%s_%s_pair.int',
+                        var_info[0], station_prop.ofs, var_info[1],
+                        station_id_val, read_ofs_ctl_file[1][i],
+                        station_prop.whichcast)
+                    plotting_vector.oned_vector_plot3(
+                        now_fores_paired, var_info[1],
+                        [station_id_val,
+                         read_station_ctl_file[0][obs_row][2],
+                         read_station_ctl_file[0][obs_row][1].split(
+                             '_')[-1]],
+                        read_ofs_ctl_file[1][i],
+                        station_prop, logger)
+                    logger.info(
+                        'Trying to build stick %s plot for vector '
+                        'difference: %s_%s_%s_%s_%s_%s_pair.int',
+                        var_info[0], station_prop.ofs, var_info[1],
+                        station_id_val, read_ofs_ctl_file[1][i],
+                        station_prop.whichcast,
+                        station_prop.ofsfiletype)
+                    plotting_vector.oned_vector_diff_plot3(
+                        now_fores_paired, var_info[1],
+                        [station_id_val,
+                         read_station_ctl_file[0][obs_row][2],
+                         read_station_ctl_file[0][obs_row][1].split(
+                             '_')[-1]],
+                        read_ofs_ctl_file[1][i],
+                        station_prop, logger)
+        except Exception as ex:
+            logger.info(
+                'Fail to create the plot  '
+                '---  %s ...Continuing to next plot', ex)
+            return None
+
+    return station_id_val
+
+
+def _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger):
+    """
+    Pre-check for missing paired data files and call get_skill()
+    sequentially for any casts that need it.  This must happen BEFORE
+    parallel dispatch because get_skill() mutates shared state
+    (prop.whichcast) and creates control files.
+    """
+    casts_needing_skill = set()
+    for i in range(len(read_ofs_ctl_file[1])):
+        for cast in prop.whichcasts:
+            current_cast = cast.lower()
+            pair_file = (
+                f'{prop.data_skill_1d_pair_path}/'
+                f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
+                f'{read_ofs_ctl_file[1][i]}_{current_cast}_'
+                f'{prop.ofsfiletype}_pair.int'
+            )
+            if not os.path.isfile(pair_file):
+                if (prop.ofsfiletype == 'fields'
+                        or read_ofs_ctl_file[1][i] >= 0):
+                    casts_needing_skill.add(current_cast)
+
+    for current_cast in sorted(casts_needing_skill):
+        logger.info(
+            'Pre-generating paired data via get_skill for cast %s',
+            current_cast)
+        prop.whichcast = current_cast
+        if prop.start_date_full.find('T') == -1:
+            prop.start_date_full = prop.start_date_full_before
+            prop.end_date_full = prop.end_date_full_before
+        get_skill(prop, logger)
+
+
 def create_1dplot_2nd_part(
         read_ofs_ctl_file, prop, var_info, logger):
     '''
@@ -140,13 +351,14 @@ def create_1dplot_2nd_part(
     it had to be split from the original function due to size (PEP8)
     '''
     logger.info(
-        f'Searching for paired dataset for {prop.ofs}, variable {var_info[0]}')
+        f'Searching for paired dataset for {prop.ofs}, variable '
+        f'{var_info[0]}')
 
     # Read obs station ctl files
     try:
         read_station_ctl_file = station_ctl_file_extract(
-            r'' + prop.control_files_path + '/' + prop.ofs + '_' + \
-                var_info[1] + '_station.ctl'
+            r'' + prop.control_files_path + '/' + prop.ofs + '_'
+            + var_info[1] + '_station.ctl'
         )
         logger.info(
             'Station ctl file (%s_%s_station.ctl) found in get_title. ',
@@ -157,168 +369,36 @@ def create_1dplot_2nd_part(
         logger.error('Station ctl file not found.')
         sys.exit(-1)
 
-    for i in range(len(read_ofs_ctl_file[1])):
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                index(read_ofs_ctl_file[-1][i])
-            if read_station_ctl_file[0][obs_row][0] != \
-                read_ofs_ctl_file[-1][i]:
-                raise Exception
-        except Exception:
-            logger.error('Could not match station ID %s between control '
-                         'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
-            continue
-        now_fores_paired = []
-        track_cast = []
-        for cast in prop.whichcasts:
-            paired_data = None
-            # Here we try to open the paired data set, if not found, create.
-            prop.whichcast = cast.lower()
-            if (os.path.isfile(
-                    f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int'
-                ) is False):
-                logger.error(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found in %s. ',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-                logger.info(
-                    'Calling Skill Assessment module for whichcast %s. ',
-                    prop.whichcast
-                )
+    # Ensure all paired data files exist before parallel dispatch.
+    # get_skill() mutates prop and creates shared control files, so it
+    # must run sequentially.
+    _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger)
 
-                if prop.ofsfiletype == 'fields' or read_ofs_ctl_file[1][i] >= 0:
-                    get_skill(prop, logger)
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['plot_workers']
+    num_stations = len(read_ofs_ctl_file[1])
 
+    logger.info('Dispatching %d station plots with %d workers',
+                num_stations, max_workers)
 
-            if (os.path.isfile(
-                    f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int'
-                ) is False):
-                logger.error(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found in %s. ',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-
-            else:
-                paired_data = pd.read_csv(
-                    r'' + f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int',
-                    sep=r'\s+', names=var_info[2],
-                    header=0) #change to skip header for human readability
-                # Format paired data dates
-                paired_data['DateTime'] = pd.to_datetime(
-                    paired_data[['year', 'month', 'day', 'hour', 'minute']])
-                # Read time series key
-                filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
-                filepath = (Path(prop.data_model_1d_node_path) / filename).as_posix()
-                try:
-                    serieskey = pd.read_csv(filepath)
-                    serieskey['DateTime'] = pd.to_datetime(serieskey['DateTime'])
-                    # Now merge time series key to paired data
-                    paired_data = pd.merge(paired_data, serieskey, on='DateTime', how='inner')
-                except FileNotFoundError:
-                    logger.error('No model series filename key found! Skipping')
-                except Exception as ex:
-                    logger.error('Exception caught when loading and merging '
-                                 'model filename key! Error: %s', ex)
-                logger.info(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found in %s',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-            if paired_data is not None:
-                # NEW! subsample time series if using 6-minute resolution from stations files
-                deltat = (paired_data['DateTime'].iloc[-1] - paired_data['DateTime'].iloc[0]).days
-                if (prop.ofsfiletype == 'stations'
-                    and (deltat > 185 #or var_info[1] == 'cu'
-                         )):
-                    paired_data = paired_data.loc[paired_data.groupby(['year','month','day','hour'],
-                                                                      observed=True)
-                                                                    ['minute'].idxmin()]
-                track_cast.append(cast)
-                now_fores_paired.append(paired_data)
-
-        if len(now_fores_paired) > 0:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_station_plot, i, read_ofs_ctl_file,
+                read_station_ctl_file, prop, var_info, logger
+            ): i
+            for i in range(num_stations)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
             try:
-                if var_info[1] == 'wl' or var_info[1] == 'temp' or var_info[
-                    1] == 'salt':
-                    logger.info(
-                        'Trying to build timeseries %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                        prop.whichcast, prop.ofsfiletype)
-                    plotting_scalar.oned_scalar_plot(
-                        now_fores_paired, var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop,logger)
-                elif var_info[1] == 'cu':
-                    logger.info(
-                        'Trying to build timeseries %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i],
-                        read_ofs_ctl_file[1][i],
-                        prop.whichcast,prop.ofsfiletype)
-                    plotting_vector.oned_vector_plot1(
-                        now_fores_paired, var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop,logger)
-
-                    logger.info(
-                        'Trying to build wind rose %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                        prop.whichcast,prop.ofsfiletype)
-                    plotting_vector.oned_vector_plot2b(
-                        plotting_vector.oned_vector_plot2a(now_fores_paired, logger),
-                        var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop, logger)
-                    if deltat <= -1:
-                        logger.info(
-                            'Trying to build stick %s plot for paired dataset: \
-        %s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                            read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i], prop.whichcast)
-                        plotting_vector.oned_vector_plot3(
-                            now_fores_paired, var_info[1],
-                            [read_ofs_ctl_file[-1][i],
-                              read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                            read_ofs_ctl_file[1][i],
-                            prop,logger)
-                        logger.info(
-                            'Trying to build stick %s plot for vector difference: \
-        %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                            read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                            prop.whichcast, prop.ofsfiletype)
-                        plotting_vector.oned_vector_diff_plot3(
-                            now_fores_paired, var_info[1],
-                            [read_ofs_ctl_file[-1][i],
-                              read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                            read_ofs_ctl_file[1][i],
-                            prop,logger)
+                result = future.result()
+                if result is not None:
+                    logger.info('Completed plot for station %s', result)
             except Exception as ex:
-                logger.info(
-                    'Fail to create the plot  \
-    ---  %s ...Continuing to next plot', ex)
+                logger.error(
+                    'Unhandled exception for station index %d: %s',
+                    idx, ex)
 
 
 def create_1dplot(prop, logger):

@@ -96,6 +96,7 @@ import logging.config
 import os
 import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -112,6 +113,7 @@ from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
 from ofs_skill.obs_retrieval.retrieve_t_and_c_station import retrieve_t_and_c_station
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.obs_retrieval.write_obs_ctlfile import write_obs_ctlfile
 
 # Import directly from module to avoid circular import
@@ -191,6 +193,360 @@ def is_number(n):
     except ValueError:
         return False
     return True
+
+def _fetch_and_format_station(
+    station_info, station_metadata, variable, name_var, datum, datum_list,
+    start_date, end_date, start_date_full, end_date_full, ofs,
+    data_observations_1d_station_path, logger
+):
+    """Fetch observation data for a single station, format it, and write .obs file.
+
+    This is the worker function called from ThreadPoolExecutor. Each
+    invocation creates its own RetrieveProperties instance to avoid
+    race conditions on shared mutable state.
+
+    Parameters
+    ----------
+    station_info : list
+        Row from read_station_ctl_file[0][i] — [id, ..., ..., source, ...]
+    station_metadata : list
+        Row from read_station_ctl_file[1][i] — [..., ..., datum_shift, ...]
+    variable : str
+        Variable name (water_level, water_temperature, salinity, currents)
+    name_var : str
+        Short variable name (wl, temp, salt, cu)
+    datum : str
+        Datum string
+    datum_list : list
+        List of accepted datums
+    start_date, end_date : str
+        Date strings (YYYYMMDD)
+    start_date_full, end_date_full : str
+        Full date strings (YYYYMMDD-HH:MM:SS)
+    ofs : str
+        OFS name
+    data_observations_1d_station_path : str
+        Output directory for .obs files
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    str or None
+        Station ID on success, None on failure.
+    """
+    try:
+        station_id = station_info[0]
+        source = station_info[3]
+
+        # Each worker gets its own RetrieveProperties — critical for
+        # thread safety since the object carries mutable request state.
+        retrieve_input = retrieve_properties.RetrieveProperties()
+
+        formatted_series = 'NoDataFound'
+
+        if source in ('TC', 'TAC', 'COOPS', 'CO-OPS'):
+            try:
+                retrieve_input.station = str(station_id)
+                retrieve_input.start_date = start_date
+                retrieve_input.end_date = end_date
+                retrieve_input.variable = variable
+                retrieve_input.datum = datum
+
+                timeseries = retrieve_t_and_c_station(
+                    retrieve_input, logger)
+
+                if timeseries is None:
+                    logger.info(
+                        'Fail first try to extract '
+                        'CO-OPS %s data for '
+                        'station %s', variable,
+                        str(station_id))
+                else:
+                    timeseries = timeseries[timeseries['OBS'].notna()]
+
+                if variable == 'water_level':
+                    datum_shift = station_metadata[2]
+                    if isinstance(timeseries, pd.DataFrame) is False:
+                        all_datums = [
+                            'NAVD', 'MSL', 'MLLW', 'IGLD', 'LWD',
+                            'MHHW', 'MHW', 'MTL', 'DTL', 'MLW', 'STND',
+                        ]
+                        accepted_datums = datum_list
+                        length = len(all_datums)
+                        for dat in range(0, length):
+                            try:
+                                logger.info('Trying different datum '
+                                            'for CO-OPS retrieval: %s',
+                                            all_datums[dat])
+                                retrieve_input.station = str(station_id)
+                                retrieve_input.start_date = start_date
+                                retrieve_input.end_date = end_date
+                                retrieve_input.variable = variable
+                                retrieve_input.datum = all_datums[dat]
+                                timeseries = retrieve_t_and_c_station(
+                                    retrieve_input, logger,
+                                )
+                                if (timeseries is not None and
+                                        all_datums[dat] in accepted_datums):
+                                    logger.info(
+                                        'This (%s) is the datum for which '
+                                        'data was found. '
+                                        "If that's not what was expected, "
+                                        'please revise.',
+                                        all_datums[dat],
+                                    )
+                                    break
+                            except ValueError:
+                                logger.info(
+                                    'Fail # %s when when trying '
+                                    'multiple datums:'
+                                    'COOPS %s data for station %s '
+                                    'and datum %s',
+                                    dat, variable,
+                                    station_id, all_datums[dat]
+                                )
+                                pass
+
+                    if is_number(datum_shift):
+                        timeseries['OBS'] = timeseries['OBS'] + float(
+                            datum_shift
+                        )
+                        logger.info(
+                            'A datum shift of '
+                            '%s meters was '
+                            'applied to the water '
+                            'level data for station '
+                            '%s (%s) as '
+                            'specified in '
+                            '%s_wl_station.',
+                            datum_shift,
+                            str(station_id),
+                            source,
+                            ofs
+                        )
+                    else:
+                        logger.info(
+                            'No datum shift was read '
+                            'for station %s (%s) '
+                            'from %s_wl_station).',
+                            str(station_id),
+                            source,
+                            ofs
+                        )
+
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+
+                elif variable == 'currents':
+                    formatted_series = vector(
+                        timeseries, start_date_full, end_date_full
+                    )
+
+                else:
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+            except Exception as e_x:
+                logger.error('Fail when getting COOPS %s data for '
+                             'station %s', variable, station_id)
+                logger.error('Caught an exception: %s', e_x)
+
+        elif source == 'USGS':
+            try:
+                retrieve_input.station = str(station_id)
+                retrieve_input.start_date = start_date
+                retrieve_input.end_date = end_date
+                retrieve_input.variable = variable
+                timeseries = retrieve_usgs_station(
+                    retrieve_input, logger
+                )
+                if timeseries is None:
+                    return None
+                timeseries = timeseries[timeseries['OBS'].notna()]
+
+                if variable == 'water_level':
+                    datum_shift = station_metadata[2]
+
+                    if is_number(datum_shift):
+                        timeseries['OBS'] = timeseries['OBS'] + float(
+                            datum_shift
+                        )
+                        logger.info(
+                            'A datum shift of %s meters was applied '
+                            'to the water level data for station %s '
+                            'as specified in the %s_wl_station.',
+                            datum_shift, str(station_id), ofs
+                        )
+                    else:
+                        logger.info(
+                            'No datum shift was read '
+                            'for station %s (%s) '
+                            'from %s_wl_station). '
+                            'No datum shift applied.',
+                            str(station_id), source, ofs
+                        )
+
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+
+                elif variable == 'currents':
+                    formatted_series = vector(
+                        timeseries, start_date_full, end_date_full
+                    )
+
+                else:
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+            except Exception as e_x:
+                logger.error('Fail when getting USGS '
+                             '%s data for station %s',
+                             variable, station_id)
+                logger.error('Caught an exception: %s', e_x)
+
+        elif source == 'NDBC':
+            try:
+                data_station = retrieve_ndbc_station(
+                    start_date, end_date, str(station_id),
+                    variable, logger
+                )
+
+                if data_station is None:
+                    return None
+                timeseries = data_station
+                timeseries = timeseries[timeseries['OBS'].notna()]
+                if variable == 'water_level':
+                    datum_shift = station_metadata[2]
+
+                    if is_number(datum_shift):
+                        timeseries['OBS'] = timeseries['OBS'] + float(
+                            datum_shift
+                        )
+                        logger.info(
+                            'A datum shift of '
+                            '%s meters was '
+                            'applied to the water '
+                            'level data for station '
+                            '%s (%s) as '
+                            'specified in '
+                            '%s_wl_station.',
+                            datum_shift, str(station_id),
+                            source, ofs
+                        )
+                    else:
+                        logger.info(
+                            'No datum shift was read '
+                            'for station %s (%s) '
+                            'from %s_wl_station). '
+                            'No datum shift applied.',
+                            str(station_id), source, ofs
+                        )
+
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+                elif variable == 'currents':
+                    formatted_series = vector(
+                        timeseries, start_date_full, end_date_full
+                    )
+                else:
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+            except Exception as e_x:
+                logger.error('Fail when getting NDBC %s '
+                             'data for station %s',
+                             variable, station_id)
+                logger.error('Caught an exception: %s', e_x)
+
+        elif source == 'CHS':
+            try:
+                data_station = retrieve_chs_station(
+                    start_date, end_date, str(station_id),
+                    variable, logger
+                )
+
+                if data_station is None:
+                    return None
+                timeseries = data_station
+                timeseries = timeseries[timeseries['OBS'].notna()]
+                if variable == 'water_level':
+                    datum_shift = station_metadata[2]
+
+                    if is_number(datum_shift):
+                        timeseries['OBS'] = timeseries['OBS'] + float(
+                            datum_shift
+                        )
+                        logger.info(
+                            'A datum shift of '
+                            '%s meters was '
+                            'applied to the water '
+                            'level data for station '
+                            '%s (%s) as '
+                            'specified in '
+                            '%s_wl_station.',
+                            datum_shift, str(station_id),
+                            source, ofs
+                        )
+                    else:
+                        logger.info(
+                            'No datum shift was read '
+                            'for station %s (%s) '
+                            'from %s_wl_station). '
+                            'No datum shift applied.',
+                            str(station_id), source, ofs
+                        )
+
+                    formatted_series = scalar(
+                        timeseries, start_date_full, end_date_full
+                    )
+            except Exception as e_x:
+                logger.error('Fail when getting CHS %s '
+                             'data for station %s',
+                             variable, station_id)
+                logger.error('Caught an exception: %s', e_x)
+
+        # Write the .obs file
+        try:
+            if formatted_series != 'NoDataFound':
+                obs_path = os.path.join(
+                    data_observations_1d_station_path,
+                    str(station_id + '_' + ofs + '_' +
+                        name_var + '_station.obs'))
+                with open(obs_path, 'w', encoding='utf-8') as output:
+                    for line in formatted_series:
+                        output.write(str(line) + '\n')
+                    logger.info(
+                        '%s_%s_%s_station.obs created successfully',
+                        station_id, ofs, name_var
+                    )
+                return station_id
+            else:
+                logger.info('Formatted %s time series '
+                            'not found for station %s',
+                            variable, station_id)
+                return None
+        except FileNotFoundError as e_x:
+            logger.error(
+                'Saving station failed. Please check the'
+                ' directory '
+                'path: %s -- %s.',
+                data_observations_1d_station_path,
+                str(e_x),
+            )
+            return None
+
+    except Exception as e_x:
+        logger.error(
+            'Unexpected error processing station %s: %s',
+            station_info[0] if station_info else 'unknown',
+            e_x
+        )
+        return None
+
 
 def get_station_observations(prop,logger):
     """
@@ -289,8 +645,6 @@ def get_station_observations(prop,logger):
     # in the station ctl file and will try to download the data from TandC,
     # USGS, and NDBC based on the station data source
 
-    retrieve_input = retrieve_properties.RetrieveProperties()
-
     blank_file = 0
     for variable in var_list:
         if variable == 'water_level':
@@ -367,402 +721,39 @@ def get_station_observations(prop,logger):
         logger.info('Downloading data found in the station ctl files')
 
         if read_station_ctl_file is not None:
+            # Group stations by data source for parallel dispatch
+            source_groups = {}
             for i in range(len(read_station_ctl_file[0])):
-                # These are common for all variable in ['water_level',
-                # 'water_temperature', 'salinity', 'currents']
-                station_id = read_station_ctl_file[0][i][0]
-                # This is just a test, where if no data is found this variable
-                # does not get updated and the if statement at the end ensures
-                # that no data is saved
-                formatted_series = 'NoDataFound'
-                if (
-                    read_station_ctl_file[0][i][3] == 'TC'
-                    or read_station_ctl_file[0][i][3] == 'TAC'
-                    or read_station_ctl_file[0][i][3] == 'COOPS'
-                    or read_station_ctl_file[0][i][3] == 'CO-OPS'
-                ):
-                    try:
-                        retrieve_input.station = str(station_id)
-                        retrieve_input.start_date = start_date
-                        retrieve_input.end_date = end_date
-                        retrieve_input.variable = variable
-                        retrieve_input.datum = datum
+                source = read_station_ctl_file[0][i][3]
+                if source not in source_groups:
+                    source_groups[source] = []
+                source_groups[source].append(
+                    (read_station_ctl_file[0][i],
+                     read_station_ctl_file[1][i])
+                )
 
-                        timeseries = retrieve_t_and_c_station(
-                            retrieve_input, logger)
+            # Read parallel config for worker counts
+            parallel_cfg = get_parallel_config(logger)
 
-                        if timeseries is None:
-                            logger.info(
-                                'Fail first try to extract '
-                                'CO-OPS %s data for '
-                                'station %s', variable,
-                                str(station_id))
-                            #continue # Modified by XC to enable the code to
-                                     #continue when data extraction fails
-                        else:
-                            timeseries = timeseries[timeseries['OBS'].notna()]
+            # Map source names to worker counts
+            source_worker_map = {
+                'TC': parallel_cfg['obs_coops_workers'],
+                'TAC': parallel_cfg['obs_coops_workers'],
+                'COOPS': parallel_cfg['obs_coops_workers'],
+                'CO-OPS': parallel_cfg['obs_coops_workers'],
+                'USGS': parallel_cfg['obs_usgs_workers'],
+                'NDBC': parallel_cfg['obs_ndbc_workers'],
+                'CHS': parallel_cfg['obs_chs_workers'],
+            }
 
-                        if variable == 'water_level':
-                            # apply datum shift (if any)
-                            # This is only important for water level, this
-                            # shift will be applied to the water level time
-                            # series if datum_shift != zero
-                            datum_shift = \
-                                read_station_ctl_file[1][i][2]
-                            if isinstance(
-                                    timeseries, pd.DataFrame
-                                    ) is False:
-                                ### Here we a just trying a couple of common datums
-                                all_datums = [
-                                    'NAVD',
-                                    'MSL',
-                                    'MLLW',
-                                    'IGLD',
-                                    'LWD',
-                                    'MHHW',
-                                    'MHW',
-                                    'MTL',
-                                    'DTL',
-                                    'MLW',
-                                    'STND',
-                                ]
-                                accepted_datums = datum_list
-                                length = len(all_datums)
-                                for dat in range(0, length):
-                                    try:
-                                        logger.info('Trying different datum '
-                                                    'for CO-OPS retrieval: %s',
-                                                    all_datums[dat])
-                                        retrieve_input.\
-                                            station = str(
-                                            station_id
-                                            )
-                                        retrieve_input.\
-                                            start_date = \
-                                                start_date
-                                        retrieve_input.\
-                                            end_date = end_date
-                                        retrieve_input.\
-                                            variable = variable
-                                        retrieve_input.datum =\
-                                            all_datums[dat]
-                                        timeseries = \
-                                            retrieve_t_and_c_station(
-                                            retrieve_input,
-                                            logger,
-                                        )
-                                        if (timeseries is not None and
-                                            all_datums[dat] in accepted_datums):
-                                            logger.info(
-                                                'This (%s) is the datum for which '
-                                                'data was found. '
-                                                "If that's not what was expected, "
-                                                'please revise.',
-                                                all_datums[dat],
-                                            )
-                                            break
-                                    except ValueError:
-                                        logger.info('Fail # %s when when trying '
-                                                    'multiple datums:'
-                                                    'COOPS %s data for station %s '
-                                                    'and datum %s',
-                                                    dat, variable,
-                                                    station_id, all_datums[dat]
-                                        )
-                                        pass
+            succeeded = []
+            failed = []
 
-                            # Applying datum shift in case it was specified
-                            if is_number(datum_shift):
-                                timeseries['OBS'] = timeseries['OBS'] + float(
-                                    datum_shift
-                                )
-                                logger.info(
-                                    'A datum shift of '
-                                    '%s meters was '
-                                    'applied to the water '
-                                    'level data for station '
-                                    '%s (%s) as '
-                                    'specified in '
-                                    '%s_wl_station.',
-                                    datum_shift,
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
+            for source, station_pairs in source_groups.items():
+                max_workers = source_worker_map.get(source, 1)
 
-                            else:
-                                logger.info(
-                                    'No datum shift was read '
-                                    'for station %s (%s) '
-                                    'from %s_wl_station).',
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-
-                        elif (
-                            variable == 'currents'
-                        ):  # different format than scalar vars
-                            formatted_series = \
-                                vector(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-
-                        else:
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                    except Exception as e_x:
-                        logger.error('Fail when getting COOPS %s data for '
-                                     'station %s',
-                                    variable, station_id
-                        )
-                        logger.error('Caught an exception: %s',
-                                     e_x)
-
-                elif read_station_ctl_file[0][i][3] == 'USGS':
-                    try:
-                        retrieve_input.station = str(station_id)
-                        retrieve_input.start_date = start_date
-                        retrieve_input.end_date = end_date
-                        retrieve_input.variable = variable
-                        timeseries = \
-                            retrieve_usgs_station(
-                            retrieve_input, logger
-                        )
-                        if timeseries is None:
-                            continue
-                        timeseries = \
-                            timeseries[timeseries['OBS'].notna()]
-
-                        if variable == 'water_level':  # apply datum shift (if any)
-                            # This is only important for water level, this shift
-                            # will be applied to the water level time series if
-                            # datum_shift != zero
-                            datum_shift = \
-                                read_station_ctl_file[1][i][2]
-
-                            if is_number(datum_shift):
-                                timeseries['OBS'] = timeseries['OBS'] + float(
-                                    datum_shift
-                                )
-                                logger.info(
-                                    'A datum shift of %s meters was applied '
-                                    'to the water level data for station %s '
-                                    'as specified in the %s_wl_station.',
-                                    datum_shift,
-                                    str(station_id),
-                                    ofs
-                                )
-                            else:
-                                logger.info(
-                                    'No datum shift was read '
-                                    'for station %s (%s) '
-                                    'from %s_wl_station). '
-                                    'No datum shift applied.',
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-
-                        elif (
-                            variable == 'currents'
-                        ):  # different format than scalar variables
-                            formatted_series = \
-                                vector(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-
-                        else:
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                    except Exception as e_x:
-                        logger.error('Fail when getting USGS '
-                                     '%s data for station %s',
-                                    variable, station_id
-                        )
-                        logger.error('Caught an exception: %s',
-                                     e_x)
-
-                elif read_station_ctl_file[0][i][3] == 'NDBC':
-                    try:
-                        data_station = retrieve_ndbc_station(
-                            start_date,
-                            end_date,
-                            str(station_id),
-                            variable,
-                            logger
-                            )
-
-                        if data_station is None:
-                            continue
-                        timeseries = data_station
-                        timeseries = \
-                            timeseries[timeseries['OBS'].notna()]
-                        if (
-                            variable == 'water_level'
-                        ):  # apply datum shift (if any)
-                            # This is only important for water level, this shift
-                            # will be applied to the water level time series if
-                            # datum_shift != zero
-                            datum_shift = \
-                                read_station_ctl_file[1][i][2]
-
-                            if is_number(datum_shift):
-                                timeseries['OBS'] = timeseries['OBS'] + float(
-                                    datum_shift
-                                )
-                                logger.info(
-                                    'A datum shift of '
-                                    '%s meters was '
-                                    'applied to the water '
-                                    'level data for station '
-                                    '%s (%s) as '
-                                    'specified in '
-                                    '%s_wl_station.',
-                                    datum_shift,
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-                            else:
-                                logger.info(
-                                    'No datum shift was read '
-                                    'for station %s (%s) '
-                                    'from %s_wl_station). '
-                                    'No datum shift applied.',
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                        elif (
-                            variable == 'currents'
-                        ):  # different format than scalar variables
-                            formatted_series = \
-                                vector(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                        else:
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                    except Exception as e_x:
-                        logger.error('Fail when getting NDBC %s '
-                                     'data for station %s',
-                                     variable, station_id
-                        )
-                        logger.error('Caught an exception: %s',
-                                     e_x)
-                elif read_station_ctl_file[0][i][3] == 'CHS':
-                    try:
-                        data_station = retrieve_chs_station(
-                            start_date,
-                            end_date,
-                            str(station_id),
-                            variable,
-                            logger
-                            )
-
-                        if data_station is None:
-                            continue
-                        timeseries = data_station
-                        timeseries = \
-                            timeseries[timeseries['OBS'].notna()]
-                        if (
-                            variable == 'water_level'
-                        ):  # apply datum shift (if any)
-                            # This is only important for water level, this shift
-                            # will be applied to the water level time series if
-                            # datum_shift != zero
-                            datum_shift = \
-                                read_station_ctl_file[1][i][2]
-
-                            if is_number(datum_shift):
-                                timeseries['OBS'] = timeseries['OBS'] + float(
-                                    datum_shift
-                                )
-                                logger.info(
-                                    'A datum shift of '
-                                    '%s meters was '
-                                    'applied to the water '
-                                    'level data for station '
-                                    '%s (%s) as '
-                                    'specified in '
-                                    '%s_wl_station.',
-                                    datum_shift,
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-                            else:
-                                logger.info(
-                                    'No datum shift was read '
-                                    'for station %s (%s) '
-                                    'from %s_wl_station). '
-                                    'No datum shift applied.',
-                                    str(station_id),
-                                    read_station_ctl_file\
-                                        [0][i][3],
-                                    ofs
-                                )
-
-                            formatted_series = \
-                                scalar(
-                                timeseries,
-                                start_date_full,
-                                end_date_full
-                            )
-                    except Exception as e_x:
-                        logger.error('Fail when getting CHS %s '
-                                     'data for station %s',
-                                     variable, station_id
-                        )
-                        logger.error('Caught an exception: %s',
-                                     e_x)
-                else:
+                # Check for unsupported source
+                if source not in source_worker_map:
                     logger.error(
                         'The second item on the first line of '
                         'each station '
@@ -776,43 +767,53 @@ def get_station_observations(prop,logger):
                     logger.error(
                         'Data source %s in %s_%s_station.ctl '
                         'not supported',
-                        read_station_ctl_file[0][i][3],
+                        source,
                         ofs,
                         name_var,
                     )
                     return
 
-                # This section writes the station.ctl file with all the
-                # data found and formatted in the ctl_file list
-                try:
-                    # This only happens if the formatted series is actually created
-                    if formatted_series != 'NoDataFound':
-                        obs_path = os.path.join(
+                logger.info(
+                    'Processing %d %s stations with %d workers',
+                    len(station_pairs), source, max_workers
+                )
+
+                with ThreadPoolExecutor(
+                    max_workers=max_workers
+                ) as executor:
+                    futures = {}
+                    for station_info, station_metadata in station_pairs:
+                        future = executor.submit(
+                            _fetch_and_format_station,
+                            station_info,
+                            station_metadata,
+                            variable,
+                            name_var,
+                            datum,
+                            datum_list,
+                            start_date,
+                            end_date,
+                            start_date_full,
+                            end_date_full,
+                            ofs,
                             data_observations_1d_station_path,
-                            str(station_id+'_'+ofs+'_'+\
-                                name_var+'_station.obs'))
-                        with open(obs_path,
-                            'w', encoding='utf-8'
-                        ) as output:
-                            for i in formatted_series:
-                                output.write(str(i) + '\n')
-                            logger.info(
-                                '%s_%s_%s_station.obs created successfully',
-                                station_id,ofs, name_var
-                            )
-                    else:
-                        logger.info('Formatted %s time series '
-                                    'not found for station %s',
-                                    variable, station_id
+                            logger,
                         )
-                except FileNotFoundError as e_x:
-                    logger.error(
-                        'Saving station failed. Please check the'
-                        ' directory '
-                        'path: %s -- %s.',
-                        data_observations_1d_station_path,
-                        str(e_x),
-                    )
+                        futures[future] = station_info[0]
+
+                    for future in as_completed(futures):
+                        sid = futures[future]
+                        result = future.result()
+                        if result is not None:
+                            succeeded.append(result)
+                        else:
+                            failed.append(sid)
+
+            logger.info(
+                'Station retrieval complete for %s: '
+                '%d succeeded, %d failed/no-data',
+                variable, len(succeeded), len(failed)
+            )
         else:
             logger.info('%s obs control file is blank!', name_var)
             blank_file += 1

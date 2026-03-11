@@ -215,20 +215,13 @@ def return_two_d(
     stdev = np.array(np.nanstd(diff, axis=0))
     stdev = np.where(nan_sum >= nan_threshold, stdev, np.nan)
 
-    # Central frequency, positive & negative outlier freq in 2D. Huzzah
-    cf2d = np.zeros([diff.shape[1], diff.shape[2]])
-    pof2d = np.zeros([diff.shape[1], diff.shape[2]])
-    nof2d = np.zeros([diff.shape[1], diff.shape[2]])
-    for i in range(diff.shape[1]):
-        for j in range(diff.shape[2]):
-            if np.count_nonzero(~np.isnan(diff[:, i, j])) >= nan_threshold:
-                pixel_errors = diff[:, i, j]
-                cf2d[i, j] = nos_metrics.central_frequency(pixel_errors, errorrange)
-                pof2d[i, j] = nos_metrics.positive_outlier_freq(pixel_errors, errorrange)
-                nof2d[i, j] = nos_metrics.negative_outlier_freq(pixel_errors, errorrange)
-            else:
-                cf2d[i, j] = np.nan
-                pof2d[i, j] = np.nan
-                nof2d[i, j] = np.nan
+    # Central frequency, positive & negative outlier freq in 2D (vectorized)
+    valid_mask = nan_sum >= nan_threshold
+    within = np.nansum((-errorrange <= diff) & (diff <= errorrange), axis=0)
+    cf2d = np.where(valid_mask, within / nan_sum * 100, np.nan)
+    pos_outlier = np.nansum(diff >= 2 * errorrange, axis=0)
+    pof2d = np.where(valid_mask, pos_outlier / nan_sum * 100, np.nan)
+    neg_outlier = np.nansum(diff <= -2 * errorrange, axis=0)
+    nof2d = np.where(valid_mask, neg_outlier / nan_sum * 100, np.nan)
 
     return [rmse, diff_mean, diff_max, diff_min, stdev, cf2d, pof2d, nof2d]

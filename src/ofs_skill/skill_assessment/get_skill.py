@@ -9,6 +9,7 @@ import logging
 import logging.config
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from ofs_skill.model_processing.get_node_ofs import get_node_ofs
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment import format_paired_one_d, make_skill_maps, metrics_paired_one_d
 
 
@@ -192,6 +194,122 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
     return formatted_series
 
 
+def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
+                          prop, name_var, logger):
+    """
+    Process a single station pair: match IDs, compute pairing + metrics,
+    and write the .int file.
+
+    Returns a dict with station_id, X, Y, obs_depth, mod_depth, node, skill
+    on success, or None on failure.
+    """
+    try:
+        # First, match rows using station ID between model and obs control
+        # files
+        try:
+            obs_row = [y[0] for y in read_station_ctl_file[0]].index(
+                read_ofs_ctl_file[-1][i]
+            )
+            if read_station_ctl_file[0][obs_row][0] != \
+                    read_ofs_ctl_file[-1][i]:
+                raise ValueError
+        except (ValueError, IndexError):
+            logger.error(
+                'Could not match station ID %s between control '
+                'file in get_node_ofs!', read_ofs_ctl_file[-1][i]
+            )
+            return None
+
+        # Now continue formatting paired series
+        formatted_series = prepare_series(
+            read_station_ctl_file, read_ofs_ctl_file, prop,
+            name_var, i, obs_row, logger
+        )
+        if (
+            formatted_series is not None
+            and formatted_series != 'NoDataFound'
+            and len(formatted_series[0]) > 1
+        ):
+            result = {
+                'station_id': read_station_ctl_file[0][obs_row][0],
+                'node': read_ofs_ctl_file[1][i],
+                'obs_depth': read_station_ctl_file[1][obs_row][-2],
+                'mod_depth': read_ofs_ctl_file[-2][i],
+                'Y': read_station_ctl_file[1][obs_row][0],
+            }
+
+            if name_var == 'cu':
+                logger.info('Start cu metrics for %s',
+                            read_station_ctl_file[0][obs_row][0])
+                result['X'] = read_station_ctl_file[1][obs_row][1]
+                result['skill'] = metrics_paired_one_d.skill_vector(
+                    formatted_series[-1], name_var, prop, logger
+                )
+            else:
+                logger.info('Start %s metrics for %s',
+                            name_var,
+                            read_station_ctl_file[0][obs_row][0])
+                temp_x = str(float(
+                    read_station_ctl_file[1][obs_row][1]))
+                result['X'] = temp_x
+                result['skill'] = metrics_paired_one_d.skill_scalar(
+                    formatted_series[-1], name_var, prop, logger
+                )
+
+            # Write the paired time series file
+            int_path = os.path.join(
+                prop.data_skill_1d_pair_path,
+                str(prop.ofs + '_' + name_var + '_'
+                    + read_station_ctl_file[0][obs_row][0]
+                    + '_' + str(read_ofs_ctl_file[1][i]) + '_'
+                    + prop.whichcast + '_' + prop.ofsfiletype
+                    + '_pair.int')
+            )
+            with open(int_path, 'w', encoding='utf-8') as output_2:
+                if name_var == 'cu':
+                    output_2.write(
+                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
+                        + 'HOUR ' + 'MINUTE ' + 'SPEED_OB '
+                        + 'SPEED_MODEL ' + 'BIAS_SPEED '
+                        + 'DIR_OB ' + 'DIR_MODEL ' + 'BIAS_DIR ' + '\n'
+                    )
+                else:
+                    output_2.write(
+                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
+                        + 'HOUR ' + 'MINUTE ' + 'VAL_OB '
+                        + 'VAL_MODEL ' + 'BIAS ' + '\n'
+                    )
+                for p_value in formatted_series[0]:
+                    p_value = str(p_value)
+                    p_value = p_value.replace(',', ' ')
+                    p_value = p_value.replace('[', '')
+                    p_value = p_value.replace(']', '')
+                    output_2.write(p_value + '\n')
+            logger.info(
+                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
+                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
+                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype
+            )
+            return result
+        else:
+            logger.error(
+                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
+                prop.ofs,
+                name_var,
+                read_station_ctl_file[0][obs_row][0],
+                read_ofs_ctl_file[1][i],
+                prop.whichcast,
+                prop.ofsfiletype
+            )
+            return None
+
+    except Exception:
+        logger.exception(
+            'Unexpected error processing station index %d', i
+        )
+        return None
+
+
 def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     """
     this function 1) writes the paired observation and model time series to
@@ -214,117 +332,23 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     if len(read_ofs_ctl_file[-1]) < data_length:
         data_length = len(read_ofs_ctl_file[-1])
 
-    for i in range(0, data_length):
-        # First, match rows using station ID between model and obs control
-        # files
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                index(read_ofs_ctl_file[-1][i])
-            if read_station_ctl_file[0][obs_row][0] != \
-                read_ofs_ctl_file[-1][i]:
-                raise Exception
-        except Exception:
-            logger.error('Could not match station ID %s between control '
-                         'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
-            sys.exit(-1)
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['skill_workers']
 
-        # Now continue formatting paired series
-        formatted_series = prepare_series(
-            read_station_ctl_file, read_ofs_ctl_file, prop,
-            name_var, i, obs_row, logger
-        )
-        if (
-            formatted_series is not None
-            and formatted_series != 'NoDataFound'
-            and len(formatted_series[0]) > 1
-        ):
-            if name_var == 'cu':
-                # stats = metrics_paired_one_d.skill_vector
-                # (formatted_series[-1])
-                logger.info('Start cu metrics for %s',
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                output['X'].append(
-                    read_station_ctl_file[1][obs_row][1])
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_vector(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
-
-            else:
-                # stats = metrics_paired_one_d.skill_scalar
-                # (formatted_series[-1])
-                logger.info('Start %s metrics for %s',
-                            name_var,
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                #temp_x = str(float(
-                    #read_station_ctl_file[1][i][1])+360)
-                temp_x = str(float(
-                    read_station_ctl_file[1][obs_row][1]))
-                output['X'].append(temp_x)
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_scalar(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
-
-            # This section writes the paired time series file with all the
-            # data found and formatted in the ctl_file list
-            # edited to add header for human readability - AJK
-            int_path = os.path.join(prop.data_skill_1d_pair_path,
-                        str(prop.ofs+'_'+name_var+'_'+read_station_ctl_file[0][obs_row][0]
-                        +'_'+str(read_ofs_ctl_file[1][i])+'_'+prop.whichcast+
-                        '_'+prop.ofsfiletype+'_pair.int'))
-            with open(int_path, 'w', encoding='utf-8') as output_2:
-                if  name_var == 'cu': #if cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'SPEED_OB '+'SPEED_MODEL '+'BIAS_SPEED '
-                        +'DIR_OB '+'DIR_MODEL '+'BIAS_DIR '+'\n')
-                else: #if not cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'VAL_OB '+'VAL_MODEL '+'BIAS '+'\n')
-                for p_value in formatted_series[0]:
-                    p_value = str(p_value)
-                    p_value = p_value.replace(',', ' ')
-                    p_value = p_value.replace('[', '')
-                    p_value = p_value.replace(']', '')
-                    output_2.write(p_value + '\n')
-            logger.info(
-                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
-                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype)
-        else:
-            logger.error(
-                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
-                prop.ofs,
-                name_var,
-                read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i],
-                prop.whichcast,
-                prop.ofsfiletype
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _process_station_pair, i, read_station_ctl_file,
+                read_ofs_ctl_file, prop, name_var, logger
             )
+            for i in range(data_length)
+        ]
+        # Iterate in submission order to preserve consistent CSV output
+        for future in futures:
+            result = future.result()
+            if result is not None:
+                for key in output:
+                    output[key].append(result[key])
 
     return output
 
@@ -705,7 +729,7 @@ def get_skill(prop, logger):
             )
 
     # Now collect forecast horizon time series, if ya want!
-    if (prop.horizonskill == True and
+    if (prop.horizonskill and
         prop.whichcast == 'forecast_b'):
         # Get all model time series, and put them in a big 'ol CSV file
         # Check to see if this has already been done
