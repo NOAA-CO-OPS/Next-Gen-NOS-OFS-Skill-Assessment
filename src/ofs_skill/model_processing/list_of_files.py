@@ -38,6 +38,16 @@ from ofs_skill.model_processing import get_fcst_cycle
 from ofs_skill.obs_retrieval import utils
 
 
+def get_s3_bucket(ofs):
+    # Select appropriate S3 bucket conf name from OFS
+    if ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+        url_root = 'nodd_s3_stofs3d'
+    elif ofs == 'stofs_2d_global':
+        url_root = 'nodd_s3_stofs2d'
+    else:
+        url_root = 'nodd_s3'
+    return url_root
+
 def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str]:
     """
     Convert a local file path to an S3 URL for the NODD bucket.
@@ -89,16 +99,12 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
                 return None
 
         # Select appropriate S3 bucket URL based on OFS
+        url_root = url_params[get_s3_bucket(prop.ofs)]
         if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-            url_root = url_params['nodd_s3_stofs3d']
             # STOFS uses different path structure - no 'netcdf' subdirectory
             # Bucket structure: STOFS-3D-Atl/stofs_3d_atl.YYYYMMDD/filename.nc
             ofs_relative_path = ofs_relative_path.replace('stofs_3d_atl/', 'STOFS-3D-Atl/')
             ofs_relative_path = ofs_relative_path.replace('stofs_3d_pac/', 'STOFS-3D-Pac/')
-        elif prop.ofs == 'stofs_2d_global':
-            url_root = url_params['nodd_s3_stofs2d']
-        else:
-            url_root = url_params['nodd_s3']
 
         # Construct full S3 URL
         s3_url = f'{url_root}{ofs_relative_path}'
@@ -174,15 +180,27 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> lis
     return dates
 
 def check_s3_for_file(file, logger):
+    '''
+    Check to see if file exists in S3 bucket.
 
+    Parameters
+    ----------
+    file : file/url path to S3 bucket.
+    logger : so you know what is happening as the program runs
+
+    Returns
+    -------
+    bool; True if file exists, False if file does not exist. Easy peasy.
+
+    '''
     s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     try:
         s3.head_object(Bucket=file.split('//')[1].split('.')[0],
                        Key=file.split('//')[1].split('/',1)[1])
         return True
     except ClientError as e:
-        # If a ClientError is raised, check the error code
-        # '404' indicates the object does not exist
+        # if a ClientError is raised, check the error code...
+        # '404' indicates the object does not exist, so return False
         if e.response['Error']['Code'] == '404':
             logger.warning('S3 file not found! Removing it from file list...')
             return False

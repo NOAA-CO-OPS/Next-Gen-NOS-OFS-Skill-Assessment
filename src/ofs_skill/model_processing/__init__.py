@@ -54,6 +54,7 @@ from ofs_skill.model_processing.list_of_files import (
     construct_expected_files,
     construct_s3_url,
     dates_range,
+    get_s3_bucket,
     list_of_dir,
     list_of_files,
 )
@@ -101,6 +102,7 @@ __all__ = [
     'construct_expected_files',
     'list_of_dir',
     'list_of_files',
+    'get_s3_bucket',
     # File validation
     'check_model_files',
     # Datum conversions

@@ -8,9 +8,8 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -100,12 +99,12 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     )
 
     # --- Do plots, huzzah --------------------------------------------
-    fig, axs = plt.subplots(2, 1)
-    fig.set_figheight(8)
+    fig, axs = plt.subplots(1, 1)
+    fig.set_figheight(5)
     fig.set_figwidth(12)
     fig.suptitle(figtitle, fontsize=16)
     # -----------------------------------------------------------------
-    axs[0].plot(
+    axs.plot(
         list(now_fores_paired[0].DateTime),
         list(now_fores_paired[0].OBS),
         label='Observations',
@@ -118,7 +117,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
             seriesname = 'Model Forecast Guidance'
             sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance,\n' + prop.forecast_hr[:-1] +\
                 'z cycle'
             sdboxName = 'Forecast_a - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
@@ -128,68 +127,77 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
             sdboxName = 'unknown'
 
-        axs[0].plot(
+        axs.plot(
             list(now_fores_paired[i].DateTime),
             list(now_fores_paired[i].OFS),
             label=seriesname,
             color=palette[i+1],
         )
-        axs[1].plot(
-            list(now_fores_paired[i].DateTime),
-            [
-                ofs - obs for ofs, obs in zip(
-                    now_fores_paired[i].OFS,
-                    now_fores_paired[i].OBS,
-                )
-            ],
-            label=sdboxName,
-            color=palette[i+1],
-            linestyle='--',
-        )
-    axs[1].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='orange',
-        label='Target error range',
-    )
-    axs[1].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='red',
-        label='2x target error range',
-    )
+        # axs[1].plot(
+        #     list(now_fores_paired[i].DateTime),
+        #     [
+        #         ofs - obs for ofs, obs in zip(
+        #             now_fores_paired[i].OFS,
+        #             now_fores_paired[i].OBS,
+        #         )
+        #     ],
+        #     label=sdboxName,
+        #     color=palette[i+1],
+        #     linestyle='--',
+        # )
+    # axs[1].fill_between(
+    #     list(now_fores_paired[i].DateTime),
+    #     np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
+    #     np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
+    #     alpha=0.1,
+    #     linewidth=0,
+    #     facecolor='orange',
+    #     label='Target error range',
+    # )
+    # axs[1].fill_between(
+    #     list(now_fores_paired[i].DateTime),
+    #     np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
+    #     np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
+    #     alpha=0.1,
+    #     linewidth=0,
+    #     facecolor='red',
+    #     label='2x target error range',
+    # )
 
-    axs[0].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[0].legend(
+    axs.grid(True, color='grey', linestyle='--', linewidth=0.5)
+    axs.legend(
         loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
         frameon=False,
     )
-    axs[0].set_ylabel(plot_name, fontsize=16)
-    axs[0].set_yticks(axs[0].get_yticks()[::1])
-    axs[0].tick_params(axis='both', which='major', labelsize=12)
-    plt.gcf().autofmt_xdate()
+    axs.set_ylabel(plot_name, fontsize=14)
+    axs.set_yticks(axs.get_yticks()[::1])
+    axs.tick_params(axis='both', which='major', labelsize=12)
+    axs.set_xlabel('Time', fontsize=14)
+    #plt.gcf().autofmt_xdate()
 
-    axs[1].axhline(y=0, color='black', linewidth=1)
-    axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    axs[1].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[1].legend(
-        loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
-        frameon=False,
-    )
-    axs[1].set_ylim([-X1*3, X1*3])
-    error_units = plot_name.split(' ')[-1]
-    axs[1].set_ylabel('Error ' + error_units, fontsize=16)
-    axs[1].set_xlabel('Time', fontsize=16)
-    axs[1].set_yticks(axs[1].get_yticks()[::1])
-    axs[1].tick_params(axis='y', which='major', labelsize=12)
-    axs[1].tick_params(axis='x', which='major', labelsize=12)
-
+    # axs[1].axhline(y=0, color='black', linewidth=1)
+    # axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+    # axs[1].grid(True, color='grey', linestyle='--', linewidth=0.5)
+    # axs[1].legend(
+    #     loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
+    #     frameon=False,
+    # )
+    # axs[1].set_ylim([-X1*3, X1*3])
+    # error_units = plot_name.split(' ')[-1]
+    # axs[1].set_ylabel('Error ' + error_units, fontsize=16)
+    # axs[1].set_xlabel('Time', fontsize=16)
+    # axs[1].set_yticks(axs[1].get_yticks()[::1])
+    # axs[1].tick_params(axis='y', which='major', labelsize=12)
+    # axs[1].tick_params(axis='x', which='major', labelsize=12)
+    axs.axvline(x=datetime.now(UTC), color='r', linestyle='--', lw=1)
+    axs.annotate('Current UTC time',
+            xy=(datetime.now(UTC), axs.get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
+            xytext=(85, 0), # Offset text position (points relative to xy)
+            textcoords='offset points',
+            ha='right', # Horizontal alignment
+            va='bottom', # Vertical alignment
+            fontsize=10,
+            color='r')
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()
     fig.align_ylabels()
@@ -226,8 +234,9 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     )
 
     # --- Do plots, huzzah --------------------------------------------
-    fig, axs = plt.subplots(3, 1)
-    fig.set_figheight(10)
+    nrows = 2
+    fig, axs = plt.subplots(nrows, 1)
+    fig.set_figheight(8)
     fig.set_figwidth(12)
     fig.suptitle(figtitle, fontsize=16)
     # -----------------------------------------------------------------
@@ -252,17 +261,13 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         # Series names
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
-            sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance,\n' + prop.forecast_hr[:-1] +\
                 'z cycle'
-            sdboxName = 'Forecast_a - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
-            sdboxName = 'Nowcast - Obs.'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
-            sdboxName = 'unknown'
 
         axs[0].plot(
             list(now_fores_paired[i].DateTime),
@@ -276,36 +281,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
             label=seriesname,
             color=palette[i+1],
         )
-        axs[2].plot(
-            list(now_fores_paired[i].DateTime),
-            [
-                ofs - obs for ofs, obs in zip(
-                    now_fores_paired[i].OFS_SPD,
-                    now_fores_paired[i].OBS_SPD,
-                )
-            ],
-            label=sdboxName,
-            color=palette[i+1],
-            linestyle='--',
-        )
-    axs[2].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='orange',
-        label='Target error range',
-    )
-    axs[2].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='red',
-        label='2x target error range',
-    )
+
 
     axs[0].grid(True, color='grey', linestyle='--', linewidth=0.5)
     axs[0].legend(
@@ -322,24 +298,22 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
         frameon=False,
     )
-    axs[1].set_ylabel('Current direction\n(0-360 deg.)', fontsize=16)
+    axs[1].set_ylabel('Current direction\n(0-360 deg.)', fontsize=14)
     axs[1].set_yticks(axs[1].get_yticks()[::1])
     axs[1].tick_params(axis='both', which='major', labelsize=12)
     plt.gcf().autofmt_xdate()
+    for i in range(nrows):
+        axs[i].axvline(x=datetime.now(UTC), color='r', linestyle='--', lw=1)
+        axs[i].annotate('Current UTC time',
+                xy=(datetime.now(UTC), axs[i].get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
+                xytext=(85, 0), # Offset text position (points relative to xy)
+                textcoords='offset points',
+                ha='right', # Horizontal alignment
+                va='bottom', # Vertical alignment
+                fontsize=10,
+                color='r')
 
-    axs[2].axhline(y=0, color='black', linewidth=1)
-    axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    axs[2].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[2].legend(
-        loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
-        frameon=False,
-    )
-    axs[2].set_ylim([-X1*3, X1*3])
-    axs[2].set_ylabel('Speed error\n(m/s)', fontsize=16)
-    axs[2].set_xlabel('Time', fontsize=16)
-    axs[2].set_yticks(axs[2].get_yticks()[::1])
-    axs[2].tick_params(axis='y', which='major', labelsize=12)
-    axs[2].tick_params(axis='x', which='major', labelsize=12)
+    axs[1].set_xlabel('Time', fontsize=16)
 
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()

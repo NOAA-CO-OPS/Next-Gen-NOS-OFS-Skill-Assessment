@@ -392,7 +392,6 @@ def oned_vector_plot1(
             fig.add_vline(
                 x=dt.timestamp() * 1000,
                 line_width=1,
-                #line_dash="dash",
                 line_color='gray',
                 annotation_text='Current UTC time',
                 annotation_font_color='black',

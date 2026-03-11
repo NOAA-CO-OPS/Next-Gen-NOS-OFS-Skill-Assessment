@@ -366,37 +366,22 @@ def create_1dplot(prop, logger):
 
     # Do forecast_a start and end date reshuffle
     if 'forecast_a' in prop.whichcasts:
-        if prop.forecast_hr is None:
-            error_message = (
-                'prop.forecast_hr is required if prop.whichcast is '
-                'forecast_a. Abort!')
-            logger.error(error_message)
-            sys.exit(-1)
-        elif prop.forecast_hr is not None:
-            try:
-                int(prop.forecast_hr[:-1])
-            except ValueError:
-                error_message = (f'Please check Forecast Hr format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
-            if prop.forecast_hr[-1:].lower() == 'z':
-                prop.start_date_full, prop.end_date_full =\
-                get_fcst_dates(prop.ofs, prop.start_date_full, prop.forecast_hr, logger)
-                prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
-                logger.info(f'Forecast_a: end date reassigned to '
-                                 f'{prop.end_date_full}')
-            else:
-                error_message = (f'Please check Forecast Hr (hr) format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
-
+        if prop.forecast_hr is not None:
+            prop.start_date_full, prop.end_date_full =\
+            get_fcst_dates(prop, logger)
+            prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
+            logger.info(f'Forecast_a: start date reassigned to '
+                             f'{prop.start_date_full}')
+            logger.info(f'Forecast_a: end date reassigned to '
+                             f'{prop.end_date_full}')
+        else:
+            raise SystemExit
     # Start Date and End Date validation
     # Enforce end date for whichcasts other than forecast_a
-    if prop.end_date_full is None:
-        logger.error('If not using forecast_a, you must set an end date! Abort.')
-        sys.exit(-1)
+    if prop.end_date_full is None or prop.start_date_full is None:
+        logger.error('If not using forecast_a, you must set start and end dates! '
+                     'Abort.')
+        raise SystemExit
     try:
         prop.start_date_full_before = prop.start_date_full
         prop.end_date_full_before = prop.end_date_full
@@ -407,14 +392,14 @@ def create_1dplot(prop, logger):
                          f'{prop.start_date_full}, End Date - '
                          f'{prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
+        raise SystemExit
     if datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.strptime(
         prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
         error_message = (f'End Date {prop.end_date_full} '
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
+        raise SystemExit
     if pytz.timezone('UTC').localize(datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')) > datetime.now(UTC):
         logger.error('Start date is in the future! Unless you have a time machine, '
@@ -676,9 +661,10 @@ if __name__ == '__main__':
         '-f',
         '--Forecast_Hr',
         required=False,
-        default='00hr',
+        default='now',
         help='Specify model cycle to assess. Used with forecast_a mode only: '
-        "'02hr', '06hr', '12hr', ... ", )
+        "'02z', '06Z', '12z'; use 'now' to assess the most recent available "
+        'model forecast cycle.', )
     parser.add_argument(
         '-so',
         '--Station_Owner',
@@ -703,10 +689,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Launch GUI to accept argument input if no required args are present
-    if (args.OFS is None or
-        args.StartDate_full is None
-        or args.EndDate_full is None):
+    # Launch GUI to accept argument input if no OFS args are present
+    if (args.OFS is None):
         args = create_gui.create_gui(parser)
         gc.collect() # garbage collect from GUI window not in main thread
 
