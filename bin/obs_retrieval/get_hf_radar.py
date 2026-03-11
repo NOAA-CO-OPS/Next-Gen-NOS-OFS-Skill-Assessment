@@ -1,35 +1,26 @@
 from datetime import datetime, timedelta
-from os import PathLike
 from pathlib import Path
-from typing import Collection
 import argparse
 import os
 import re
-import fiona
-import fiona.crs
 import numpy as np
 import rasterio
-from rasterio.enums import Resampling
-import scipy.interpolate
+from rasterio.transform import from_origin
 import xarray as xr
+import pandas as pd
 import geopandas as gpd
 import shapely
 import shapely.geometry
 import shapely.wkt
-import rasterio
-from rasterio.crs import CRS
-from rasterio.enums import Resampling
-import rasterio.features
-import fiona.crs
-import ast
 from shapely.geometry import Polygon, Point
-import pandas as pd
-import sys
 
 
 NRT_DELAY = timedelta(hours=1)
 
 
+'''
+Intersection detection logic
+'''
 def polygons_intersect_2d(poly1, poly2):
     p1 = Polygon(poly1)
     p2 = Polygon(poly2)
@@ -39,11 +30,11 @@ def polygons_intersect_2d(poly1, poly2):
 def ensure_clockwise(poly):
     ring = Polygon(poly)
     if not ring.exterior.is_ccw:
-        return poly  # already clockwise
+        return poly
     return poly[::-1]
 
 
-def spherical_point_in_poly(p, poly_xyz, tol=1e-4):  # Loosened tolerance
+def spherical_point_in_poly(p, poly_xyz, tol=1e-4):
     angle_sum = 0
     for i in range(len(poly_xyz)):
         a = poly_xyz[i]
@@ -76,7 +67,7 @@ def segments_intersect_gc(a1, a2, b1, b2, tol=1e-10):
     n2 = normalize(np.cross(b1, b2))
     cross = np.cross(n1, n2)
     if np.linalg.norm(cross) < tol:
-        return False  # ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ HANDLE NEAR-PARALLEL CASES
+        return False
     intersect_pts = [normalize(cross), normalize(-cross)]
     for p in intersect_pts:
         if is_point_on_arc(p, a1, a2) and is_point_on_arc(p, b1, b2):
@@ -95,40 +86,36 @@ def latlon_to_xyz(lat_deg, lon_deg):
 
 def get_geospatial_bounds(nc_file):
     try:
-        # Open file if a string path is passed
         if isinstance(nc_file, str):
             nc_file = xr.open_dataset(nc_file)
 
-        # 1. Check for WKT-style geospatial_bounds
         if 'geospatial_bounds' in nc_file.attrs:
             return nc_file.attrs['geospatial_bounds']
 
-        # 2. Check for 'bbox' as attribute (not via .ncattrs())
         elif 'bbox' in nc_file.attrs:
-            bbox = nc_file.attrs['bbox']  # Should be a list or array: [lon_min, lat_min, lon_max, lat_max]
+            bbox = nc_file.attrs['bbox']
             lon_min, lat_min, lon_max, lat_max = bbox
 
-        # 3. Fallback to individual lat/lon bounds in attrs
         else:
             lat_min = nc_file.attrs.get('geospatial_lat_min')
             lat_max = nc_file.attrs.get('geospatial_lat_max')
             lon_min = nc_file.attrs.get('geospatial_lon_min')
             lon_max = nc_file.attrs.get('geospatial_lon_max')
 
-            # If any of the above are missing, calculate from coordinate data
             if None in [lat_min, lat_max, lon_min, lon_max]:
                 if 'lat' in nc_file.coords and 'lon' in nc_file.coords:
                     lat_vals = nc_file['lat'].values
                     lon_vals = nc_file['lon'].values
 
-                    lat_min = float(lat_vals.min())
-                    lat_max = float(lat_vals.max())
-                    lon_min = float(lon_vals.min())
-                    lon_max = float(lon_vals.max())
-                else:
-                    raise ValueError("No 'lat' and 'lon' coordinates found in dataset")
+                elif 'latitude' in nc_file.coords and 'longitude' in nc_file.coords:
+                    lat_vals = nc_file['latitude'].values
+                    lon_vals = nc_file['longitude'].values
 
-        # Return WKT polygon
+                lat_min = float(lat_vals.min())
+                lat_max = float(lat_vals.max())
+                lon_min = float(lon_vals.min())
+                lon_max = float(lon_vals.max())
+
         wkt_poly = (
             f"POLYGON (({lon_min} {lat_min}, {lon_min} {lat_max}, "
             f"{lon_max} {lat_max}, {lon_max} {lat_min}, {lon_min} {lat_min}))"
@@ -171,16 +158,31 @@ def parse_wkt_polygon(wkt_str):
         lon, lat = map(float, pair.strip().split())
         polygon.append((lon, lat))
 
-        # ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ ENSURE POLYGON IS CLOSED
     if polygon[0] != polygon[-1]:
         polygon.append(polygon[0])
 
     return polygon
 
 
+'''
+Ensure timestamp is formatted
+'''
+def parse_utc_timestamp(timestr):
+    try:
+        return datetime.strptime(timestr, "%Y%m%d%H")
+    except Exception as e:
+        print(e)
+
+
+'''
+Write data in ASCII format
+'''
 def export_ascii(data_da, outfile):
     data = data_da.values.copy()
+
     data = np.where(np.isnan(data), -9999, data)
+
+    data = data.astype(np.float32)
 
     lats = data_da['lat'].values
     lons = data_da['lon'].values
@@ -189,44 +191,54 @@ def export_ascii(data_da, outfile):
         data = np.flipud(data)
         lats = lats[::-1]
 
-    if lons[0] > lons[-1]:
-        data = data[:, ::-1]
-        lons = lons[::-1]
+    west = float(lons.min())
+    east = float(lons.max())
+    south = float(lats.min())
+    north = float(lats.max())
 
-    nrows = len(lats)
-    ncols = len(lons)
+    nrows, ncols = data.shape
 
-    cellsize_x = np.mean(np.diff(lons))
-    cellsize_y = np.mean(np.diff(lats))
+    dx = (east - west) / (ncols - 1)
+    dy = (north - south) / (nrows - 1)
 
-    xllcorner = lons[0]  # leftmost longitude
-    yllcorner = lats[-1]  # bottommost latitude
+    transform = from_origin(
+        lons.min() - dx/2,
+        lats.max() + dy/2,
+        dx,
+        dy
+    )
 
-
-    with open(outfile, "w") as f:
-        f.write(f"ncols        {ncols}\n")
-        f.write(f"nrows        {nrows}\n")
-        f.write(f"xllcorner    {xllcorner}\n")
-        f.write(f"yllcorner    {yllcorner}\n")
-        f.write(f"cellsize     {cellsize_x}\n")
-        f.write("NODATA_value -9999\n")
-        np.savetxt(f, data, fmt="%.4f")
-
-
-    prj_path = outfile.with_suffix(".prj")
-
-    wgs84_wkt = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
-
-    with open(prj_path, "w") as f:
-        f.write(wgs84_wkt)
-
+    with rasterio.open(
+        outfile,
+        'w',
+        driver='AAIGrid',
+        height=data.shape[0],
+        width=data.shape[1],
+        count=1,
+        dtype=rasterio.float32,
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=-9999
+    ) as dst:
+        dst.write(data, 1)
 
 
+'''
+Mask by OFS shapefile boundary 
+'''
 def clip_by_ofs(ds, gdf):
-    lon = ds['lon'].values
-    lat = ds['lat'].values
-    lon2d, lat2d = np.meshgrid(lon, lat)
+    lat_name = "lat" if "lat" in ds.coords else "latitude"
+    lon_name = "lon" if "lon" in ds.coords else "longitude"
     
+    if lon_name == "lon":
+        lon = ds["lon"].values
+        lat = ds["lat"].values
+    else:
+        lon = ds["longitude"].values
+        lat = ds["latitude"].values
+
+    lon2d, lat2d = np.meshgrid(lon, lat)
+   
     points = gpd.GeoDataFrame(
         geometry=[Point(x, y) for x, y in zip(lon2d.flatten(), lat2d.flatten())],
         crs="EPSG:4326"
@@ -238,8 +250,12 @@ def clip_by_ofs(ds, gdf):
     mask[points_in.index] = True
     mask = mask.reshape(lon2d.shape)
     
-    mask_da = xr.DataArray(mask, coords=[ds.lat, ds.lon], dims=["lat", "lon"])
-    
+    mask_da = xr.DataArray(
+        mask,
+        coords=[ds[lat_name], ds[lon_name]],
+        dims=[lat_name, lon_name]
+    )
+
     return mask_da
 
 
@@ -247,6 +263,9 @@ def wrap_lon(lon):
     return ((lon + 180) % 360) - 180
 
 
+'''
+Check which HF radar sources intersect or are contained within an OFS boundary
+'''
 def check_for_overlap(
     date_obj, 
     data_dir, 
@@ -266,7 +285,9 @@ def check_for_overlap(
     prvi: Puerto Rico/Virgin Islands
     """
 
-    hf_datasets = ["usegc", "uswc", "glna", "ushi", "akns", "gak", "prvi"]
+    #akns never seems to have data
+    #hf_datasets = ["usegc", "uswc", "glna", "ushi", "akns", "gak", "prvi"]
+    hf_datasets = ["usegc", "uswc", "glna", "ushi", "gak", "prvi"]
 
     lon_min, lat_min, lon_max, lat_max = gdf.total_bounds
     study_area = [
@@ -281,27 +302,42 @@ def check_for_overlap(
     matching_files = {}
 
     for hfd in hf_datasets:
+        url = f"https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar_{hfd}_6km"
+
         try:
-            url = f"https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar_{hfd}_2km"
-
             ds = xr.open_dataset(url)
-            geospatial_bounds = get_geospatial_bounds(ds)
-
-            if geospatial_bounds:
-                file_polygon = parse_wkt_polygon(geospatial_bounds)
-                file_polygon = [(wrap_lon(lon), lat) for lon, lat in file_polygon]
-                file_polygon = ensure_clockwise(file_polygon)
-
-                if polygons_intersect_2d(study_area, file_polygon):
-                    ds = xr.open_dataset(url)
-                    matching_files[url] = ds
-
         except Exception as e:
             print(e)
-        
+            continue
+
+        geospatial_bounds = get_geospatial_bounds(ds)
+
+        if not geospatial_bounds:
+            continue
+
+        file_polygon = parse_wkt_polygon(geospatial_bounds)
+        file_polygon = [(wrap_lon(lon), lat) for lon, lat in file_polygon]
+        file_polygon = ensure_clockwise(file_polygon)
+
+        if polygons_intersect_2d(study_area, file_polygon):
+            try:
+                ds = xr.open_dataset(
+                    url,
+                    decode_cf=True,
+                    mask_and_scale=True
+                )
+
+                matching_files[url] = ds
+
+            except Exception as e:
+                print(e)
+
     process_files(matching_files, date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
 
 
+'''
+Set up time extent and process based on daily average or hourly
+'''
 def process_files(
     matching_files, 
     date_obj, 
@@ -317,12 +353,12 @@ def process_files(
         today = datetime.utcnow().date()
 
         if date_obj.date() == today:
-            et = datetime.utcnow() - NRT_DELAY
-            st = et - timedelta(days=1) - NRT_DELAY 
+            et = (datetime.utcnow() - NRT_DELAY).replace(minute=0, second=0, microsecond=0)
+            st = et - timedelta(hours=24)
 
         else:
-            st = date_obj.date()
-            et = date_obj.date() + timedelta(days=1)
+            st = datetime.combine(date_obj.date(), datetime.min.time())
+            et = st + timedelta(hours=24)
 
     elif mode == "hourly":
         if start_time is not None and end_time is not None:
@@ -330,41 +366,44 @@ def process_files(
             st = start_time
 
 
-    st = st.replace(minute=0, second=0, microsecond=0)
-    et = et.replace(minute=0, second=0, microsecond=0)
-
     for url, ds in matching_files.items():
+        #print("TIME RANGE IN FILE:", ds.time.min().values, ds.time.max().values)
+        #print("REQUESTED:", st, et)
+        
         dtp = ds.sel(time=slice(st, et))
 
-        if dtp.time.size == 0:
-            continue
+        u_var = "u" if "u" in dtp.variables else "ssu"
+        v_var = "v" if "v" in dtp.variables else "ssv"
 
-        dtp_u = dtp["u"]
-        dtp_v = dtp["v"]
+        dtp_u = dtp[u_var].astype("float64")
+        dtp_v = dtp[v_var].astype("float64")
 
         mask_dtp = clip_by_ofs(dtp, gdf)
 
         u_data = dtp_u.where(mask_dtp)
         v_data = dtp_v.where(mask_dtp)
 
-        u_data = u_data.assign_coords(lat=dtp['lat'], lon=dtp['lon'])
-        v_data = v_data.assign_coords(lat=dtp['lat'], lon=dtp['lon'])
-
-        if '_FillValue' in dtp_u.attrs:
-            u_data = u_data.where(u_data != dtp_u._FillValue)
-        if '_FillValue' in dtp_v.attrs:
-            v_data = v_data.where(v_data != dtp_v._FillValue)
+        if np.isfinite(u_data).sum() == 0:
+            continue
 
         if mode == "daily":
-            u_avg = u_data.mean(dim="time")
-            v_avg = v_data.mean(dim="time")
+            u_avg = u_data.mean(dim="time", skipna=True)
+            v_avg = v_data.mean(dim="time", skipna=True)
+
+            u_avg = u_avg.where(np.isfinite(u_avg))
+            v_avg = v_avg.where(np.isfinite(v_avg))
+
+            u_avg = u_avg.astype("float64")
+            v_avg = v_avg.astype("float64")
 
             mag = np.sqrt(u_avg**2 + v_avg**2)
             dir_rad = np.arctan2(u_avg, v_avg)
             direction = (np.degrees(dir_rad) + 360) % 360
 
-            mag_outfile = data_dir / f"mag_{date_obj.strftime('%Y%m%d')}.asc"
-            dir_outfile = data_dir / f"dir_{date_obj.strftime('%Y%m%d')}.asc"
+            direction = direction.where(np.isfinite(direction))
+
+            mag_outfile = data_dir / f"{ofs}_hfradar_mag_{date_obj.strftime('%Y%m%d')}.asc"
+            dir_outfile = data_dir / f"{ofs}_hfradar_dir_{date_obj.strftime('%Y%m%d')}.asc"
 
             export_ascii(mag, mag_outfile)
             export_ascii(direction, dir_outfile)
@@ -379,8 +418,8 @@ def process_files(
                 direction = (np.degrees(dir_rad) + 360) % 360
 
                 timestamp = pd.to_datetime(u_hour.time.values).strftime("%Y%m%d_%H%M")
-                mag_outfile = data_dir / f"mag_{timestamp}.asc"
-                dir_outfile = data_dir / f"dir_{timestamp}.asc"
+                mag_outfile = data_dir / f"{ofs}_hfradar_mag_{timestamp}.asc"
+                dir_outfile = data_dir / f"{ofs}_hfradar_dir_{timestamp}.asc"
 
                 export_ascii(mag, mag_outfile)
                 export_ascii(direction, dir_outfile)
@@ -393,32 +432,38 @@ if __name__ == '__main__':
     parser.add_argument("my_date", help="Date for data collection")
     parser.add_argument("catalogue", help="File directory to write the files to")
     parser.add_argument("my_box", help="Bounding box (shapefile)")
-    #parser.add_argument("var_name_list", nargs='*', help="Variables of interest (e.g., sst)")
     parser.add_argument("ofs", help="OFS of interest")
 
     parser.add_argument("--mode", choices=["daily", "hourly"], default="daily")
     parser.add_argument("--start", help="Start time YYYYMMDDHH (UTC)")
     parser.add_argument("--end", help="End time YYYYMMDDHH (UTC)")
 
+
     args = parser.parse_args()
 
     date_obj = datetime.strptime(args.my_date, "%Y%m%d")
-    
+
     data_dir = Path(args.catalogue)
 
     mode = args.mode
 
+    start_time = None
+    end_time = None
+
     if args.start:
-        start_time = args.start
+        start_time = parse_utc_timestamp(args.start)
 
     if args.end:
-        end_time = args.end
+        end_time = parse_utc_timestamp(args.end)
 
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
 
     if os.path.exists(Path(args.my_box)):
         gdf = gpd.read_file(Path(args.my_box))
+        
+        #print("OFS bounds:", gdf.total_bounds)
+        
         bounds = gdf.total_bounds
         lon_min, lat_min, lon_max, lat_max = bounds
 
