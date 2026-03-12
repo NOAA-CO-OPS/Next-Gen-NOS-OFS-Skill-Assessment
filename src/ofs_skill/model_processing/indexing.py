@@ -746,24 +746,27 @@ def index_nearest_station(
         lon_rho_np = np.array(model_netcdf['lon_rho'])
         lat_rho_np = np.array(model_netcdf['lat_rho'])
 
+        lat_flat = lat_rho_np.ravel()
+        lon_flat = lon_rho_np.ravel()
+
         for obs_p in range(len(ctl_file_extract)):
-            dist = np.empty(len(model_netcdf['lon_rho']))
+            dist = np.empty(lat_flat.shape)
             dist[:] = np.nan
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
             nearby_nodes = np.argwhere(
-                (lon_rho_np < obs_lon + 0.1) &
-                (lon_rho_np > obs_lon - 0.1) &
-                (lat_rho_np < obs_lat + 0.1) &
-                (lat_rho_np > obs_lat - 0.1)
+                (lon_flat < obs_lon + 0.1) &
+                (lon_flat > obs_lon - 0.1) &
+                (lat_flat < obs_lat + 0.1) &
+                (lat_flat > obs_lat - 0.1)
             )
 
             if nearby_nodes.size > 0:
-                for i_index in nearby_nodes:
+                for i_index in nearby_nodes[:, 0]:
                     distance = calculate_station_distance(
-                        lat_rho_np[i_index],
-                        lon_rho_np[i_index],
+                        float(lat_flat[i_index]),
+                        float(lon_flat[i_index]),
                         obs_lat,
                         obs_lon
                     )
