@@ -73,12 +73,13 @@ Author Name: AJK       Creation Date: 02/26/2026
 """
 
 import argparse
+import copy
 import logging
 import logging.config
 import os
 import sys
 import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -974,7 +975,8 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 7. Variable loop
     # ------------------------------------------------------------------
-    for variable in prop.var_list:
+    def _ha_for_variable(variable, p):
+        """Run harmonic analysis for a single variable."""
         if variable == 'water_level':
             name_var = 'wl'
             list_of_headings = [
@@ -995,25 +997,43 @@ def run_harmonic_analysis(prop, logger):
                 'Variable %s is not valid for harmonic analysis. Skipping.',
                 variable
             )
-            continue
+            return
 
         var_info = [variable, name_var, list_of_headings]
 
         # Read OFS model ctl files
-        read_ofs_ctl_file = ofs_ctlfile_read(prop, name_var, logger)
+        read_ofs_ctl_file = ofs_ctlfile_read(p, name_var, logger)
 
         if read_ofs_ctl_file is not None:
             run_harmonic_analysis_station_loop(
-                read_ofs_ctl_file, prop, var_info,
-                prop.min_duration_days, prop.do_predictions,
-                prop.amp_threshold, prop.phase_threshold,
-                prop.vector_diff_threshold, logger
+                read_ofs_ctl_file, p, var_info,
+                p.min_duration_days, p.do_predictions,
+                p.amp_threshold, p.phase_threshold,
+                p.vector_diff_threshold, logger
             )
         else:
             logger.error(
                 'Could not read/create control file for %s. '
                 'Skipping variable.', variable
             )
+
+    # Dispatch variable processing — parallel or sequential
+    parallel_cfg = get_parallel_config(logger)
+    ha_vars = [v for v in prop.var_list if v in ('water_level', 'currents')]
+    if parallel_cfg['parallel_variables'] and len(ha_vars) > 1:
+        logger.info('Processing %d HA variables in parallel', len(ha_vars))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = []
+            for variable in ha_vars:
+                prop_local = copy.deepcopy(prop)
+                prop_local.var_list = [variable]
+                futures.append(executor.submit(
+                    _ha_for_variable, variable, prop_local))
+            for f in futures:
+                f.result()
+    else:
+        for variable in prop.var_list:
+            _ha_for_variable(variable, prop)
 
     logger.info('--- Harmonic Analysis Process Complete ---')
     return logger

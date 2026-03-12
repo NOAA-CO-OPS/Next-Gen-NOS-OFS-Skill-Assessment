@@ -186,6 +186,17 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                            'combining netcdfs in intake! Error: %s. '
                            'Continuing...',
                            ex)
+    # Build storage_options for S3 streaming when remote files are present
+    s3_storage_opts = {}
+    if has_remote:
+        s3_storage_opts = {
+            'storage_options': {
+                'anon': True,
+                'default_block_size': 64 * 1024 * 1024,
+                'default_fill_cache': False,
+            }
+        }
+
     if dim_compat:  # This will only be FALSE for stations files when
         # station dimensions do not match! Always True for fields
         # files
@@ -203,6 +214,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'drop_variables': drop_variables,
                         'chunks': {'time': 1},
                     },
+                    **s3_storage_opts,
                 )
             else:
                 source = intake.open_netcdf(
@@ -212,9 +224,10 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'engine': engine,
                         'preprocess': preprocess_with_filename,
                         'concat_dim': time_name,
-                        'decode_times': 'False',
+
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
+                    **s3_storage_opts,
                 )
 
         else:
@@ -225,10 +238,10 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'engine': engine,
                     'preprocess': preprocess_with_filename,
                     'concat_dim': time_name,
-                    'decode_times': 'False',
                     'drop_variables': drop_variables,
                     'chunks': 'auto',  # Enables lazy loading with Dask
                 },
+                **s3_storage_opts,
             )
         # Read the dataset lazily
         logger.info('No dimension changes needed, lazy loading catalog ...')
@@ -657,7 +670,6 @@ def remove_extra_stations(engine: str,
             xarray_kwargs={
                 'engine': 'h5netcdf',
                 'drop_variables': drop_variables,
-                'decode_times': 'False',
                 'chunks': 'auto',
             },
         )

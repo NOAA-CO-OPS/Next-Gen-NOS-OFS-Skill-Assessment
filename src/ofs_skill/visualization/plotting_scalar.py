@@ -35,6 +35,7 @@ import ofs_skill.visualization.make_static_plots as make_static_plots
 from ofs_skill.obs_retrieval import (
     find_nearest_tidal_stations,
     retrieve_tidal_predictions,
+    utils,
 )
 from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
 from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
@@ -297,7 +298,7 @@ def oned_scalar_plot(
           fallback_datums = ['MLLW', 'MHHW', 'MHW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B']
           # Read fallback datums from config file
           config = configparser.ConfigParser()
-          config_file = Path(__file__).resolve().parent.parent.parent.parent / 'conf' / 'ofs_dps.conf'
+          config_file = utils.Utils().get_config_file()
           try:
                 config.read(config_file)
                 if config.has_option('datums', 'datum_list'):

@@ -385,6 +385,12 @@ In the `working directory`, there is a sub-directory called 'conf'. In 'conf', t
 
 ### 3.3.1 ofs_dps.conf
 
+First, copy the example template to create your local config file:
+
+```bash
+cp conf/ofs_dps.conf.example conf/ofs_dps.conf
+```
+
 'ofs_dps.conf' establishes the directory names and structure that the skill assessment uses to read inputs and write outputs, and sets several key options. By editing the conf file, you can:
 1) set your `working directory` (🚨required);
 2) provide a list of observation station IDs to assess;

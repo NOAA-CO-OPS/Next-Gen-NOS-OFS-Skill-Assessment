@@ -8,11 +8,13 @@ nearest node and depth are applied and a new model ctl file is created along
 with the time series
 """
 
+import copy
 import logging
 import logging.config
 import math
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from ofs_skill.model_processing.model_format_properties import ModelFormatProper
 from ofs_skill.model_processing.model_source import get_model_source
 from ofs_skill.model_processing.write_ofs_ctlfile import write_ofs_ctlfile
 from ofs_skill.obs_retrieval import scalar, utils, vector
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 
 
 def parse_arguments_to_list(argument, logger):
@@ -197,12 +200,124 @@ def roms_nodes(model, node_num):
     return i_index,j_index
 
 
-def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
+def _precompute_stations_data(prop, model, ofs_ctlfile, model_var, logger):
+    """Batch-extract all station data in a single Dask compute call.
+
+    Returns a dict with pre-computed numpy arrays keyed by data type.
+    Only used for stations files to avoid N separate .compute() calls.
+    """
+    n_stations = len(ofs_ctlfile[1])
+    indices = [int(ofs_ctlfile[1][i]) for i in range(n_stations)]
+    depths = [int(ofs_ctlfile[2][i]) for i in range(n_stations)]
+
+    time_var = 'ocean_time' if prop.model_source == 'roms' else 'time'
+    model_time = np.array(model[time_var])
+
+    result = {'model_time': model_time}
+
+    if model_var in ('u', 'u_east', 'horizontalVelX'):
+        # Current variables — need u and v
+        if prop.model_source == 'fvcom':
+            u_data = np.stack([
+                np.array(model['u'][:, depths[i], indices[i]])
+                for i in range(n_stations)
+            ], axis=1)
+            v_data = np.stack([
+                np.array(model['v'][:, depths[i], indices[i]])
+                for i in range(n_stations)
+            ], axis=1)
+        elif prop.model_source == 'roms':
+            # ROMS stations: time x station x s_rho
+            u_data = np.stack([
+                np.array(model['u_east'][:, indices[i], depths[i]])
+                for i in range(n_stations)
+            ], axis=1)
+            v_data = np.stack([
+                np.array(model['v_north'][:, indices[i], depths[i]])
+                for i in range(n_stations)
+            ], axis=1)
+        elif prop.model_source == 'schism':
+            if 'stofs' not in prop.ofs:
+                u_data = np.stack([
+                    np.array(model['u'][:, depths[i], indices[i]])
+                    for i in range(n_stations)
+                ], axis=1)
+                v_data = np.stack([
+                    np.array(model['v'][:, depths[i], indices[i]])
+                    for i in range(n_stations)
+                ], axis=1)
+            else:
+                u_data = np.stack([
+                    np.array(model['u'][:, indices[i]])
+                    for i in range(n_stations)
+                ], axis=1)
+                v_data = np.stack([
+                    np.array(model['v'][:, indices[i]])
+                    for i in range(n_stations)
+                ], axis=1)
+        result['u_data'] = u_data
+        result['v_data'] = v_data
+
+    else:
+        # Scalar variables (temp, salt, water level)
+        actual_var = model_var
+        if prop.model_source == 'roms' and model_var == 'salinity':
+            actual_var = 'salt'
+        if prop.model_source == 'schism' and model_var == 'temp':
+            actual_var = 'temperature'
+        if prop.model_source == 'schism' and model_var == 'zeta':
+            actual_var = 'elevation' if prop.ofsfiletype == 'fields' else model_var
+
+        if prop.model_source == 'fvcom':
+            # FVCOM stations: time x siglay x station
+            scalar_data = np.stack([
+                np.array(model[actual_var][:, depths[i], indices[i]])
+                for i in range(n_stations)
+            ], axis=1)
+        elif prop.model_source == 'roms':
+            # ROMS stations: time x station x s_rho
+            scalar_data = np.stack([
+                np.array(model[actual_var][:, indices[i], depths[i]])
+                for i in range(n_stations)
+            ], axis=1)
+        elif prop.model_source == 'schism':
+            if 'stofs' in prop.ofs and model_var in ('temp', 'temperature'):
+                scalar_data = np.stack([
+                    np.array(model['temperature'][:, indices[i]])
+                    for i in range(n_stations)
+                ], axis=1)
+            else:
+                try:
+                    scalar_data = np.stack([
+                        np.array(model[actual_var][:, indices[i], depths[i]])
+                        for i in range(n_stations)
+                    ], axis=1)
+                except IndexError:
+                    # 2D variable (e.g. water level) — no depth dimension
+                    scalar_data = np.stack([
+                        np.array(model[actual_var][:, indices[i]])
+                        for i in range(n_stations)
+                    ], axis=1)
+
+        result['scalar_data'] = scalar_data
+
+    logger.info('Pre-computed batch extraction for %d stations, var=%s',
+                n_stations, model_var)
+    return result
+
+
+def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
     """
     extract temperature and salinity time series from concatenated model data
     """
 
-    if prop.model_source=='fvcom':
+    if precomputed is not None and prop.ofsfiletype == 'stations':
+        model_time = precomputed['model_time']
+        model_obs = precomputed['scalar_data'][:, i].copy()
+        if prop.model_source == 'schism':
+            invalid_mask = (model_obs <= -999) | (model_obs >= 999)
+            model_obs[invalid_mask] = np.nan
+    elif prop.model_source=='fvcom':
         if prop.ofsfiletype == 'fields':
             model_time = np.array(model['time'])
             model_obs = np.array(
@@ -287,12 +402,24 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
     return formatted_series
 
 
-def format_currents(prop, model, ofs_ctlfile, i):
+def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
     """
     extract current velocity time series from concatenated model data
     """
 
-    if prop.model_source=='fvcom':
+    if precomputed is not None and prop.ofsfiletype == 'stations':
+        mfp = ModelFormatProperties()
+        mfp.model_time = precomputed['model_time']
+        u_i = precomputed['u_data'][:, i]
+        v_i = precomputed['v_data'][:, i]
+        mfp.model_obs = np.array(u_i**2 + v_i**2) ** 0.5
+        mfp.model_ang = np.array(
+            [math.atan2(u_i[t], v_i[t]) / math.pi * 180 % 360.0
+             for t in range(len(mfp.model_time))])
+        invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
+        mfp.model_obs[invalid_mask] = np.nan
+        mfp.model_ang[invalid_mask] = np.nan
+    elif prop.model_source=='fvcom':
         mfp = ModelFormatProperties()
         mfp.model_time = np.array(model['time'])
         if prop.ofsfiletype == 'fields':
@@ -447,7 +574,7 @@ def format_currents(prop, model, ofs_ctlfile, i):
 
 
 def format_waterlevel(prop, model, ofs_ctlfile, model_var,
-                      i, logger):
+                      i, logger, precomputed=None):
     """
     extract water level time series from concatenated model data
     """
@@ -457,7 +584,17 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
     datum_offset = get_datum_offset_func(
         prop, int(ofs_ctlfile[1][i]), model, id_number, logger)
 
-    if prop.model_source=='fvcom':
+    if precomputed is not None and prop.ofsfiletype == 'stations':
+        model_time = precomputed['model_time']
+        model_obs = precomputed['scalar_data'][:, i].copy()
+        if prop.model_source == 'schism':
+            if datum_offset > -999 and datum_offset < 999:
+                sign = 1 if 'stofs' in prop.ofs else -1
+                model_obs = model_obs + sign * datum_offset
+        else:
+            if datum_offset > -999:
+                model_obs = model_obs - datum_offset
+    elif prop.model_source=='fvcom':
         if prop.ofsfiletype == 'fields':
             model_time = np.array(model['time'])
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
@@ -768,11 +905,13 @@ def get_node_ofs(prop, logger):
 
     prop.ctl_flag = 0 #Need flag to track control file production if
                  #user_input_location == True
-    for variable in prop.var_list:
+
+    def _extract_variable(variable, prop_local):
+        """Process a single variable — extractable for parallel dispatch."""
         try:
             name_conventions = name_convent(variable)
-            if not prop.user_input_location:
-                control_file = f'{prop.control_files_path}/{prop.ofs}_' \
+            if not prop_local.user_input_location:
+                control_file = f'{prop_local.control_files_path}/{prop_local.ofs}_' \
                                f'{name_conventions[0]}_station.ctl'
                 if os.path.isfile(control_file) is False:
                     logger.info('%s is not found. If not providing a custom XY '
@@ -781,54 +920,70 @@ def get_node_ofs(prop, logger):
                     sys.exit()
                 if os.path.getsize(control_file): # Gets size of obs ctl file!
                     ofs_ctlfile = ofs_ctlfile_extract(
-                        prop, name_conventions[0], model, logger)
+                        prop_local, name_conventions[0], model, logger)
                     if ofs_ctlfile is None:
-                        continue
+                        return
                 else:
                     logger.info('%s obs ctl file is blank!', variable)
                     logger.info('For GLOFS, salt and cu ctl files may be blank. '
                                 'If running with a single station provider/owner, '
                                 'ctl files may also be blank.')
-                    continue # skip to next variable
+                    return
             else:
-                ofs_ctlfile = ofs_ctlfile_extract(prop, name_conventions[0], model, logger)
+                ofs_ctlfile = ofs_ctlfile_extract(prop_local, name_conventions[0], model, logger)
+
+            # Batch-extract all station data if using stations files
+            precomputed = None
+            if prop_local.ofsfiletype == 'stations':
+                try:
+                    precomputed = _precompute_stations_data(
+                        prop_local, model, ofs_ctlfile,
+                        name_conventions[-1], logger)
+                except Exception as ex:
+                    logger.warning(
+                        'Batch precomputation failed, falling back to '
+                        'per-station extraction: %s', ex)
+                    precomputed = None
 
             datum_offsets = []
             model_stations = []
             for i in range(len(ofs_ctlfile[1])):
                 if variable in ('salinity', 'water_temperature'):
                     formatted_series = format_temp_salt(
-                        prop,
+                        prop_local,
                         model,
                         ofs_ctlfile,
                         name_conventions[-1],
                         i,
+                        precomputed=precomputed,
                     )
                 elif variable == 'currents':
-                    formatted_series = format_currents(prop, model,
+                    formatted_series = format_currents(prop_local, model,
                                                        ofs_ctlfile,
-                                                       i)
+                                                       i,
+                                                       precomputed=precomputed)
                 else:
                     formatted_series, datum_offset = format_waterlevel(
-                        prop,
+                        prop_local,
                         model,
                         ofs_ctlfile,
                         name_conventions[-1],
-                        i, logger
+                        i, logger,
+                        precomputed=precomputed,
                     )
 
                     datum_offsets.append(datum_offset)
                     model_stations.append(ofs_ctlfile[4][i])
-                if (prop.whichcast == 'forecast_a' and
-                    not prop.horizonskill):
+                if (prop_local.whichcast == 'forecast_a' and
+                    not prop_local.horizonskill):
                     with open(
                         r''
-                        + f'{prop.data_model_1d_node_path}'
+                        + f'{prop_local.data_model_1d_node_path}'
                           f'/{ofs_ctlfile[4][i]}_'
-                          f'{prop.ofs}_{name_conventions[0]}_'
+                          f'{prop_local.ofs}_{name_conventions[0]}_'
                           f'{ofs_ctlfile[1][i]}_'
-                          f'{prop.whichcast}_{prop.forecast_hr}_'
-                          f'{prop.ofsfiletype}_model.prd',
+                          f'{prop_local.whichcast}_{prop_local.forecast_hr}_'
+                          f'{prop_local.ofsfiletype}_model.prd',
                         'w',
                         encoding='utf-8',
                     ) as output:
@@ -837,23 +992,23 @@ def get_node_ofs(prop, logger):
                         logger.info(
                             '%s/%s_%s_%s_%s_%s_%s_%s_model.prd created '
                             'successfully',
-                            prop.data_model_1d_node_path,
+                            prop_local.data_model_1d_node_path,
                             ofs_ctlfile[4][i],
-                            prop.ofs,
+                            prop_local.ofs,
                             name_conventions[0],
                             ofs_ctlfile[1][i],
-                            prop.whichcast,
-                            prop.forecast_hr,
-                            prop.ofsfiletype
+                            prop_local.whichcast,
+                            prop_local.forecast_hr,
+                            prop_local.ofsfiletype
                         )
-                elif (prop.horizonskill and os.path.isfile(
-                        f'{prop.data_model_1d_node_path}/'
-                        f'{ofs_ctlfile[-1][i]}_{prop.ofs}_{name_conventions[0]}_'
-                        f'{ofs_ctlfile[1][i]}_forecast_b_{prop.ofsfiletype}_'
+                elif (prop_local.horizonskill and os.path.isfile(
+                        f'{prop_local.data_model_1d_node_path}/'
+                        f'{ofs_ctlfile[-1][i]}_{prop_local.ofs}_{name_conventions[0]}_'
+                        f'{ofs_ctlfile[1][i]}_forecast_b_{prop_local.ofsfiletype}_'
                         f'model.prd'
                     ) is True):
-                    datecycle = prop.start_date_full.split('T')[0].replace('-', '') + \
-                        '-' + prop.forecast_hr + '-' + 'forecast'
+                    datecycle = prop_local.start_date_full.split('T')[0].replace('-', '') + \
+                        '-' + prop_local.forecast_hr + '-' + 'forecast'
                     try:
                         df = do_horizon_skill_utils.pandas_processing(
                             name_conventions[0],datecycle,formatted_series)
@@ -861,14 +1016,14 @@ def get_node_ofs(prop, logger):
                         logger.error('Could not merge datecycle %s! Skipping.'
                                      'Error: %s', e_x)
                         continue
-                    filename = (f'{prop.ofs}_{ofs_ctlfile[4][i]}_'
+                    filename = (f'{prop_local.ofs}_{ofs_ctlfile[4][i]}_'
                     f'{name_conventions[0]}_fcst_horizons.csv')
-                    filepath = os.path.join(prop.data_horizon_1d_node_path,
+                    filepath = os.path.join(prop_local.data_horizon_1d_node_path,
                                  filename)
                     if os.path.isfile(filepath):
                         try:
                             df = do_horizon_skill_utils.pandas_merge(filepath, df,
-                                                            datecycle,prop)
+                                                            datecycle,prop_local)
                         except Exception as e_x:
                             logger.error('Could not concat forecast horizon '
                                          'series in pandas for %s at station '
@@ -886,10 +1041,10 @@ def get_node_ofs(prop, logger):
                 else:
                     with open(
                         r''
-                        +f'{prop.data_model_1d_node_path}/{ofs_ctlfile[4][i]}_'
-                          f'{prop.ofs}_'
+                        +f'{prop_local.data_model_1d_node_path}/{ofs_ctlfile[4][i]}_'
+                          f'{prop_local.ofs}_'
                           f'{name_conventions[0]}_{ofs_ctlfile[1][i]}'
-                          f'_{prop.whichcast}_{prop.ofsfiletype}_model.prd',
+                          f'_{prop_local.whichcast}_{prop_local.ofsfiletype}_model.prd',
                         'w',
                         encoding='utf-8',
                     ) as output:
@@ -897,19 +1052,19 @@ def get_node_ofs(prop, logger):
                             output.write(str(line) + '\n')
                         logger.info(
                             '%s/%s_%s_%s_%s_%s_%s_model.prd created successfully',
-                            prop.data_model_1d_node_path,
+                            prop_local.data_model_1d_node_path,
                             ofs_ctlfile[4][i],
-                            prop.ofs,
+                            prop_local.ofs,
                             name_conventions[0],
                             ofs_ctlfile[1][i],
-                            prop.whichcast,
-                            prop.ofsfiletype
+                            prop_local.whichcast,
+                            prop_local.ofsfiletype
                         )
 
             # Generate datum report
-            if not prop.user_input_location:
-                datum_filename = (f'{prop.ofs}_wl_datum_report.csv')
-                filepath = os.path.join(prop.control_files_path,
+            if not prop_local.user_input_location:
+                datum_filename = (f'{prop_local.ofs}_wl_datum_report.csv')
+                filepath = os.path.join(prop_local.control_files_path,
                                         datum_filename)
                 # Check datum report age. Overwrite only if it's > 1 hour old
                 try:
@@ -921,7 +1076,7 @@ def get_node_ofs(prop, logger):
                 if (variable == 'water_level' and timediffhour > 1):
                     logger.error('No datum report found, writing new one.')
                     datum_offsets = [model_stations, datum_offsets]
-                    report_datums(prop, datum_offsets, logger)
+                    report_datums(prop_local, datum_offsets, logger)
 
         except FileNotFoundError:
             logger.warning('No control file for %s was written because '
@@ -933,5 +1088,21 @@ def get_node_ofs(prop, logger):
                          variable,
                          str(ex))
             logger.error('Full traceback:\n%s', traceback.format_exc())
+
+    # Dispatch variable processing — parallel or sequential
+    parallel_cfg = get_parallel_config(logger)
+    if parallel_cfg['parallel_variables'] and len(prop.var_list) > 1:
+        logger.info('Processing %d variables in parallel', len(prop.var_list))
+        with ThreadPoolExecutor(max_workers=min(len(prop.var_list), 4)) as executor:
+            futures = []
+            for variable in prop.var_list:
+                prop_local = copy.copy(prop)
+                prop_local.var_list = [variable]
+                futures.append(executor.submit(_extract_variable, variable, prop_local))
+            for f in futures:
+                f.result()  # Raise any exceptions
+    else:
+        for variable in prop.var_list:
+            _extract_variable(variable, prop)
 
     logger.info('Finished with model data processing!')

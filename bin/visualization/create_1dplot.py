@@ -660,7 +660,8 @@ def create_1dplot(prop, logger):
         logger.warning('Could not verify if all necessary model files '
                     'are present! Check final time series for accuracy.')
 
-    for variable in prop.var_list:
+    def _plot_variable(variable, p):
+        """Plot a single variable."""
         if variable == 'water_level':
             name_var = 'wl'
             list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
@@ -687,12 +688,19 @@ def create_1dplot(prop, logger):
 
         # Read OFS model ctl files
         read_ofs_ctl_file = ofs_ctlfile_read(
-            prop, name_var, logger)
+            p, name_var, logger)
 
         if read_ofs_ctl_file is not None:
             create_1dplot_2nd_part(
-                read_ofs_ctl_file, prop, var_info,
+                read_ofs_ctl_file, p, var_info,
                 logger)
+
+    # Variable plotting runs sequentially here because each variable's
+    # ofs_ctlfile_read() may trigger get_skill() → get_node_ofs() which
+    # loads the model. Variable parallelism is handled inside get_node_ofs
+    # and get_skill where the model is loaded once and shared.
+    for variable in prop.var_list:
+        _plot_variable(variable, prop)
     return logger
 
 
