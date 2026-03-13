@@ -9,4 +9,5 @@ __pycache__/
 # OFS skill specific
 data/
 control_files/
+conf/ofs_dps.conf
 
