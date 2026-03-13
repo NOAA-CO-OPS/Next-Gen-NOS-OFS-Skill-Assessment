@@ -529,7 +529,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
 
             elif prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
-                    nativedatum = 'msl'
+                    nativedatum = 'lmsl'
                     dummyval = 10.0
                     _,_,z = vdatum.convert(
                                         nativedatum,
@@ -575,7 +575,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 datum_offset = round(z-dummyval,2)
             if prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
-                    nativedatum = 'msl'
+                    nativedatum = 'lmsl'
                     dummyval = 10
                     _,_,z = vdatum.convert(
                         nativedatum,

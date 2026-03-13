@@ -103,7 +103,7 @@ def get_ofs_cycle(prop, logger):
     # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
     if prop.ofs in (
         'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
-        'lsofs', 'tbofs', 'necofs',
+        'lsofs', 'tbofs', 'necofs', 'stofs_2d_glo',
     ):
         fcstcycles = ['00', '06', '12', '18']
     elif prop.ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
@@ -123,6 +123,8 @@ def get_ofs_cycle(prop, logger):
         fcstlength = 72
     elif prop.ofs in ('stofs_3d_atl'):
         fcstlength = 96
+    elif prop.ofs in ('stofs_2d_glo'):
+        fcstlength = 180
     else:
         fcstlength = 120
 
