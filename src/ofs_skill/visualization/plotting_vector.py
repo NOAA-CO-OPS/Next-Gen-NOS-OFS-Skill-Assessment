@@ -375,46 +375,62 @@ def oned_vector_plot1(
         # line_dash='dash',
         row=3, col=1,
     )
-    fig.add_hline(
-        y=X1, line_color='orange',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='Target error range',
-        annotation_position='top left',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=3, col=1,
-    )
-    fig.add_hline(
-        y=-X1, line_color='orange',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='Target error range',
-        annotation_position='bottom right',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=3, col=1,
-    )
-    fig.add_hline(
-        y=X1*2, line_color='red',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='2x target error range',
-        annotation_position='top left',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=3, col=1,
-    )
-    fig.add_hline(
-        y=-X1*2, line_color='red',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='2x target error range',
-        annotation_position='bottom right',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=3, col=1,
-    )
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*X1,
+            name='Target error range',
+            mode='lines',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 3, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*-X1,
+            fill='tonexty',
+            mode='lines',
+            fillcolor='rgba(255,255,0,0.1)',
+            name='Target error range',
+            hoverinfo = 'skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 3, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*(X1*2),
+            name='Target error range',
+            mode='lines',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 3, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*(-X1*2),
+            fill='tonexty',
+            mode='lines',
+            fillcolor='rgba(255,0,0,0.1)',
+            name='1x and 2x target error ranges',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=True,
+        ), 3, 1,)
     # Check if end datetime is > current date
     max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
     for i in range(len(now_fores_paired)):

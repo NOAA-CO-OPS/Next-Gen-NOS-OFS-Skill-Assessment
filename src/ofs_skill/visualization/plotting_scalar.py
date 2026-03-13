@@ -32,6 +32,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytz
 from plotly.subplots import make_subplots
+import numpy as np
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
 from ofs_skill.obs_retrieval import (
@@ -503,52 +504,72 @@ def oned_scalar_plot(
             ),
             2, 2,
         )
+
+    # Add target error ranges to diff plot
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*X1,
+            name='Target error range',
+            mode='lines',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 2, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*-X1,
+            fill='tonexty',
+            mode='lines',
+            fillcolor='rgba(255,255,0,0.1)',
+            name='Target error range',
+            hoverinfo = 'skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 2, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*(X1*2),
+            name='Target error range',
+            mode='lines',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=False,
+        ), 2, 1,)
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df.DateTime,
+            y=np.ones(len(obs_df.DateTime))*(-X1*2),
+            fill='tonexty',
+            mode='lines',
+            fillcolor='rgba(255,0,0,0.1)',
+            name='1x and 2x target error ranges',
+            hoverinfo='skip',
+            line=dict(
+                width=0,
+                color='red'
+            ),
+            showlegend=True,
+        ), 2, 1,)
+
     fig.add_hline(
         y=0, line_width=1,
         line_color='black',
         # line_dash='dash',
         row=2, col=1,
     )
-    fig.add_hline(
-        y=X1, line_color='orange',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='Target error range',
-        annotation_position='top left',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=2, col=1,
-    )
-    fig.add_hline(
-        y=-X1, line_color='orange',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='Target error range',
-        annotation_position='bottom right',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=2, col=1,
-    )
-    fig.add_hline(
-        y=X1*2, line_color='red',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='2x target error range',
-        annotation_position='top left',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=2, col=1,
-    )
-    fig.add_hline(
-        y=-X1*2, line_color='red',
-        line_width=0.75,
-        line_dash='dash',
-        annotation_text='2x target error range',
-        annotation_position='bottom right',
-        annotation_font_color='black',
-        annotation_font_size=12,
-        row=2, col=1,
-    )
+
     # Check if end datetime is > current date
     max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
     for i in range(len(now_fores_paired)):
