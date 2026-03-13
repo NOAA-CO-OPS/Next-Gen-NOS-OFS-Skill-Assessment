@@ -6,7 +6,7 @@ text format for skill assessment.
 """
 
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ def format_scalar(
 
     # Filter to date range
     mask = (
-        (timeseries['DateTime'] >= start_dt_full) &
+        (timeseries['DateTime'] >= start_dt_full - timedelta(hours=24)) &
         (timeseries['DateTime'] <= end_dt_full)
     )
     timeseries = timeseries.loc[mask].copy()
@@ -149,7 +149,7 @@ def format_vector(
 
     # Filter to date range
     mask = (
-        (timeseries['DateTime'] >= start_dt_full) &
+        (timeseries['DateTime'] >= start_dt_full - timedelta(hours=24)) &
         (timeseries['DateTime'] <= end_dt_full)
     )
     timeseries = timeseries.loc[mask].copy()

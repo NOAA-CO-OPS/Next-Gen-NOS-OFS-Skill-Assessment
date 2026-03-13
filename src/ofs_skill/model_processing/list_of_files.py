@@ -805,11 +805,11 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 # cbofs.t00z.20240901.fields.f001.nc
                 # Old file format:
                 # nos.cbofs.fields.f001.20240901.t00z.nc
-
+                a_start = prop.startdate
                 all_files = listdir(dir_list[i_index])
                 files = []
                 hr_cyc_day = []
-                cycle_z = prop.forecast_hr.lower()
+                cycle_z = a_start[-2:] + 'z'
                 for af_name in all_files:
                     spltstr = af_name.split('.')
                     # First do old file names
@@ -822,7 +822,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start, '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -834,7 +834,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start, '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -850,7 +850,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start, '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -862,7 +862,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start, '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -875,7 +875,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 checkstr1 = spltstr[-2][-2:]
                                 checkstr2 = spltstr[-1].split('.')[0][1:3]
 
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                                if (int(checkstr2) - 1 >= int(a_start[-2:])):
                                     files.append(af_name)
                                     hr_cyc_day.append(checkstr1)
 
@@ -886,7 +886,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 checkstr1 = spltstr[-2][-2:]
                                 checkstr2 = spltstr[-1].split('.')[0][1:3]
 
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                                if (int(checkstr2) - 1 >= int(a_start[-2:])):
                                     files.append(af_name)
                                     hr_cyc_day.append(checkstr1)
 

@@ -115,28 +115,43 @@ def oned_vector_plot1(
     min_size = 1
     gap_length = 10
     data_count = 48
-    # Find maximum length of time series
-    maxlen = len(now_fores_paired[0].DateTime)
-    index = 0
+    # Combine obs from different casts into one main obs array
+    obs_df = None
     for i in range(len(now_fores_paired)):
-        if len(now_fores_paired[i].DateTime) > maxlen:
-            index = i
-    if len(list(now_fores_paired[index].DateTime)) > data_count:
+        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
+        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
+        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
+            pass
+        else:
+            try:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
+            except ValueError:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
+
+            obs_df = obs_df.loc[((obs_df['DateTime']
+                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
+            now_fores_paired[i] = now_fores_paired[i].loc[((
+                now_fores_paired[i].DateTime >= start_dt) & \
+                    (now_fores_paired[i].DateTime <= end_dt))]
+
+    if len(list(obs_df.DateTime)) > data_count:
         marker_size = (
             6**(
-                data_count/len(list(now_fores_paired[index].DateTime))
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
         marker_size_obs = (
             9**(
-                data_count/len(list(now_fores_paired[index].DateTime))
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
     else:
         marker_size = 6
         marker_size_obs = 9
     # Check for long data gaps
-    if find_max_data_gap(now_fores_paired[0].OBS_SPD) > gap_length:
+    if find_max_data_gap(obs_df.OBS_SPD) > gap_length:
         connectgaps = False
     else:
         connectgaps = True
@@ -144,9 +159,9 @@ def oned_vector_plot1(
     # Current speed
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[index].DateTime),
-            y=list(now_fores_paired[index].OBS_SPD), name='Observations',
-            hovertext=list(now_fores_paired[index].OBS_SPD),
+            x=list(obs_df.DateTime),
+            y=list(obs_df.OBS_SPD), name='Observations',
+            hovertext=list(obs_df.OBS_SPD),
             hovertemplate='%{y:.2f}',
             connectgaps=connectgaps,
             opacity=lineopacity,
@@ -165,7 +180,7 @@ def oned_vector_plot1(
     # Adding boxplots
     fig.add_trace(
         go.Box(
-            y=now_fores_paired[index]['OBS_SPD'], boxmean='sd',
+            y=obs_df['OBS_SPD'], boxmean='sd',
             name='Observations', showlegend=False, legendgroup='obs',
             width=0.7, line=dict(color=palette[0], width=1.5),
             marker=dict(color=palette[0]),
@@ -241,8 +256,8 @@ def oned_vector_plot1(
     # Now do current direction
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[index].DateTime),
-            y=list(now_fores_paired[index].OBS_DIR),
+            x=list(obs_df.DateTime),
+            y=list(obs_df.OBS_DIR),
             name='Observations',
             hovertemplate='%{y:.2f}',
             connectgaps=False,
@@ -333,84 +348,6 @@ def oned_vector_plot1(
                 legendgroup=sdboxName,
             ), 3, 1,
         )
-
-        fig.add_hline(
-            y=0, line_width=1,
-            line_color='black',
-            # line_dash='dash',
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=-X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=-X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        # Check if end datetime is > current date
-        max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
-        for i in range(len(now_fores_paired)):
-            if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
-                max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
-        if max_datetime > datetime.now(UTC):
-            dt = datetime.now(ZoneInfo('America/New_York')) - timedelta(
-                hours=int(datetime.now(UTC).astimezone(ZoneInfo(
-                    'America/New_York')).utcoffset().total_seconds()/60/60))
-            fig.add_vline(
-                x=dt.timestamp() * 1000,
-                line_width=1,
-                line_color='gray',
-                annotation_text='Current UTC time',
-                annotation_font_color='black',
-                annotation_font_size=12,
-                annotation_position='top right',
-                row=1, col=1
-            )
-            fig.add_vline(
-                x=dt.timestamp() * 1000,
-                line_width=1,
-                #line_dash="dash",
-                line_color='gray',
-                annotation_text='Current UTC time',
-                annotation_font_color='black',
-                annotation_font_size=12,
-                annotation_position='top right',
-                row=2, col=1
-            )
-
         fig.add_trace(
             go.Box(
                 y=[
@@ -432,6 +369,110 @@ def oned_vector_plot1(
             ),
             3, 2,
         )
+    fig.add_hline(
+        y=0, line_width=1,
+        line_color='black',
+        # line_dash='dash',
+        row=3, col=1,
+    )
+    fig.add_hline(
+        y=X1, line_color='orange',
+        line_width=0.75,
+        line_dash='dash',
+        annotation_text='Target error range',
+        annotation_position='top left',
+        annotation_font_color='black',
+        annotation_font_size=12,
+        row=3, col=1,
+    )
+    fig.add_hline(
+        y=-X1, line_color='orange',
+        line_width=0.75,
+        line_dash='dash',
+        annotation_text='Target error range',
+        annotation_position='bottom right',
+        annotation_font_color='black',
+        annotation_font_size=12,
+        row=3, col=1,
+    )
+    fig.add_hline(
+        y=X1*2, line_color='red',
+        line_width=0.75,
+        line_dash='dash',
+        annotation_text='2x target error range',
+        annotation_position='top left',
+        annotation_font_color='black',
+        annotation_font_size=12,
+        row=3, col=1,
+    )
+    fig.add_hline(
+        y=-X1*2, line_color='red',
+        line_width=0.75,
+        line_dash='dash',
+        annotation_text='2x target error range',
+        annotation_position='bottom right',
+        annotation_font_color='black',
+        annotation_font_size=12,
+        row=3, col=1,
+    )
+    # Check if end datetime is > current date
+    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
+    if max_datetime > datetime.now(UTC):
+        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
+        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
+        #         'America/New_York')).utcoffset().total_seconds()/60/60))
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        if 'nowcast' in prop.whichcasts:
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=1,
+                #line_dash="dash",
+                line_color='gray',
+                annotation_text='Forecast >',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=1, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=0,
+                #line_dash="dash",
+                line_color='gray',
+                annotation_text='< Nowcast',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top left',
+                row=1, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=1,
+                #line_dash="dash",
+                line_color='gray',
+                annotation_text='Forecast >',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=2, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=0,
+                #line_dash="dash",
+                line_color='gray',
+                annotation_text='< Nowcast',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top left',
+                row=2, col=1
+            )
 
     figheight = 700
     figwidth  = 900

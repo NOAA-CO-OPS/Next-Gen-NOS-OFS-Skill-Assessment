@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import pytz
 
 import ofs_skill.visualization.plotting_functions as plotting_functions
 
@@ -98,6 +100,27 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         prop, node, station_id, name_var, logger,
     )
 
+    # Combine obs from different casts into one main obs array
+    obs_df = None
+    for i in range(len(now_fores_paired)):
+        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
+        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
+        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
+            pass
+        else:
+            try:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
+            except ValueError:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
+
+            obs_df = obs_df.loc[((obs_df['DateTime']
+                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
+            now_fores_paired[i] = now_fores_paired[i].loc[((
+                now_fores_paired[i].DateTime >= start_dt) & \
+                    (now_fores_paired[i].DateTime <= end_dt))]
+
     # --- Do plots, huzzah --------------------------------------------
     fig, axs = plt.subplots(1, 1)
     fig.set_figheight(5)
@@ -105,8 +128,8 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     fig.suptitle(figtitle, fontsize=16)
     # -----------------------------------------------------------------
     axs.plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS),
+        list(obs_df.DateTime),
+        list(obs_df.OBS),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
@@ -115,17 +138,13 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         # Series names
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
-            sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
             seriesname = 'Model Forecast Guidance,\n' + prop.forecast_hr[:-1] +\
                 'z cycle'
-            sdboxName = 'Forecast_a - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
-            sdboxName = 'Nowcast - Obs.'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
-            sdboxName = 'unknown'
 
         axs.plot(
             list(now_fores_paired[i].DateTime),
@@ -189,15 +208,28 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     # axs[1].set_yticks(axs[1].get_yticks()[::1])
     # axs[1].tick_params(axis='y', which='major', labelsize=12)
     # axs[1].tick_params(axis='x', which='major', labelsize=12)
-    axs.axvline(x=datetime.now(UTC), color='r', linestyle='--', lw=1)
-    axs.annotate('Current UTC time',
-            xy=(datetime.now(UTC), axs.get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
-            xytext=(85, 0), # Offset text position (points relative to xy)
-            textcoords='offset points',
-            ha='right', # Horizontal alignment
-            va='bottom', # Vertical alignment
-            fontsize=10,
-            color='r')
+    # Check if end datetime is > current date
+    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
+    if max_datetime > datetime.now(UTC):
+        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
+        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
+        #         'America/New_York')).utcoffset().total_seconds()/60/60))
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        axs.axvline(x=dt_n, color='r', linestyle='--', lw=1)
+        axs.annotate('Nowcast-forecast transition',
+                xy=(dt_n, axs.get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
+                xytext=(85, 0), # Offset text position (points relative to xy)
+                textcoords='offset points',
+                ha='right', # Horizontal alignment
+                va='bottom', # Vertical alignment
+                fontsize=10,
+                color='r')
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()
     fig.align_ylabels()
@@ -229,6 +261,27 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     if name_var != 'ice_conc':
         X1, _ = plotting_functions.get_error_range(name_var, prop, logger)
 
+    # Combine obs from different casts into one main obs array
+    obs_df = None
+    for i in range(len(now_fores_paired)):
+        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
+        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
+        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
+            pass
+        else:
+            try:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
+            except ValueError:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
+
+            obs_df = obs_df.loc[((obs_df['DateTime']
+                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
+            now_fores_paired[i] = now_fores_paired[i].loc[((
+                now_fores_paired[i].DateTime >= start_dt) & \
+                    (now_fores_paired[i].DateTime <= end_dt))]
+
     figtitle = get_title_static(
         prop, node, station_id, name_var, logger,
     )
@@ -242,16 +295,16 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     # -----------------------------------------------------------------
 
     axs[0].plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS_SPD),
+        list(obs_df.DateTime),
+        list(obs_df.OBS_SPD),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
         linestyle='--',
     )
     axs[1].plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS_DIR),
+        list(obs_df.DateTime),
+        list(obs_df.OBS_DIR),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
@@ -302,16 +355,28 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     axs[1].set_yticks(axs[1].get_yticks()[::1])
     axs[1].tick_params(axis='both', which='major', labelsize=12)
     plt.gcf().autofmt_xdate()
-    for i in range(nrows):
-        axs[i].axvline(x=datetime.now(UTC), color='r', linestyle='--', lw=1)
-        axs[i].annotate('Current UTC time',
-                xy=(datetime.now(UTC), axs[i].get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
-                xytext=(85, 0), # Offset text position (points relative to xy)
-                textcoords='offset points',
-                ha='right', # Horizontal alignment
-                va='bottom', # Vertical alignment
-                fontsize=10,
-                color='r')
+    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
+    if max_datetime > datetime.now(UTC):
+        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
+        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
+        #         'America/New_York')).utcoffset().total_seconds()/60/60))
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        for i in range(nrows):
+            axs[i].axvline(x=dt_n, color='r', linestyle='--', lw=1)
+            axs[i].annotate('Nowcast-forecast transition',
+                    xy=(dt_n, axs[i].get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
+                    xytext=(85, 0), # Offset text position (points relative to xy)
+                    textcoords='offset points',
+                    ha='right', # Horizontal alignment
+                    va='bottom', # Vertical alignment
+                    fontsize=10,
+                    color='r')
 
     axs[1].set_xlabel('Time', fontsize=16)
 

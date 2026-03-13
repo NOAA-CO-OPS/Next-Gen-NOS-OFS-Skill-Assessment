@@ -160,7 +160,7 @@ def paired_scalar(
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=6)
             )
             & (
                 paired['DateTime']
@@ -351,7 +351,7 @@ def paired_vector(
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=6)
             )
             & (
                 paired['DateTime']

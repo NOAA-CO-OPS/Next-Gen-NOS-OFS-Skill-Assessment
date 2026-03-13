@@ -161,8 +161,12 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         engine = 'h5netcdf'
 
     urlpaths = file_list
-    if prop.ofsfiletype == 'stations' and prop.whichcast == 'forecast_a':
+    #if prop.ofsfiletype == 'stations' and prop.whichcast == 'forecast_a':
+    if len(urlpaths) == 0:
+        return None
+    if len(urlpaths) == 1:
         urlpaths = urlpaths + urlpaths
+
 
     if has_remote:
         logger.info('Creating catalog with mix of local and remote (S3) files...')

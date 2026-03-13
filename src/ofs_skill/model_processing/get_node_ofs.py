@@ -713,7 +713,7 @@ def get_node_ofs(prop, logger):
             '%Y%m%d') + '23'
     except Exception as e:
         logger.error(f'Problem with date format in get_node_ofs: {e}')
-        sys.exit(-1)
+        raise SystemExit
 
     # Lazy load the model data
     dir_list = list_of_dir(prop, logger)
@@ -721,6 +721,10 @@ def get_node_ofs(prop, logger):
     logging.info('About to start intake_scisa from get_node ...')
     model = intake_model(list_files, prop, logger)
     logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
+
+    if not model:
+        logger.error('No model files or URLs to load in intake! Exiting...')
+        raise SystemExit
 
     # Write filenames to CSV
     try:

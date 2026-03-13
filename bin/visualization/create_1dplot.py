@@ -170,6 +170,7 @@ def create_1dplot_2nd_part(
                          'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
             continue
         now_fores_paired = []
+        track_cast = []
         for cast in prop.whichcasts:
             paired_data = None
             # Here we try to open the paired data set, if not found, create.
@@ -244,6 +245,7 @@ def create_1dplot_2nd_part(
                     paired_data = paired_data.loc[paired_data.groupby(['year','month','day','hour'],
                                                                       observed=True)
                                                                     ['minute'].idxmin()]
+                track_cast.append(cast)
                 now_fores_paired.append(paired_data)
 
         if len(now_fores_paired) > 0:
@@ -365,6 +367,11 @@ def create_1dplot(prop, logger):
     logger.info('Starting parameter validation...')
 
     # Do forecast_a start and end date reshuffle
+    # if 'forecast_a' in prop.whichcasts and prop.forecast_hr == 'now' and \
+    #     'nowcast' in prop.whichcasts:
+    #     prop.whichcasts = [cast for cast in prop.whichcasts if cast != 'nowcast']
+    #     logger.warning('Cannot run nowcast in "now" mode with forecast_a! '
+    #                     'Removing nowcast from whichcasts list...')
     if 'forecast_a' in prop.whichcasts:
         if prop.forecast_hr is not None:
             prop.start_date_full, prop.end_date_full =\

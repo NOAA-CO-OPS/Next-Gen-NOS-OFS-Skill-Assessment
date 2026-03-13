@@ -275,10 +275,6 @@ def get_fcst_dates(prop, logger):
         raise SystemExit
     fcst_end = datetime.strftime(edate, '%Y-%m-%dT%H:%M:%SZ')
 
-    if 'nowcast' in prop.whichcasts:
-        fcst_start = datetime.strftime(datetime.strptime(
-            fcst_start,'%Y-%m-%dT%H:%M:%SZ') - timedelta(hours=6),'%Y-%m-%dT%H:%M:%SZ')
-
     logger.info(f'Forecast cycle: {prop.forecast_hr}')
     logger.info(f'Forecast length: {fcstlength} hours')
     logger.info(f'Forecast period: {fcst_start} to {fcst_end}')
