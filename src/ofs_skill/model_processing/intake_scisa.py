@@ -152,8 +152,10 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ]
         time_name = 'time'
 
-    if prop.ofs == 'necofs' or prop.ofs == 'loofs2' or prop.ofs == 'secofs':
+    if prop.ofs in ['necofs', 'loofs2','secofs']:
         engine = 'netcdf4'
+    elif prop.ofs in ['stofs_2d_glo']:
+        engine = 'scipy'
     else:
         engine = 'h5netcdf'
 

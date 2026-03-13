@@ -455,8 +455,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                 model_ctl_file.append(
                                     f'{list_of_nearest_node[i]} '
                                     f'{list_of_nearest_layer[i]} '
-                                    f"{model['y'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f"{model['x'][list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f"{model['y'][0, list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f"{model['x'][0, list_of_nearest_node[i]].data.compute():.3f}  "
                                     f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                 )
                             else:
