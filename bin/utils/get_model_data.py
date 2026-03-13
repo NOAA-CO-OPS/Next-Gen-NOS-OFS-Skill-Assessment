@@ -220,7 +220,7 @@ def list_of_dir(prop, basepath, logger):
         year = datetime.strptime(dates[date_index], '%m/%d/%y').year
         month = datetime.strptime(dates[date_index], '%m/%d/%y').month
         # Add stofs directory structure
-        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_global', 'stofs_3d_pac']:
+        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_glo', 'stofs_3d_pac']:
             day = datetime.strptime(dates[date_index], '%m/%d/%y').day
             model_dir = f'{basepath}{prop.model_path}/{prop.ofs}.{year}' +\
                         f'{month:02}{day:02}'
@@ -425,7 +425,7 @@ def list_of_urls(file_list, prop, logger):
 
     # Retrieve urls from config file
     url_params = utils.Utils().read_config_section('urls', logger)
-    if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+    if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
         url_root = url_params['nodd_s3']
         url_list = []
         for file in file_list:
@@ -443,7 +443,7 @@ def list_of_urls(file_list, prop, logger):
                 f"{file.replace('stofs_3d_atl/', 'STOFS-3D-Atl/')}"
             )
             url_list.append(url)
-    elif prop.ofs == 'stofs_2d_global':
+    elif prop.ofs == 'stofs_2d_glo':
         url_root = url_params['nodd_s3_stofs2d']
         url_list = []
         for file in file_list:
@@ -468,7 +468,7 @@ def download_data(prop, list_of_urls1, dir_list, logger):
     # First try the NODD and see if it's responding
     try:
         logger.info('Try NODD S3 download...')
-        if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+        if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
             urllib.request.urlretrieve(
                 list_of_urls1[0].replace('\\', '/'), (
                     savepath +
@@ -495,7 +495,7 @@ def download_data(prop, list_of_urls1, dir_list, logger):
             logger.info(f'Downloading model data: {mod_dat}')
             if prop.ofs not in (
                 'stofs_3d_atl', 'stofs_3d_pac',
-                'stofs_2d_global',
+                'stofs_2d_glo',
             ):
                 if not os.path.isfile((
                     savepath +

@@ -286,7 +286,7 @@ def make_ofs_dir_list(prop, basepath, logger):
         year = date.year
         month = date.month
         # Add stofs directory structure
-        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_global', 'stofs_3d_pac']:
+        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_glo', 'stofs_3d_pac']:
             day = date.day
             model_dir = f'{basepath}{prop.model_path}/{prop.ofs}.{year}' +\
                         f'{month:02}{day:02}'
