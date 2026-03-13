@@ -367,11 +367,7 @@ def create_1dplot(prop, logger):
     logger.info('Starting parameter validation...')
 
     # Do forecast_a start and end date reshuffle
-    # if 'forecast_a' in prop.whichcasts and prop.forecast_hr == 'now' and \
-    #     'nowcast' in prop.whichcasts:
-    #     prop.whichcasts = [cast for cast in prop.whichcasts if cast != 'nowcast']
-    #     logger.warning('Cannot run nowcast in "now" mode with forecast_a! '
-    #                     'Removing nowcast from whichcasts list...')
+
     if 'forecast_a' in prop.whichcasts:
         if prop.forecast_hr is not None:
             prop.start_date_full, prop.end_date_full =\
