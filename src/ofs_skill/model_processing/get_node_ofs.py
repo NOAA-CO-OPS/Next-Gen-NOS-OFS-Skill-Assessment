@@ -563,6 +563,9 @@ def parameter_validation(prop, dir_params, logger):
         logger.error('Uh-oh, please select a valid model output file type! '
                      'You chose %s. The options are "stations" or "fields".',
                      prop.ofsfiletype)
+    if (prop.ofs == 'stofs_2d_glo') and (prop.ofsfiletype == 'fields'):
+        logger.error('STOFS-2D-Global is only available as station output files. Please select "stations" for file type. Exiting...')
+        raise NotImplementedError('STOFS-2D-Global fields file processing is not currently implemented.')
     # Warn if using custom lat/lon inputs and stations files
     if prop.ofsfiletype == 'stations' and prop.user_input_location:
         logger.warning('You are using custom lat/lon coordinates for model time '
@@ -798,7 +801,7 @@ def get_node_ofs(prop, logger):
 
             elif prop.model_source=='adcirc':
                 if variable != 'water_level':
-                    logger.warning('ADCIRC data are only available for water level. '
+                    logger.warning('ADCIRC data are presently only available for water level. '
                                    'Skipping variable %s...', variable)
                     continue
 
