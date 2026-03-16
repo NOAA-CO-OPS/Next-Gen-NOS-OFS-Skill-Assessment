@@ -68,6 +68,10 @@ def parameter_validation(argu_list, logger):
         folder {ofs_extents_path}. Abort!"""
         logger.error(error_message)
         sys.exit(-1)
+    if ofs == 'stofs_2d_glo':
+        logger.warning('IMPORTANT NOTE: STOFS-2D-Global currently uses a '
+                       'copy of the GOMOFS extent file for testing purposes. '
+                       'This may cause issues with some workflows!')
 
     # filetype validation
     if filetype not in ['stations', 'fields']:
