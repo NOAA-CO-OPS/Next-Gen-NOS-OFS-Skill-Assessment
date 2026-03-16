@@ -355,58 +355,58 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                             np.isnan(list_of_nearest_layer[i]) == False):
                             if prop.ofsfiletype == 'fields':
                                 if name_var == 'wl':
-                                   x_var = model['SCHISM_hgrid_node_x']
-                                   y_var = model['SCHISM_hgrid_node_y']
+                                    x_var = model['SCHISM_hgrid_node_x']
+                                    y_var = model['SCHISM_hgrid_node_y']
 
-                                   if 'time' in x_var.dims:
-                                       for t in range(x_var.sizes['time']):
-                                           test_slice = x_var.isel(time=t)
-                                           if not test_slice.isnull().all():
-                                              break
-                                       x_val = x_var.isel(time=t,
-                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                       y_val = y_var.isel(time=t,
-                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                   else:
-                                       x_val = x_var.isel(
-                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                       y_val = y_var.isel(
-                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                    if 'time' in x_var.dims:
+                                        for t in range(x_var.sizes['time']):
+                                            test_slice = x_var.isel(time=t)
+                                            if not test_slice.isnull().all():
+                                                break
+                                        x_val = x_var.isel(time=t,
+                                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        y_val = y_var.isel(time=t,
+                                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                    else:
+                                        x_val = x_var.isel(
+                                            nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        y_val = y_var.isel(
+                                            nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
 
-                                   model_ctl_file.append(
-                                       f'{list_of_nearest_node[i]} '
-                                       f'{list_of_nearest_layer[i]} '
-                                       f'{y_val:.3f}  '
-                                       f'{x_val:.3f}  '
-                                       f'{station_id[i]}  0.0\n'
-                                   )
+                                    model_ctl_file.append(
+                                        f'{list_of_nearest_node[i]} '
+                                        f'{list_of_nearest_layer[i]} '
+                                        f'{y_val:.3f}  '
+                                        f'{x_val:.3f}  '
+                                        f'{station_id[i]}  0.0\n'
+                                    )
 
                                 else:
-                                   if not np.isnan(list_of_nearest_node[i]):
-                                      x_var = model['SCHISM_hgrid_node_x']
-                                      y_var = model['SCHISM_hgrid_node_y']
+                                    if not np.isnan(list_of_nearest_node[i]):
+                                        x_var = model['SCHISM_hgrid_node_x']
+                                        y_var = model['SCHISM_hgrid_node_y']
 
-                                      if 'time' in x_var.dims:
-                                          for t in range(x_var.sizes['time']):
-                                              test_slice = x_var.isel(time=t)
-                                              if not test_slice.isnull().all():
-                                                 break
-                                          x_val = x_var.isel(time=t,
-                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                          y_val = y_var.isel(time=t,
-                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                      else:
-                                          x_val = x_var.isel(
-                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                          y_val = y_var.isel(
-                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                      model_ctl_file.append(
-                                          f'{list_of_nearest_node[i]} '
-                                          f'{list_of_nearest_layer[i]} '
-                                          f'{y_val:.3f}  '
-                                          f'{x_val:.3f}  '
-                                          f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
-                                      )
+                                        if 'time' in x_var.dims:
+                                            for t in range(x_var.sizes['time']):
+                                                test_slice = x_var.isel(time=t)
+                                                if not test_slice.isnull().all():
+                                                    break
+                                            x_val = x_var.isel(time=t,
+                                                               nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                            y_val = y_var.isel(time=t,
+                                                               nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        else:
+                                            x_val = x_var.isel(
+                                                nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                            y_val = y_var.isel(
+                                                nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        model_ctl_file.append(
+                                            f'{list_of_nearest_node[i]} '
+                                            f'{list_of_nearest_layer[i]} '
+                                            f'{y_val:.3f}  '
+                                            f'{x_val:.3f}  '
+                                            f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                        )
                             elif prop.ofsfiletype == 'stations':
                                 if 'stofs' not in prop.ofs:
                                     model_ctl_file.append(
@@ -447,7 +447,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
-                            
+                                
                 elif prop.model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
                         for i in range(length):
