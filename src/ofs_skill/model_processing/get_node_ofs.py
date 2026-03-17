@@ -398,6 +398,7 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
     id_number = ofs_ctlfile[4][i]
     datum_offset = get_datum_offset_func(
         prop, int(ofs_ctlfile[1][i]), model, id_number, logger)
+    logger.info(f'Datum offset for station {id_number} (node {ofs_ctlfile[1][i]}): {datum_offset}')
 
     if prop.model_source=='fvcom':
         if prop.ofsfiletype == 'fields':

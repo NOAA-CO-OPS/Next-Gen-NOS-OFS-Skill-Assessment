@@ -566,8 +566,12 @@ def oned_scalar_plot(
         filename = f'{prop.control_files_path}/{prop.ofs}_wl_datum_report.csv'
         try:
             df = pd.read_csv(filename)
-            has_fail = df.loc[df[df['Station ID'] == str(
-                station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
+            # This will be empty if the station can't be found:
+            has_fail = df.loc[
+                df['Station ID'].astype('str') == str(station_id[0]),
+                'Datum conversion pass/fail'
+            ] == 'fail'
+            # This will raise an error if has_fail is empty:
             if has_fail.bool():
                 fig.add_annotation(
                     text='<b>Warning:<br>datum mismatch</b>',
@@ -578,6 +582,12 @@ def oned_scalar_plot(
                     row=1, col=1,
                 )
         except Exception as e_x:
+            # TODO: This should have a different annotation.
+            # As is, it creates the plot with no annotation, which could 
+            # be misleading if the issue is a missing report/station rather than 
+            # a datum mismatch. Maybe test for an empty "has_fail" series above
+            # and handle that case differently than the error occuring when
+            # converting to bool.
             logger.error(
                 'Cannot find station ID in datum report! '
                 'Exception: %s', e_x,

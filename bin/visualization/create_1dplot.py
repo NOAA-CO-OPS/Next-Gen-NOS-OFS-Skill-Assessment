@@ -455,8 +455,11 @@ def create_1dplot(prop, logger):
                          'Switching to IGLD...', prop.datum, prop.ofs)
             prop.datum = 'IGLD85'
     except TypeError:
-        logger.error('Failure checking for datum netcdf file on the NODD S3 '
-                     'bucket! Datum conversions may fail. Continuing...')
+        if (vdatums == -9995) and prop.ofs.lower() in ('stofs_2d_glo'):
+            logger.info('No vdatum file for STOFS-2D-Global, as expected.')
+        else:
+            logger.error('Failure checking for datum netcdf file on the NODD S3 '
+                        'bucket! Datum conversions may fail. Continuing...')
 
     # Date-gate for forecast horizon functionality
     if ((datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')-

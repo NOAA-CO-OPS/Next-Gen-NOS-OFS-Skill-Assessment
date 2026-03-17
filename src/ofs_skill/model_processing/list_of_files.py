@@ -491,7 +491,6 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
         year = datetime.strptime(dates[date_index], '%m/%d/%y').year
         month = datetime.strptime(dates[date_index], '%m/%d/%y').month
         day = datetime.strptime(dates[date_index], '%m/%d/%y').day
-        logger.info(f'!!!!! Date: {year}-{month}-{day}')
         # Add stofs directory structure
         if prop.ofs in('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
             model_dir = Path(f'{prop.model_path}/{prop.ofs}.{year}{month:02}{day:02}').as_posix()
@@ -506,7 +505,6 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
             else:
                 logger.error("Check the date -- can't find model output dir!")
                 raise SystemExit(-1)
-        logger.info(f'!!!!! model_dir: {model_dir}')
 
         # Switch to backup directory if files are not in primary directory
         if not os.path.exists(model_dir) or not os.listdir(model_dir):
@@ -550,7 +548,6 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
         if model_dir not in dir_list:
             dir_list.append(model_dir)
             if os.path.exists(model_dir):
-                logger.info(f'!!!!! {os.path.exists(model_dir)}')
                 logger.info('Found model output dir: %s', model_dir)
             else:
                 logger.info('Expected model output dir (will use S3): %s', model_dir)
