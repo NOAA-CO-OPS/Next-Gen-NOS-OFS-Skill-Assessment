@@ -55,9 +55,15 @@ def preprocess_with_filename(ds):
     """Preprocess an xarray dataset by adding a 'filename' coordinate.
 
     Extracts the filename from the dataset's encoding source path
-    and assigns it as a coordinate.
+    and assigns it as a coordinate. When files are opened through
+    simplecache or other fsspec wrappers, the 'source' key may be
+    absent — fall back to 'unknown' in that case.
     """
-    filename = os.path.basename(ds.encoding['source'])
+    source = ds.encoding.get('source', '')
+    if source:
+        filename = os.path.basename(source)
+    else:
+        filename = 'unknown'
     return ds.assign_coords(filename=filename)
 
 def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
