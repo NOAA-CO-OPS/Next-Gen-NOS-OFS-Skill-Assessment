@@ -42,6 +42,7 @@ Revisions:
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
 from typing import Any
 
@@ -186,16 +187,72 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                            'combining netcdfs in intake! Error: %s. '
                            'Continuing...',
                            ex)
-    # Build storage_options for S3 streaming when remote files are present
+    # Build storage_options for S3 streaming when remote files are present.
+    # Only use S3-specific options (anon, block_size) when URLs use s3://
+    # protocol. For https:// URLs, use simpler HTTP-compatible options.
     s3_storage_opts = {}
     if has_remote:
-        s3_storage_opts = {
-            'storage_options': {
-                'anon': True,
-                'default_block_size': 64 * 1024 * 1024,
-                'default_fill_cache': False,
+        has_s3_proto = any(
+            isinstance(f, str) and f.startswith('s3://')
+            for f in urlpaths
+        )
+        if has_s3_proto:
+            s3_storage_opts = {
+                'storage_options': {
+                    'anon': True,
+                    'default_block_size': 64 * 1024 * 1024,
+                    'default_fill_cache': False,
+                }
             }
-        }
+        # For https:// URLs, no special storage_options needed
+
+        # Apply fsspec caching for remote URLs to avoid re-downloading
+        if has_remote and not has_s3_proto:
+            # For https:// URLs (NODD S3 via HTTPS)
+            cache_dir = os.path.join(os.path.expanduser('~'), '.ofs_cache', 's3')
+            os.makedirs(cache_dir, exist_ok=True)
+
+            if prop.ofsfiletype == 'stations':
+                # simplecache: cache whole files (stations files are small,
+                # typically 1-10 MB each)
+                try:
+                    cached_urlpaths = []
+                    for url in urlpaths:
+                        if isinstance(url, str) and url.startswith('http'):
+                            cached_urlpaths.append(f'simplecache::{url}')
+                        else:
+                            cached_urlpaths.append(url)
+                    urlpaths = cached_urlpaths
+                    s3_storage_opts = {
+                        'storage_options': {
+                            'simplecache': {
+                                'cache_storage': cache_dir,
+                                'same_names': True,
+                            },
+                            'target_options': {},
+                        }
+                    }
+                    logger.info(
+                        'Using simplecache for %d remote station files '
+                        '(cache: %s)', remote_count, cache_dir,
+                    )
+                except Exception as cache_err:
+                    logger.warning(
+                        'Failed to set up simplecache, falling back to '
+                        'direct access: %s', cache_err,
+                    )
+                    # Restore original urlpaths on failure
+                    urlpaths = file_list
+                    if prop.ofsfiletype == 'stations' \
+                            and prop.whichcast == 'forecast_a':
+                        urlpaths = urlpaths + urlpaths
+            else:
+                # For fields files, caching is skipped (files are 100-500 MB
+                # each and would quickly exhaust local disk)
+                logger.info(
+                    'Skipping cache for %d remote fields files '
+                    '(too large for local cache)', remote_count,
+                )
 
     if dim_compat:  # This will only be FALSE for stations files when
         # station dimensions do not match! Always True for fields
@@ -231,6 +288,13 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 )
 
         else:
+            # For fields files, chunk by single time step to bound memory
+            # for monthly/yearly runs with hundreds of files. Stations
+            # files have small spatial dims, so auto-chunking is safe.
+            if prop.ofsfiletype == 'fields':
+                chunk_spec = {time_name: 1}
+            else:
+                chunk_spec = 'auto'
             source = intake.open_netcdf(
                 urlpath=urlpaths,
                 xarray_kwargs={
@@ -239,7 +303,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'preprocess': preprocess_with_filename,
                     'concat_dim': time_name,
                     'drop_variables': drop_variables,
-                    'chunks': 'auto',  # Enables lazy loading with Dask
+                    'chunks': chunk_spec,
                 },
                 **s3_storage_opts,
             )
@@ -580,11 +644,7 @@ def get_station_dim(engine: str, urlpaths: list[str],
     """
 
 
-    station_dim = []
-    dim_compat = True
-    dim_ref = []
-    for file in urlpaths:
-
+    def _read_dim(file):
         source = intake.open_netcdf(
             urlpath=file,
             xarray_kwargs={
@@ -594,7 +654,22 @@ def get_station_dim(engine: str, urlpaths: list[str],
             },
         )
         ds = source.read()
-        station_dim.append(ds.dims['station'])
+        dim = ds.dims['station']
+        ds.close()
+        return dim
+
+    num_files = len(urlpaths)
+    max_workers = min(num_files, 8)
+    logger.info(
+        'Checking station dimensions for %d files in parallel '
+        '(max_workers=%d)', num_files, max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        station_dim = list(executor.map(_read_dim, urlpaths))
+
+    dim_compat = True
+    dim_ref = []
     if np.nanmax(np.diff(station_dim)) != 0:
         dim_compat = False
         # Get reference dataset index

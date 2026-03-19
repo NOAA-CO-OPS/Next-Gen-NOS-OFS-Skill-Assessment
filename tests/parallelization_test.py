@@ -160,3 +160,17 @@ class TestParallelConfig:
         ]
         for key in int_keys:
             assert config[key] >= 1, f'{key} should be >= 1'
+
+    def test_auto_workers_returns_positive(self):
+        """The _auto_workers helper should return >= 1 for all known keys."""
+        from ofs_skill.obs_retrieval.utils import _auto_workers
+
+        all_keys = [
+            'obs_coops_workers', 'obs_usgs_workers', 'obs_ndbc_workers',
+            'obs_chs_workers', 'model_download_workers', 'skill_workers',
+            'ha_workers', 'plot_workers',
+        ]
+        for key in all_keys:
+            result = _auto_workers(key)
+            assert isinstance(result, int), f'{key}: expected int, got {type(result)}'
+            assert result >= 1, f'{key}: expected >= 1, got {result}'

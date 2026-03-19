@@ -268,6 +268,43 @@ def load_api_keys(config_filename='conf/api_keys.conf'):
         )
 
 
+def _auto_workers(key):
+    """Return an automatic worker count for *key* based on CPU count.
+
+    I/O-bound pools (obs retrieval, model download, plotting) can safely
+    exceed the CPU count because threads spend most of their time waiting
+    on network or disk.  CPU-bound pools (harmonic analysis) are capped
+    at ``cpu_count - 1`` (max 8) to leave headroom for the main process.
+
+    Parameters
+    ----------
+    key : str
+        Config key name, e.g. ``'obs_coops_workers'``.
+
+    Returns
+    -------
+    int
+        Positive worker count (always >= 1).
+    """
+    cpus = os.cpu_count() or 2
+
+    # CPU-bound: leave one core free, cap at 8
+    if key == 'ha_workers':
+        return max(1, min(cpus - 1, 8))
+
+    # I/O-bound defaults scale with CPU count
+    io_defaults = {
+        'obs_coops_workers': min(cpus * 2, 12),
+        'obs_usgs_workers': min(max(cpus // 2, 2), 6),
+        'obs_ndbc_workers': min(cpus * 2, 12),
+        'obs_chs_workers': min(max(cpus // 4, 1), 4),
+        'model_download_workers': min(cpus, 8),
+        'skill_workers': min(cpus, 8),
+        'plot_workers': min(cpus, 8),
+    }
+    return max(1, io_defaults.get(key, min(cpus, 4)))
+
+
 def get_parallel_config(logger=None):
     """
     Read parallelization settings from the [parallelization] config section.
@@ -297,9 +334,15 @@ def get_parallel_config(logger=None):
         'obs_chs_workers': 1,
         'model_download_workers': 4,
         'skill_workers': 4,
-        'ha_workers': max(1, min((os.cpu_count() or 2) - 1, 8)),
+        'ha_workers': _auto_workers('ha_workers'),
         'plot_workers': 4,
         'parallel_variables': False,
+        'parallel_workflow': False,
+        'parallel_stations': False,
+        'parallel_plotting': False,
+        'parallel_forecast_cycles': False,
+        'parallel_obs_variables': False,
+        'parallel_2d_interp': False,
     }
 
     if logger is None:
@@ -319,29 +362,45 @@ def get_parallel_config(logger=None):
     val = raw.get('parallel_variables', 'false').strip().lower()
     result['parallel_variables'] = val in ('true', '1', 'yes')
 
-    # Parse integer worker counts
+    # Parse parallel_workflow
+    val = raw.get('parallel_workflow', 'false').strip().lower()
+    result['parallel_workflow'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_stations
+    val = raw.get('parallel_stations', 'false').strip().lower()
+    result['parallel_stations'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_plotting
+    val = raw.get('parallel_plotting', 'false').strip().lower()
+    result['parallel_plotting'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_forecast_cycles
+    val = raw.get('parallel_forecast_cycles', 'false').strip().lower()
+    result['parallel_forecast_cycles'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_obs_variables
+    val = raw.get('parallel_obs_variables', 'false').strip().lower()
+    result['parallel_obs_variables'] = val in ('true', '1', 'yes')
+
+    # Parse parallel_2d_interp
+    val = raw.get('parallel_2d_interp', 'false').strip().lower()
+    result['parallel_2d_interp'] = val in ('true', '1', 'yes')
+
+    # Parse integer worker counts — all support "auto"
     int_keys = [
         'obs_coops_workers', 'obs_usgs_workers', 'obs_ndbc_workers',
         'obs_chs_workers', 'model_download_workers', 'skill_workers',
-        'plot_workers',
+        'ha_workers', 'plot_workers',
     ]
     for key in int_keys:
-        val = raw.get(key, '').strip()
-        if val:
+        val = raw.get(key, '').strip().lower()
+        if val == 'auto':
+            result[key] = _auto_workers(key)
+        elif val:
             try:
-                result[key] = max(1, int(val))
+                result[key] = min(max(1, int(val)), 64)
             except ValueError:
                 pass
-
-    # Parse ha_workers (supports "auto")
-    val = raw.get('ha_workers', 'auto').strip().lower()
-    if val == 'auto':
-        result['ha_workers'] = max(1, min((os.cpu_count() or 2) - 1, 8))
-    else:
-        try:
-            result['ha_workers'] = max(1, int(val))
-        except ValueError:
-            pass
 
     # If parallelization is globally disabled, force all workers to 1
     if not result['parallel_enabled']:

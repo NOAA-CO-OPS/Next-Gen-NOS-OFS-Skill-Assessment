@@ -79,6 +79,7 @@ import pandas as pd
 from ofs_skill.model_processing import (
     check_model_files,
     get_fcst_dates,
+    get_fcst_hours,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
@@ -145,15 +146,15 @@ def _process_station_plot(
     A shallow copy of ``prop`` is used so that ``prop.whichcast`` can be
     set per-cast without racing against other threads.
     """
-    station_prop = copy.copy(prop)
+    station_prop = copy.deepcopy(prop)
     station_id_val = read_ofs_ctl_file[-1][i]
 
     try:
         obs_row = [y[0] for y in read_station_ctl_file[0]].index(
             station_id_val)
         if read_station_ctl_file[0][obs_row][0] != station_id_val:
-            raise Exception
-    except Exception:
+            raise ValueError('Station ID mismatch')
+    except (ValueError, IndexError):
         logger.error('Could not match station ID %s between control '
                      'file in get_node_ofs!', station_id_val)
         return None
@@ -375,30 +376,135 @@ def create_1dplot_2nd_part(
     _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger)
 
     parallel_config = get_parallel_config(logger)
-    max_workers = parallel_config['plot_workers']
     num_stations = len(read_ofs_ctl_file[1])
+    use_parallel = (parallel_config.get('parallel_plotting', True)
+                    and num_stations > 1)
 
-    logger.info('Dispatching %d station plots with %d workers',
-                num_stations, max_workers)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                _process_station_plot, i, read_ofs_ctl_file,
-                read_station_ctl_file, prop, var_info, logger
-            ): i
-            for i in range(num_stations)
-        }
-        for future in as_completed(futures):
-            idx = futures[future]
+    if use_parallel:
+        max_workers = min(num_stations,
+                          parallel_config.get('plot_workers', 6))
+        logger.info('Plotting %d stations in parallel with %d workers',
+                    num_stations, max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for i in range(num_stations):
+                prop_copy = copy.copy(prop)
+                futures[executor.submit(
+                    _process_station_plot, i, read_ofs_ctl_file,
+                    read_station_ctl_file, prop_copy, var_info, logger
+                )] = i
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        logger.info('Completed plot for station %s',
+                                    result)
+                except Exception as ex:
+                    logger.error(
+                        'Unhandled exception for station index %d: %s',
+                        idx, ex)
+    else:
+        logger.info('Plotting %d stations sequentially', num_stations)
+        for i in range(num_stations):
             try:
-                result = future.result()
+                result = _process_station_plot(
+                    i, read_ofs_ctl_file, read_station_ctl_file,
+                    prop, var_info, logger)
                 if result is not None:
                     logger.info('Completed plot for station %s', result)
             except Exception as ex:
                 logger.error(
-                    'Unhandled exception for station index %d: %s',
-                    idx, ex)
+                    'Plot failed for station index %d: %s', i, ex)
+
+
+def _process_forecast_cycle(cycle_hr, prop_template, logger):
+    """
+    Run the full 1D plotting pipeline for a single forecast_a cycle.
+
+    This is designed to be dispatched in parallel via ThreadPoolExecutor.
+    Each call receives a deep copy of ``prop_template`` so that date and
+    forecast_hr mutations are isolated from other cycles.
+
+    Parameters
+    ----------
+    cycle_hr : int
+        Forecast cycle hour (e.g. 0, 6, 12, 18).
+    prop_template : ModelProperties
+        A deep copy of the fully-validated prop object.  This function
+        will mutate ``start_date_full``, ``end_date_full``, and
+        ``forecast_hr`` on the copy.
+    logger : logging.Logger
+        Logger instance.
+    """
+    prop_copy = copy.deepcopy(prop_template)
+    forecast_hr_str = f'{cycle_hr:02d}hr'
+    prop_copy.forecast_hr = forecast_hr_str
+
+    # Recompute start/end dates for this specific cycle using the
+    # original user-supplied start date (before any single-cycle
+    # adjustment that happened during validation).
+    prop_copy.start_date_full, prop_copy.end_date_full = get_fcst_dates(
+        prop_copy.ofs, prop_copy.start_date_full_original, forecast_hr_str,
+        logger)
+    prop_copy.forecast_hr = (
+        prop_copy.start_date_full.split('T')[1][0:2] + 'hr')
+
+    # Update the _before snapshots so that ofs_ctlfile_read and
+    # _ensure_paired_data_exists can fall back to them when needed.
+    prop_copy.start_date_full_before = prop_copy.start_date_full
+    prop_copy.end_date_full_before = prop_copy.end_date_full
+
+    logger.info('Forecast cycle %02dZ: period %s to %s',
+                cycle_hr, prop_copy.start_date_full,
+                prop_copy.end_date_full)
+
+    # Run variable plotting for this cycle
+    for variable in prop_copy.var_list:
+        _plot_variable_for_cycle(variable, prop_copy, logger)
+
+    logger.info('Completed forecast cycle %02dZ', cycle_hr)
+    return cycle_hr
+
+
+def _plot_variable_for_cycle(variable, prop, logger):
+    """
+    Plot a single variable for a given prop configuration.
+
+    Mirrors the _plot_variable inner function in create_1dplot but is
+    a module-level function so it can be called from
+    _process_forecast_cycle.
+    """
+    if variable == 'water_level':
+        name_var = 'wl'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Water Level plots.')
+    elif variable == 'water_temperature':
+        name_var = 'temp'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Water Temperature plots.')
+    elif variable == 'salinity':
+        name_var = 'salt'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Salinity plots.')
+    elif variable == 'currents':
+        name_var = 'cu'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS_SPD', 'OFS_SPD', 'BIAS_SPD',
+                            'OBS_DIR', 'OFS_DIR', 'BIAS_DIR']
+        logger.info('Creating Currents plots.')
+    else:
+        return
+
+    var_info = [variable, name_var, list_of_headings]
+
+    read_ofs_ctl_file = ofs_ctlfile_read(prop, name_var, logger)
+    if read_ofs_ctl_file is not None:
+        create_1dplot_2nd_part(
+            read_ofs_ctl_file, prop, var_info, logger)
 
 
 def create_1dplot(prop, logger):
@@ -444,6 +550,11 @@ def create_1dplot(prop, logger):
     prop.ofsfiletype = prop.ofsfiletype.lower()
 
     logger.info('Starting parameter validation...')
+
+    # Save original (user-supplied) start date before any forecast_a
+    # adjustment.  _process_forecast_cycle uses this to independently
+    # recompute dates for each cycle.
+    prop.start_date_full_original = prop.start_date_full
 
     # Do forecast_a start and end date reshuffle
 
@@ -695,12 +806,56 @@ def create_1dplot(prop, logger):
                 read_ofs_ctl_file, p, var_info,
                 logger)
 
-    # Variable plotting runs sequentially here because each variable's
-    # ofs_ctlfile_read() may trigger get_skill() → get_node_ofs() which
-    # loads the model. Variable parallelism is handled inside get_node_ofs
-    # and get_skill where the model is loaded once and shared.
-    for variable in prop.var_list:
-        _plot_variable(variable, prop)
+    # --- Forecast cycle parallelism for forecast_a mode ---
+    parallel_config = get_parallel_config(logger)
+    if 'forecast_a' in prop.whichcasts:
+        _, forecast_cycles = get_fcst_hours(prop.ofs)
+        use_parallel_cycles = (
+            parallel_config.get('parallel_forecast_cycles', True)
+            and len(forecast_cycles) > 1)
+
+        if use_parallel_cycles:
+            max_cycle_workers = min(len(forecast_cycles), 4)
+            logger.info(
+                'Processing %d forecast cycles in parallel with %d '
+                'workers', len(forecast_cycles), max_cycle_workers)
+            with ThreadPoolExecutor(
+                    max_workers=max_cycle_workers) as executor:
+                futures = {}
+                for cycle_hr in forecast_cycles:
+                    futures[executor.submit(
+                        _process_forecast_cycle, int(cycle_hr),
+                        prop, logger)] = int(cycle_hr)
+                for future in as_completed(futures):
+                    cycle = futures[future]
+                    try:
+                        future.result()
+                        logger.info(
+                            'Completed forecast cycle %02dZ', cycle)
+                    except Exception as ex:
+                        logger.error(
+                            'Forecast cycle %02dZ failed: %s',
+                            cycle, ex)
+        else:
+            logger.info('Processing %d forecast cycles sequentially',
+                        len(forecast_cycles))
+            for cycle_hr in forecast_cycles:
+                try:
+                    _process_forecast_cycle(
+                        int(cycle_hr), prop, logger)
+                except Exception as ex:
+                    logger.error(
+                        'Forecast cycle %02dZ failed: %s',
+                        int(cycle_hr), ex)
+    else:
+        # Non-forecast_a modes: variable plotting runs sequentially here
+        # because each variable's ofs_ctlfile_read() may trigger
+        # get_skill() -> get_node_ofs() which loads the model. Variable
+        # parallelism is handled inside get_node_ofs and get_skill where
+        # the model is loaded once and shared.
+        for variable in prop.var_list:
+            _plot_variable(variable, prop)
+
     return logger
 
 

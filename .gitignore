@@ -1,2 +1,7 @@
 conf/api_keys.conf
 conf/ofs_dps.conf
+wiki_parallelization_guide.md
+benchmark_*.log
+benchmark_*.sh
+benchmark_results.csv
+benchmark_report.md

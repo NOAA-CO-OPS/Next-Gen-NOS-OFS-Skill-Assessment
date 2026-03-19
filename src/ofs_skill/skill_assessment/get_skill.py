@@ -5,6 +5,7 @@
 """
 
 import argparse
+import copy
 import logging
 import logging.config
 import os
@@ -25,10 +26,15 @@ from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment import format_paired_one_d, make_skill_maps, metrics_paired_one_d
 
 
-def ofs_ctlfile_extract(prop, name_var, logger):
+def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     """
     Extract info from model control files. If control file does not exist,
     create it.
+
+    Parameters
+    ----------
+    model_dataset : xarray.Dataset or None
+        Pre-loaded model dataset to avoid redundant intake_model() calls.
     """
 
     if prop.ofsfiletype == 'fields':
@@ -39,7 +45,10 @@ def ofs_ctlfile_extract(prop, name_var, logger):
             )
             is False
         ):
-            get_node_ofs(prop, logger)
+            result = get_node_ofs(prop, logger,
+                                  model_dataset=model_dataset)
+            if result is not None:
+                prop._cached_model = result
     elif prop.ofsfiletype == 'stations':
         ctl_path = os.path.join(prop.control_files_path,
                             str(prop.ofs+'_'+name_var+'_model_station.ctl'))
@@ -48,7 +57,10 @@ def ofs_ctlfile_extract(prop, name_var, logger):
             )
             is False
         ):
-            get_node_ofs(prop, logger)
+            result = get_node_ofs(prop, logger,
+                                  model_dataset=model_dataset)
+            if result is not None:
+                prop._cached_model = result
 
     try:
         if (os.path.getsize(ctl_path) > 0):
@@ -167,7 +179,11 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                     'Calling OFS module for %s',
                     prop.whichcast,
                 )
-                get_node_ofs(prop, logger)
+                cached = getattr(prop, '_cached_model', None)
+                result = get_node_ofs(prop, logger,
+                                      model_dataset=cached)
+                if result is not None:
+                    prop._cached_model = result
 
             ofs_df = pd.read_csv(prd_path,
                 sep=r'\s+',
@@ -515,6 +531,102 @@ def get_skill(prop, logger):
     # in the station ctl file and will try to download the data from TandC,
     # USGS, and NDBC based on the station data source
 
+    def _ensure_obs_files(read_station_ctl_file, p, name_var, logger_):
+        """Check for missing .obs files, download if needed."""
+        for i in range(0, len(read_station_ctl_file[0])):
+            obs_path = os.path.join(p.data_observations_1d_station_path,
+                    str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
+                        name_var+'_station.obs'))
+            if os.path.isfile(obs_path):
+                if os.path.getsize(obs_path) > 0:
+                    logger_.info(
+                        '%s/%s_%s_%s_station.obs found',
+                        p.data_observations_1d_station_path,
+                        read_station_ctl_file[0][i][0],
+                        p.ofs,
+                        name_var,
+                    )
+                else:
+                    logger_.error(
+                        '%s/%s_%s_%s_station.obs is empty',
+                        p.data_observations_1d_station_path,
+                        read_station_ctl_file[0][i][0],
+                        p.ofs,
+                        name_var,
+                    )
+            else:
+                logger_.error(
+                    '%s/%s_%s_%s_station.obs is missing, calling Obs Module',
+                    p.data_observations_1d_station_path,
+                    read_station_ctl_file[0][i][0],
+                    p.ofs,
+                    name_var,
+                )
+                get_station_observations(p, logger_)
+                break
+
+    def _ensure_prd_files(read_ofs_ctl_file, p, name_var, logger_,
+                          cached_model=None):
+        """Check for missing .prd files, extract if needed.
+        Returns the (possibly updated) cached model dataset."""
+        for i in range(0, len(read_ofs_ctl_file[-1])):
+            if p.whichcast == 'forecast_a':
+                if os.path.isfile(
+                    f'{p.data_model_1d_node_path}/'
+                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                    f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
+                ) is False:
+                    logger_.error(
+                        '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
+                        p.data_model_1d_node_path,
+                        read_ofs_ctl_file[-1][i],
+                        p.ofs,
+                        name_var,
+                        read_ofs_ctl_file[1][i],
+                        p.whichcast,
+                        p.forecast_hr,
+                        p.ofsfiletype
+                    )
+                    logger_.info(
+                        'Calling OFS module for %s',
+                        p.whichcast,
+                    )
+                    result = get_node_ofs(p, logger_,
+                                          model_dataset=cached_model)
+                    if result is not None:
+                        cached_model = result
+                    break
+            else:
+                if os.path.isfile(
+                    f'{p.data_model_1d_node_path}/'
+                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                    f'{p.ofsfiletype}_model.prd'
+                ) is False:
+                    logger_.info(
+                        '%s/%s_%s_%s_%s_%s_%s_model.prd is missing',
+                        p.data_model_1d_node_path,
+                        read_ofs_ctl_file[-1][i],
+                        p.ofs,
+                        name_var,
+                        read_ofs_ctl_file[1][i],
+                        p.whichcast,
+                        p.ofsfiletype
+                    )
+                    logger_.info(
+                        'Calling OFS module for %s',
+                        p.whichcast,
+                    )
+                    result = get_node_ofs(p, logger_,
+                                          model_dataset=cached_model)
+                    if result is not None:
+                        cached_model = result
+                    break
+        return cached_model
+
+    parallel_cfg = get_parallel_config(logger)
+
     def _skill_for_variable(variable, p):
         """Process skill assessment for a single variable."""
         name_var = name_convent(variable)
@@ -548,108 +660,48 @@ def get_skill(prop, logger):
                 p.ofs,
                 name_var,
             )
-    ######## Checking for the .obs files:
-            for i in range(0, len(read_station_ctl_file[0])):
-                obs_path = os.path.join(p.data_observations_1d_station_path,
-                        str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
-                            name_var+'_station.obs'))
-                if os.path.isfile(obs_path):
-                    if os.path.getsize(obs_path)> 0:
-                        logger.info(
-                            '%s/%s_%s_%s_station.obs found',
-                            p.data_observations_1d_station_path,
-                            read_station_ctl_file[0][i][0],
-                            p.ofs,
-                            name_var,
-                        )
-                    else:
-                        logger.error(
-                            '%s/%s_%s_%s_station.obs is empty',
-                            p.data_observations_1d_station_path,
-                            read_station_ctl_file[0][i][0],
-                            p.ofs,
-                            name_var,
-                        )
-
-                else:
-                    logger.error(
-                        '%s/%s_%s_%s_station.obs is missing, calling Obs Module',
-                        p.data_observations_1d_station_path,
-                        read_station_ctl_file[0][i][0],
-                        p.ofs,
-                        name_var,
-                    )
-
-                    get_station_observations(
-                        p, logger)
-                    break
-
         else:
             logger.info('Observation ctl file for %s and %s is empty.',
             p.ofs,
             name_var)
             return
 
-
+        # Ensure model ctl file exists (depends on station ctl file)
         logger.info('Searching for the %s %s model control files',
                     p.ofs, variable)
+        cached_model = getattr(p, '_cached_model', None)
         read_ofs_ctl_file = ofs_ctlfile_extract(
-            p, name_var, logger
+            p, name_var, logger, model_dataset=cached_model
         )  # lines, nodes, depths, shifts, ids
-        if read_ofs_ctl_file is not None:
-            ######## Checking for the .prd files:
-            for i in range(0, len(read_ofs_ctl_file[-1])):
-                if p.whichcast == 'forecast_a':
-                    if os.path.isfile(
-                        f'{p.data_model_1d_node_path}/'
-                        f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
-                        f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
-                        f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
-                    ) is False:
-                        logger.error(
-                            '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
-                            p.data_model_1d_node_path,
-                            read_ofs_ctl_file[-1][i],
-                            p.ofs,
-                            name_var,
-                            read_ofs_ctl_file[1][i],
-                            p.whichcast,
-                            p.forecast_hr,
-                            p.ofsfiletype
-                        )
-                        logger.info(
-                            'Calling OFS module for %s',
-                            p.whichcast,
-                        )
-                        get_node_ofs(p, logger)
-                        break
-                else:
-                    if os.path.isfile(
-                        f'{p.data_model_1d_node_path}/'
-                        f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
-                        f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
-                        f'{p.ofsfiletype}_model.prd'
-                    ) is False:
-                        logger.info(
-                            '%s/%s_%s_%s_%s_%s_%s_model.prd is missing',
-                            p.data_model_1d_node_path,
-                            read_ofs_ctl_file[-1][i],
-                            p.ofs,
-                            name_var,
-                            read_ofs_ctl_file[1][i],
-                            p.whichcast,
-                            p.ofsfiletype
-                        )
-                        logger.info(
-                            'Calling OFS module for %s',
-                            p.whichcast,
-                        )
-                        get_node_ofs(p, logger)
-                        break
-        else:
+        cached_model = getattr(p, '_cached_model', cached_model)
+
+        if read_ofs_ctl_file is None:
             logger.info('Model ctl file for %s and %s is empty.',
             p.ofs,
             name_var)
+        elif (parallel_cfg.get('parallel_workflow')
+              and read_station_ctl_file is not None):
+            # Parallel: check obs files + prd files concurrently
+            logger.info('Running obs and model checks in parallel for %s',
+                        variable)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                obs_future = executor.submit(
+                    _ensure_obs_files, read_station_ctl_file,
+                    copy.copy(p), name_var, logger)
+                prd_future = executor.submit(
+                    _ensure_prd_files, read_ofs_ctl_file,
+                    copy.copy(p), name_var, logger, cached_model)
+                obs_future.result()
+                cached_model = prd_future.result()
+                if cached_model is not None:
+                    p._cached_model = cached_model
+        else:
+            # Sequential: check obs files, then prd files
+            _ensure_obs_files(read_station_ctl_file, p, name_var, logger)
+            cached_model = _ensure_prd_files(
+                read_ofs_ctl_file, p, name_var, logger, cached_model)
+            if cached_model is not None:
+                p._cached_model = cached_model
 
         if read_ofs_ctl_file is not None:
             skill_results = skill(

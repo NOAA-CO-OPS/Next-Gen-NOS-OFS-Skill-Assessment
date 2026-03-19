@@ -78,6 +78,7 @@ import logging
 import logging.config
 import os
 import sys
+import traceback
 import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -216,6 +217,7 @@ def _run_ha_worker(work_item):
             'cast': cast,
             'status': 'error',
             'error': str(ex),
+            'traceback': traceback.format_exc(),
         }
 
 
@@ -418,9 +420,10 @@ def run_harmonic_analysis_station_loop(
                     stations_processed += 1
                 else:
                     logger.error(
-                        'HA failed for station %s (%s): %s. Skipping.',
+                        'HA failed for station %s (%s): %s. Skipping.\n%s',
                         result['station_id'], result['cast'],
                         result.get('error', 'unknown'),
+                        result.get('traceback', ''),
                     )
                     stations_skipped += 1
                     skip_reasons.append(
@@ -741,18 +744,16 @@ def _verify_predictions_vs_coops(
     """
     try:
         # Build a lightweight input object for retrieve_tidal_predictions
-        class _PredInput:
-            pass
-
-        pred_input = _PredInput()
-        pred_input.station = station_id
-        pred_input.start_date = datetime.strptime(
-            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ'
-        ).strftime('%Y%m%d%H%M%S')
-        pred_input.end_date = datetime.strptime(
-            prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'
-        ).strftime('%Y%m%d%H%M%S')
-        pred_input.datum = prop.datum
+        pred_input = SimpleNamespace(
+            station=station_id,
+            start_date=datetime.strptime(
+                prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ'
+            ).strftime('%Y%m%d%H%M%S'),
+            end_date=datetime.strptime(
+                prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'
+            ).strftime('%Y%m%d%H%M%S'),
+            datum=prop.datum,
+        )
 
         official = retrieve_tidal_predictions(pred_input, logger)
 
