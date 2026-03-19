@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import plotly.express as px
+import pandas as pd
 import xarray as xr
 from plotly.subplots import make_subplots
 
@@ -331,6 +332,51 @@ def plot_fvcom_obc(prop,ds,logger):
         filename = prop.ofs + '_' + name_var + '_OBC.html'
         savepath = os.path.join(prop.visuals_1d_station_path, filename)
         fig.write_html(savepath, auto_play=False)
+
+    # Now do water level
+    cbar_title = 'Water level<br>(m)'
+    name_var = 'water_level'
+    # Make x-axis labels
+    x_labels = make_x_labels(ds,logger)
+
+    # Some OFS repeat themselves -- set boundaries
+    # if prop.ofs == 'ngofs2':
+    #     z = z[:,:,:171]
+    #     x_labels = x_labels[:171]
+
+    # Figures
+    nrows = 1
+    ncols = 1
+    fig = make_subplots(rows=nrows, cols=ncols)
+    # Make df from z for plotly express animations
+    plot_title = prop.ofs.upper() + ' ' + name_var + ' OBC transect, ' +\
+        datetime.strftime(time_dt[0],'%m/%d/%Y %H:%M:%S') + ' - ' +\
+            datetime.strftime(time_dt[-1],'%m/%d/%Y %H:%M:%S')
+    z = np.asarray(ds['elevation'])
+    # Build big dataframe
+    df = None
+    for t in range(len(time_dt)):
+        temp = pd.DataFrame(
+            {
+            'time': time_dt[t],
+            'x': x_labels,
+            'y': z[t,:],
+            }
+        )
+        df = pd.concat([df, temp], ignore_index=True)
+
+    fig = px.line(
+        df,
+        x="x",
+        y="y",
+        animation_frame="time",
+        range_y=[-1.5, 1.5],
+        title="Animate 2D Array Slices"
+    )
+
+    filename = prop.ofs + '_' + name_var + '_OBC.html'
+    savepath = os.path.join(prop.visuals_1d_station_path, filename)
+    fig.write_html(savepath, auto_play=False)
 
 def make_open_boundary_transects(prop,logger):
     '''coming soon'''
