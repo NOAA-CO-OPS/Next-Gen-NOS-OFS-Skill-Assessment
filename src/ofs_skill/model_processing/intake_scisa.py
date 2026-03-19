@@ -51,35 +51,68 @@ import numpy as np
 import xarray as xr
 
 
-def preprocess_with_filename(ds):
-    """Preprocess an xarray dataset by adding a 'filename' coordinate.
-
-    Extracts the filename from the dataset's encoding source path
-    and assigns it as a coordinate. When files are opened through
-    simplecache or other fsspec wrappers, the 'source' key may be
-    absent — try alternative encoding keys and fall back to scanning
-    all encoding values for a .nc filename.
-    """
-    source = ''
-    # Try common encoding keys in priority order
+def _extract_filename_from_encoding(ds):
+    """Best-effort extraction of filename from dataset encoding."""
+    # Try common encoding keys
     for key in ('source', 'original_source'):
         source = ds.encoding.get(key, '')
         if source:
-            break
+            if '::' in source:
+                source = source.split('::')[-1]
+            return os.path.basename(source)
 
-    # Last resort: scan all encoding values for a .nc path
-    if not source:
-        for val in ds.encoding.values():
-            if isinstance(val, str) and '.nc' in val:
-                source = val
-                break
+    # Scan all encoding values for a .nc path
+    for val in ds.encoding.values():
+        if isinstance(val, str) and '.nc' in val:
+            if '::' in val:
+                val = val.split('::')[-1]
+            return os.path.basename(val)
 
-    if source:
-        # Strip protocol prefixes (simplecache::, s3://, etc.)
-        if '::' in source:
-            source = source.split('::')[-1]
-        filename = os.path.basename(source)
-    else:
+    # Try variable-level encoding
+    for var_name in ds.data_vars:
+        var_source = ds[var_name].encoding.get('source', '')
+        if var_source:
+            if '::' in var_source:
+                var_source = var_source.split('::')[-1]
+            return os.path.basename(var_source)
+
+    return ''
+
+
+def make_preprocess_with_filename(urlpaths):
+    """Create a preprocess function that maps datasets to filenames.
+
+    When files are opened through simplecache or other fsspec wrappers,
+    ds.encoding may not contain the original file path. This factory
+    creates a closure that tracks call order and falls back to extracting
+    the filename from the known urlpaths list.
+    """
+    call_count = [0]  # mutable counter for closure
+
+    def preprocess_with_filename(ds):
+        filename = _extract_filename_from_encoding(ds)
+        if not filename or filename == 'unknown':
+            # Fall back to the original urlpath by call order
+            idx = call_count[0]
+            if idx < len(urlpaths):
+                path = urlpaths[idx]
+                if isinstance(path, str):
+                    # Strip protocol prefixes
+                    if '::' in path:
+                        path = path.split('::')[-1]
+                    filename = os.path.basename(path)
+            if not filename:
+                filename = 'unknown'
+        call_count[0] += 1
+        return ds.assign_coords(filename=filename)
+
+    return preprocess_with_filename
+
+
+def preprocess_with_filename(ds):
+    """Standalone preprocess — used when urlpaths aren't available."""
+    filename = _extract_filename_from_encoding(ds)
+    if not filename:
         filename = 'unknown'
     return ds.assign_coords(filename=filename)
 
@@ -276,6 +309,15 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     '(too large for local cache)', remote_count,
                 )
 
+    # Build a preprocess function that knows the original urlpaths,
+    # so it can recover filenames even when simplecache hides them.
+    # Strip simplecache:: prefixes to get the real filenames.
+    raw_paths = [
+        p.split('::')[-1] if isinstance(p, str) and '::' in p else p
+        for p in urlpaths
+    ]
+    preprocess_fn = make_preprocess_with_filename(raw_paths)
+
     if dim_compat:  # This will only be FALSE for stations files when
         # station dimensions do not match! Always True for fields
         # files
@@ -289,7 +331,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'by_coords',  # <-- align files by coordinates
                         'engine': engine,
-                        'preprocess': preprocess_with_filename,
+                        'preprocess': preprocess_fn,
                         'drop_variables': drop_variables,
                         'chunks': {'time': 1},
                     },
@@ -301,7 +343,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'nested',
                         'engine': engine,
-                        'preprocess': preprocess_with_filename,
+                        'preprocess': preprocess_fn,
                         'concat_dim': time_name,
 
                         'chunks': 'auto',  # Enables lazy loading with Dask
@@ -322,7 +364,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 xarray_kwargs={
                     'combine': 'nested',
                     'engine': engine,
-                    'preprocess': preprocess_with_filename,
+                    'preprocess': preprocess_fn,
                     'concat_dim': time_name,
                     'drop_variables': drop_variables,
                     'chunks': chunk_spec,
