@@ -306,14 +306,34 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                             and prop.whichcast == 'forecast_a':
                         urlpaths = urlpaths + urlpaths
             elif prop.ofsfiletype == 'stations' and not all_remote:
+                # Mixed local + remote: download remote files to cache
+                # so all paths are local (fsspec requires uniform protocol)
+                import urllib.request
+                remote_n = sum(1 for f in urlpaths
+                               if isinstance(f, str) and f.startswith('http'))
+                local_n = len(urlpaths) - remote_n
                 logger.info(
-                    'Skipping simplecache: mix of %d remote and %d local '
-                    'files (fsspec requires uniform protocol)',
-                    sum(1 for f in urlpaths
-                        if isinstance(f, str) and f.startswith('http')),
-                    sum(1 for f in urlpaths
-                        if isinstance(f, str) and not f.startswith('http')),
+                    'Mixed file list: downloading %d remote files to '
+                    'local cache (%d already local)', remote_n, local_n,
                 )
+                resolved = []
+                for f in urlpaths:
+                    if isinstance(f, str) and f.startswith('http'):
+                        local_path = os.path.join(
+                            cache_dir, os.path.basename(f))
+                        if not os.path.isfile(local_path):
+                            try:
+                                urllib.request.urlretrieve(f, local_path)
+                            except Exception as dl_err:
+                                logger.warning(
+                                    'Failed to cache %s: %s. '
+                                    'Using direct URL.', f, dl_err)
+                                resolved.append(f)
+                                continue
+                        resolved.append(local_path)
+                    else:
+                        resolved.append(f)
+                urlpaths = resolved
             else:
                 # For fields files, caching is skipped (files are 100-500 MB
                 # each and would quickly exhaust local disk)
