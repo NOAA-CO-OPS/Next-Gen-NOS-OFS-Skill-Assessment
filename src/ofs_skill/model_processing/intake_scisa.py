@@ -229,7 +229,6 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                                 'cache_storage': cache_dir,
                                 'same_names': True,
                             },
-                            'target_options': {},
                         }
                     }
                     logger.info(
