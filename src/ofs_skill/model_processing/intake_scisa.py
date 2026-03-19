@@ -57,10 +57,27 @@ def preprocess_with_filename(ds):
     Extracts the filename from the dataset's encoding source path
     and assigns it as a coordinate. When files are opened through
     simplecache or other fsspec wrappers, the 'source' key may be
-    absent — fall back to 'unknown' in that case.
+    absent — try alternative encoding keys and fall back to scanning
+    all encoding values for a .nc filename.
     """
-    source = ds.encoding.get('source', '')
+    source = ''
+    # Try common encoding keys in priority order
+    for key in ('source', 'original_source'):
+        source = ds.encoding.get(key, '')
+        if source:
+            break
+
+    # Last resort: scan all encoding values for a .nc path
+    if not source:
+        for val in ds.encoding.values():
+            if isinstance(val, str) and '.nc' in val:
+                source = val
+                break
+
     if source:
+        # Strip protocol prefixes (simplecache::, s3://, etc.)
+        if '::' in source:
+            source = source.split('::')[-1]
         filename = os.path.basename(source)
     else:
         filename = 'unknown'
