@@ -268,16 +268,20 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             cache_dir = os.path.join(os.path.expanduser('~'), '.ofs_cache', 's3')
             os.makedirs(cache_dir, exist_ok=True)
 
-            if prop.ofsfiletype == 'stations':
+            # Check if all files are remote — simplecache cannot handle
+            # mixed local + remote file lists (fsspec protocol mismatch)
+            all_remote = all(
+                isinstance(f, str) and f.startswith('http')
+                for f in urlpaths
+            )
+
+            if prop.ofsfiletype == 'stations' and all_remote:
                 # simplecache: cache whole files (stations files are small,
                 # typically 1-10 MB each)
                 try:
-                    cached_urlpaths = []
-                    for url in urlpaths:
-                        if isinstance(url, str) and url.startswith('http'):
-                            cached_urlpaths.append(f'simplecache::{url}')
-                        else:
-                            cached_urlpaths.append(url)
+                    cached_urlpaths = [
+                        f'simplecache::{url}' for url in urlpaths
+                    ]
                     urlpaths = cached_urlpaths
                     s3_storage_opts = {
                         'storage_options': {
@@ -301,6 +305,15 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     if prop.ofsfiletype == 'stations' \
                             and prop.whichcast == 'forecast_a':
                         urlpaths = urlpaths + urlpaths
+            elif prop.ofsfiletype == 'stations' and not all_remote:
+                logger.info(
+                    'Skipping simplecache: mix of %d remote and %d local '
+                    'files (fsspec requires uniform protocol)',
+                    sum(1 for f in urlpaths
+                        if isinstance(f, str) and f.startswith('http')),
+                    sum(1 for f in urlpaths
+                        if isinstance(f, str) and not f.startswith('http')),
+                )
             else:
                 # For fields files, caching is skipped (files are 100-500 MB
                 # each and would quickly exhaust local disk)
