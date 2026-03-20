@@ -366,7 +366,7 @@ def oned_vector_plot1(
     fig.add_trace(go.Scatter(
         x=x_data, y=[-X1]*len(x_data),
         mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(255,255,0,0.15)',
+        fill='tonexty', fillcolor='rgba(255,165,0,0.15)',
         name='Target error range',
         showlegend=True, hoverinfo='skip',
     ), row=3, col=1)
@@ -379,7 +379,7 @@ def oned_vector_plot1(
     fig.add_trace(go.Scatter(
         x=x_data, y=[X1]*len(x_data),
         mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(255,0,0,0.1)',
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
         name='2x target error range',
         showlegend=True, hoverinfo='skip',
     ), row=3, col=1)
@@ -392,7 +392,7 @@ def oned_vector_plot1(
     fig.add_trace(go.Scatter(
         x=x_data, y=[-2*X1]*len(x_data),
         mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(255,0,0,0.1)',
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
         showlegend=False, hoverinfo='skip',
     ), row=3, col=1)
     # Check if end datetime is > current date
