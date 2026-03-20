@@ -26,19 +26,18 @@ Created: 05/09/2025
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
-import pytz
 from matplotlib.dates import date2num
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
+from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
 from ofs_skill.visualization.plotting_functions import (
     find_max_data_gap,
     get_error_range,
@@ -116,25 +115,7 @@ def oned_vector_plot1(
     gap_length = 10
     data_count = 48
     # Combine obs from different casts into one main obs array
-    obs_df = None
-    for i in range(len(now_fores_paired)):
-        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
-        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
-        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
-            pass
-        else:
-            try:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
-            except ValueError:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
-
-            obs_df = obs_df.loc[((obs_df['DateTime']
-                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
-            now_fores_paired[i] = now_fores_paired[i].loc[((
-                now_fores_paired[i].DateTime >= start_dt) & \
-                    (now_fores_paired[i].DateTime <= end_dt))]
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
 
     if len(list(obs_df.DateTime)) > data_count:
         marker_size = (
@@ -193,7 +174,7 @@ def oned_vector_plot1(
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
             seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
-                'Z cycle'
+                'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
@@ -233,7 +214,7 @@ def oned_vector_plot1(
                     line=dict(width=0, color='black'),
                 ), ), 1, 1,
         )
-        if 'Z' in seriesname:
+        if 'z' in seriesname:
             seriesnamebox = seriesname.split(' ')[1] + ' ' +\
                 seriesname.split(' ')[3]
         else:
@@ -278,7 +259,7 @@ def oned_vector_plot1(
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
             seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
-                'Z cycle'
+                'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
@@ -326,7 +307,7 @@ def oned_vector_plot1(
         elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Forecast_a':
-            sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'Z - Obs.'
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'z - Obs.'
         else:
             sdboxName = 'Model'+str(i+1)+' - Obs.'
         fig.add_trace(
@@ -372,74 +353,54 @@ def oned_vector_plot1(
     fig.add_hline(
         y=0, line_width=1,
         line_color='black',
-        # line_dash='dash',
         row=3, col=1,
     )
-    fig.add_trace(
-        go.Scatter(
-            x=obs_df.DateTime,
-            y=np.ones(len(obs_df.DateTime))*X1,
-            name='Target error range',
-            mode='lines',
-            hoverinfo='skip',
-            line=dict(
-                width=0,
-                color='red'
-            ),
-            showlegend=False,
-        ), 3, 1,)
-    fig.add_trace(
-        go.Scatter(
-            x=obs_df.DateTime,
-            y=np.ones(len(obs_df.DateTime))*-X1,
-            fill='tonexty',
-            mode='lines',
-            fillcolor='rgba(255,255,0,0.1)',
-            name='Target error range',
-            hoverinfo = 'skip',
-            line=dict(
-                width=0,
-                color='red'
-            ),
-            showlegend=False,
-        ), 3, 1,)
-    fig.add_trace(
-        go.Scatter(
-            x=obs_df.DateTime,
-            y=np.ones(len(obs_df.DateTime))*(X1*2),
-            name='Target error range',
-            mode='lines',
-            hoverinfo='skip',
-            line=dict(
-                width=0,
-                color='red'
-            ),
-            showlegend=False,
-        ), 3, 1,)
-    fig.add_trace(
-        go.Scatter(
-            x=obs_df.DateTime,
-            y=np.ones(len(obs_df.DateTime))*(-X1*2),
-            fill='tonexty',
-            mode='lines',
-            fillcolor='rgba(255,0,0,0.1)',
-            name='1x and 2x target error ranges',
-            hoverinfo='skip',
-            line=dict(
-                width=0,
-                color='red'
-            ),
-            showlegend=True,
-        ), 3, 1,)
+    # Add target error ranges to diff plot
+    # Target error range (yellow, center band: -X1 to +X1)
+    x_data = obs_df.DateTime
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,255,0,0.15)',
+        name='Target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=3, col=1)
+    # 2x error range upper (red, +X1 to +2*X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.1)',
+        name='2x target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=3, col=1)
+    # 2x error range lower (red, -2*X1 to -X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.1)',
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
     # Check if end datetime is > current date
-    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
+    max_datetime = now_fores_paired[0].DateTime.max().replace(tzinfo=UTC)
     for i in range(len(now_fores_paired)):
         if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
-            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
+            max_datetime = now_fores_paired[i].DateTime.max().replace(tzinfo=UTC)
     if max_datetime > datetime.now(UTC):
-        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
-        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
-        #         'America/New_York')).utcoffset().total_seconds()/60/60))
         try:
             dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
         except ValueError:
@@ -448,7 +409,6 @@ def oned_vector_plot1(
             fig.add_vline(
                 x=dt_n.timestamp() * 1000,
                 line_width=1,
-                #line_dash="dash",
                 line_color='gray',
                 annotation_text='Forecast >',
                 annotation_font_color='black',
@@ -459,7 +419,6 @@ def oned_vector_plot1(
             fig.add_vline(
                 x=dt_n.timestamp() * 1000,
                 line_width=0,
-                #line_dash="dash",
                 line_color='gray',
                 annotation_text='< Nowcast',
                 annotation_font_color='black',
@@ -470,7 +429,6 @@ def oned_vector_plot1(
             fig.add_vline(
                 x=dt_n.timestamp() * 1000,
                 line_width=1,
-                #line_dash="dash",
                 line_color='gray',
                 annotation_text='Forecast >',
                 annotation_font_color='black',
@@ -481,7 +439,6 @@ def oned_vector_plot1(
             fig.add_vline(
                 x=dt_n.timestamp() * 1000,
                 line_width=0,
-                #line_dash="dash",
                 line_color='gray',
                 annotation_text='< Nowcast',
                 annotation_font_color='black',

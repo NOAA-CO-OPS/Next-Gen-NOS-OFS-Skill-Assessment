@@ -13,40 +13,85 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from ofs_skill.model_processing import list_of_files
 from ofs_skill.obs_retrieval import utils
+
+
+def get_s3_bucket(ofs):
+    """Select appropriate S3 bucket config name from OFS.
+
+    Parameters
+    ----------
+    ofs : str
+        OFS model name (e.g., 'cbofs', 'stofs_3d_atl').
+
+    Returns
+    -------
+    str
+        Config key for the S3 bucket URL.
+    """
+    if ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+        url_root = 'nodd_s3_stofs3d'
+    elif ofs == 'stofs_2d_global':
+        url_root = 'nodd_s3_stofs2d'
+    else:
+        url_root = 'nodd_s3'
+    return url_root
 
 
 def get_most_recent_file_date(bucket_name, ofs, logger):
     """
-    Finds the key of the most recently modified file in an S3 bucket
-    with a prefix.
+    Finds the most recent model station file date in an S3 bucket.
 
-    :param bucket_name: The name of the S3 bucket.
-    :param prefix: The prefix (folder path) to search within.
-    :return: The formatted date of the most recent file or dir, or None if no files/dirs are found.
+    Parameters
+    ----------
+    bucket_name : str
+        The name of the S3 bucket.
+    ofs : str
+        OFS model name (e.g., 'cbofs', 'stofs_3d_atl').
+    logger : logging.Logger
+        Logger instance for logging messages.
+
+    Returns
+    -------
+    str or None
+        The formatted date string (e.g., '2025-03-15T12:00:00Z'),
+        or None if no files are found.
     """
     s3_client = boto3.client('s3', config=Config(signature_version=UNSIGNED))
 
     prefix = ofs
     if ofs == 'stofs_3d_atl':
         prefix = 'STOFS-3D-Atl/'
-    elif ofs == 'stofs_3d_Pac':
+    elif ofs == 'stofs_3d_pac':
         prefix = 'STOFS-3D-Pac/'
 
     # Sort objects with 'station' in their name by LastModified timestamp in ascending order
     # and get the last one
     if 'stofs' not in ofs:
-        # Use a paginator for large buckets
-        paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
-        all_objects = []
-        for page in pages:
-            if 'Contents' in page:
-                all_objects.extend(page['Contents'])
-        if not all_objects:
+        # Date-targeted approach: check the most recent days first to avoid
+        # paginating through the entire bucket prefix (which can be very slow).
+        all_filt_objects = []
+        for days_back in range(7):
+            date_str = datetime.strftime(
+                datetime.now(UTC) - timedelta(days=days_back), '%Y/%m/%d')
+            targeted_prefix = f'{prefix}/netcdf/{date_str}/'
+            try:
+                paginator = s3_client.get_paginator('list_objects_v2')
+                pages = paginator.paginate(Bucket=bucket_name,
+                                           Prefix=targeted_prefix)
+                for page in pages:
+                    if 'Contents' in page:
+                        for obj in page['Contents']:
+                            if 'station' in obj['Key']:
+                                all_filt_objects.append(obj)
+            except ClientError as e:
+                logger.error(f'Error listing S3 objects: {e}')
+                continue
+            if all_filt_objects:
+                break
+        if not all_filt_objects:
+            logger.error('No station files found in S3 bucket for the last 7 days')
             return None
-        all_filt_objects = [item for item in all_objects if 'station' in item['Key']]
         all_filt_objects.sort(key=lambda obj: obj['LastModified'])
         most_recent_object = all_filt_objects[-1]
         split_name = most_recent_object['Key'].split('/')
@@ -55,9 +100,10 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
         # STOFS uses different path structure - no 'netcdf' subdirectory
         # Bucket structure: STOFS-3D-Atl/stofs_3d_atl.YYYYMMDD/filename.nc
         # Build prefix/file path
+        MAX_LOOKBACK_DAYS = 30
         dir_found = False
         counter = -1
-        while not dir_found:
+        while not dir_found and counter < MAX_LOOKBACK_DAYS:
             counter += 1
             date_to_check = datetime.strftime(datetime.now(UTC) - \
                                   timedelta(hours=counter*24),'%Y%m%d')
@@ -77,6 +123,9 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
             except ClientError as e:
                 logger.error(f'Error checking folder existence: {e}')
                 return None
+        if not dir_found:
+            logger.error(f'No STOFS data found in the last {MAX_LOOKBACK_DAYS} days')
+            return None
     return date
 
 def get_fcst_hours(ofs):
@@ -156,12 +205,11 @@ def get_fcst_dates(prop, logger):
 
     Parameters
     ----------
-    prop.ofs : str
-        OFS identifier (e.g., 'cbofs', 'ngofs2')
-    prop.start_date_full : str
-        Start date in ISO format (YYYY-MM-DDTHH:MM:SSZ)
-    prop.forecast_hr : str
-        Requested forecast hour with 'hr' suffix (e.g., '00hr', '06hr')
+    prop : ModelProperties
+        ModelProperties object containing:
+        - ofs : str, OFS identifier (e.g., 'cbofs', 'ngofs2')
+        - start_date_full : str, Start date in ISO format (YYYY-MM-DDTHH:MM:SSZ)
+        - forecast_hr : str, Requested forecast hour with 'z' suffix (e.g., '00z', '06z')
     logger : logging.Logger
         Logger instance for tracking adjustments
 
@@ -179,17 +227,11 @@ def get_fcst_dates(prop, logger):
     --------
     >>> import logging
     >>> logger = logging.getLogger(__name__)
-    >>> start, end = get_fcst_dates('cbofs', '2025-07-15T05:00:00Z', '06hr', logger)
+    >>> start, end = get_fcst_dates(prop, logger)
     >>> print(f"Start: {start}")
     Start: 2025-07-15T06:00:00Z
     >>> print(f"End: {end}")
     End: 2025-07-17T06:00:00Z
-
-    >>> # Invalid cycle hour gets adjusted
-    >>> start, end = get_fcst_dates('cbofs', '2025-07-15T05:00:00Z', '05hr', logger)
-    INFO: Adjusted input forecast cycle hour from 05 to 06 for cbofs
-    >>> print(f"Start: {start}")
-    Start: 2025-07-15T06:00:00Z
 
     See Also
     --------
@@ -201,14 +243,14 @@ def get_fcst_dates(prop, logger):
     try:
         conf_settings = utils.Utils().read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
-    except Exception:
+    except (KeyError, FileNotFoundError):
         use_s3_fallback = False
 
     # Define forecast cycle hours for each OFS group
     fcstlength, fcstcycles = get_fcst_hours(prop.ofs)
 
     # Convert forecast cycle ints to str
-    fcstcycless = [f'{item:02}' for item in fcstcycles]
+    fcstcycles_str = [f'{item:02}' for item in fcstcycles]
 
     # Verify forecast hour input
     if prop.forecast_hr[-1:].lower() == 'z' or not use_s3_fallback:
@@ -221,9 +263,9 @@ def get_fcst_dates(prop, logger):
             else:
                 logger.error('If running forecast_a with a specific cycle, '
                              'you must specify a start date. Try again!')
-            raise SystemExit
+            raise SystemExit(1)
         try:
-            isinstance(int(prop.forecast_hr[:-1]),int)
+            int(prop.forecast_hr[:-1])
         except ValueError:
             logger.warning('Cannot run forecast_a in "now" mode without using '
                            'S3 fallback enabled! Changing forecast cycle to '
@@ -236,13 +278,13 @@ def get_fcst_dates(prop, logger):
         ftime = f'T{prop.forecast_hr[:-1]}:00:00Z'
         sdate = sdate + ftime
         sdatetime = datetime.strptime(sdate, '%Y-%m-%dT%H:%M:%SZ')
-        if requested_hour not in fcstcycless:
+        if requested_hour not in fcstcycles_str:
             if fcstcycles[0] == 0:
                 fcstcycles = np.append(fcstcycles, 24)
-                fcstcycless.append('00')
+                fcstcycles_str.append('00')
             elif fcstcycles[0] == 3 and len(fcstcycles) > 1:
                 fcstcycles = np.concatenate(([-3], fcstcycles))
-                fcstcycless.insert(0, '21')
+                fcstcycles_str.insert(0, '21')
             # Find nearest valid cycle hour
             requested_hour_int = int(requested_hour)
             dist = np.array([item - requested_hour_int for item in fcstcycles])
@@ -260,7 +302,7 @@ def get_fcst_dates(prop, logger):
         # Get most recent forecast cycle
         url_params = utils.Utils().read_config_section('urls', logger)
         # Select appropriate S3 bucket URL based on OFS
-        url_root = url_params[list_of_files.get_s3_bucket(prop.ofs)]
+        url_root = url_params[get_s3_bucket(prop.ofs)]
         bucket_name = url_root.split('//')[1].split('.')[0]
         fcst_start = get_most_recent_file_date(bucket_name,prop.ofs,logger)
 
@@ -270,9 +312,9 @@ def get_fcst_dates(prop, logger):
             timedelta(hours=fcstlength)
     except TypeError:
         logger.error('No start date found for most recent forecast model '
-                     'output! Please enter a start date in teh command line '
+                     'output! Please enter a start date in the command line '
                      'interface, and try again.')
-        raise SystemExit
+        raise SystemExit(1)
     fcst_end = datetime.strftime(edate, '%Y-%m-%dT%H:%M:%SZ')
 
     logger.info(f'Forecast cycle: {prop.forecast_hr}')

@@ -19,6 +19,7 @@ def paired_scalar(
     start_date_full: str,
     end_date_full: str,
     logger: Logger,
+    lookback_hours: int = 6,
 ) -> Optional[tuple[list[list], pd.DataFrame]]:
     """
     Create paired time series for scalar variables.
@@ -41,6 +42,11 @@ def paired_scalar(
         End date in format 'YYYY-MM-DDThh:mm:ssZ' or 'YYYYMMDD-HH:MM:SS'
     logger : Logger
         Logger instance for logging messages
+    lookback_hours : int, optional
+        Number of hours before start_date to include in paired data.
+        Default is 6 hours. The lookback ensures overlap between
+        consecutive casts (e.g., nowcast + forecast_a). Set to 0
+        to disable the lookback.
 
     Returns
     -------
@@ -156,11 +162,12 @@ def paired_scalar(
     # create julian
     paired['BIAS'] = paired['OFS'] - paired['OBS']
 
+    # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
     paired = paired.loc[
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=6)
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=lookback_hours)
             )
             & (
                 paired['DateTime']
@@ -219,6 +226,7 @@ def paired_vector(
     start_date_full: str,
     end_date_full: str,
     logger: Logger,
+    lookback_hours: int = 6,
 ) -> Optional[tuple[list[list], pd.DataFrame]]:
     """
     Create paired time series for vector variables.
@@ -241,6 +249,11 @@ def paired_vector(
         End date in format 'YYYY-MM-DDThh:mm:ssZ' or 'YYYYMMDD-HH:MM:SS'
     logger : Logger
         Logger instance for logging messages
+    lookback_hours : int, optional
+        Number of hours before start_date to include in paired data.
+        Default is 6 hours. The lookback ensures overlap between
+        consecutive casts (e.g., nowcast + forecast_a). Set to 0
+        to disable the lookback.
 
     Returns
     -------
@@ -347,11 +360,12 @@ def paired_vector(
     # Then we create the speed bias, mask for start and end time and
     # create julian
     paired['SPD_BIAS'] = paired['OFS'] - paired['OBS']
+    # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
     paired = paired.loc[
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=6)
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=lookback_hours)
             )
             & (
                 paired['DateTime']

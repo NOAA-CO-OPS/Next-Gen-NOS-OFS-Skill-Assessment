@@ -13,9 +13,56 @@ from datetime import UTC, datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pytz
 
 import ofs_skill.visualization.plotting_functions as plotting_functions
+
+
+def combine_obs_across_casts(now_fores_paired, prop):
+    """Combine observations from multiple casts, dedup, and filter by date range."""
+    obs_df = None
+    for i in range(len(now_fores_paired)):
+        obs_df = pd.concat([obs_df, now_fores_paired[i]], ignore_index=True)
+        obs_df = obs_df.drop_duplicates(subset=['DateTime'], ignore_index=True)
+        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
+            pass
+        else:
+            try:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
+            except ValueError:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
+            obs_df = obs_df.loc[((obs_df['DateTime'] >= start_dt) & (obs_df['DateTime'] <= end_dt))]
+            now_fores_paired[i] = now_fores_paired[i].loc[((
+                now_fores_paired[i].DateTime >= start_dt) & (now_fores_paired[i].DateTime <= end_dt))]
+    return obs_df, now_fores_paired
+
+
+def add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=1):
+    """Add nowcast-forecast transition line to matplotlib axes."""
+    max_datetime = now_fores_paired[0].DateTime.max().replace(tzinfo=UTC)
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = now_fores_paired[i].DateTime.max().replace(tzinfo=UTC)
+    if max_datetime > datetime.now(UTC) and 'nowcast' in prop.whichcasts:
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        if nrows == 1:
+            axes_list = [axs]
+        else:
+            axes_list = [axs[i] for i in range(nrows)]
+        for ax in axes_list:
+            ax.axvline(x=dt_n, color='r', linestyle='--', lw=1)
+            ax.annotate('Nowcast-forecast transition',
+                xy=(dt_n, ax.get_ylim()[1]),
+                xytext=(85, 0),
+                textcoords='offset points',
+                ha='right',
+                va='bottom',
+                fontsize=10,
+                color='r')
 
 
 def get_title_static(prop, node, station_id, name_var, logger):
@@ -101,25 +148,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     )
 
     # Combine obs from different casts into one main obs array
-    obs_df = None
-    for i in range(len(now_fores_paired)):
-        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
-        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
-        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
-            pass
-        else:
-            try:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
-            except ValueError:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
-
-            obs_df = obs_df.loc[((obs_df['DateTime']
-                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
-            now_fores_paired[i] = now_fores_paired[i].loc[((
-                now_fores_paired[i].DateTime >= start_dt) & \
-                    (now_fores_paired[i].DateTime <= end_dt))]
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
 
     # --- Do plots, huzzah --------------------------------------------
     fig, axs = plt.subplots(1, 1)
@@ -152,36 +181,6 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
             label=seriesname,
             color=palette[i+1],
         )
-        # axs[1].plot(
-        #     list(now_fores_paired[i].DateTime),
-        #     [
-        #         ofs - obs for ofs, obs in zip(
-        #             now_fores_paired[i].OFS,
-        #             now_fores_paired[i].OBS,
-        #         )
-        #     ],
-        #     label=sdboxName,
-        #     color=palette[i+1],
-        #     linestyle='--',
-        # )
-    # axs[1].fill_between(
-    #     list(now_fores_paired[i].DateTime),
-    #     np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
-    #     np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
-    #     alpha=0.1,
-    #     linewidth=0,
-    #     facecolor='orange',
-    #     label='Target error range',
-    # )
-    # axs[1].fill_between(
-    #     list(now_fores_paired[i].DateTime),
-    #     np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
-    #     np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
-    #     alpha=0.1,
-    #     linewidth=0,
-    #     facecolor='red',
-    #     label='2x target error range',
-    # )
 
     axs.grid(True, color='grey', linestyle='--', linewidth=0.5)
     axs.legend(
@@ -192,44 +191,9 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     axs.set_yticks(axs.get_yticks()[::1])
     axs.tick_params(axis='both', which='major', labelsize=12)
     axs.set_xlabel('Time', fontsize=14)
-    #plt.gcf().autofmt_xdate()
 
-    # axs[1].axhline(y=0, color='black', linewidth=1)
-    # axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    # axs[1].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    # axs[1].legend(
-    #     loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
-    #     frameon=False,
-    # )
-    # axs[1].set_ylim([-X1*3, X1*3])
-    # error_units = plot_name.split(' ')[-1]
-    # axs[1].set_ylabel('Error ' + error_units, fontsize=16)
-    # axs[1].set_xlabel('Time', fontsize=16)
-    # axs[1].set_yticks(axs[1].get_yticks()[::1])
-    # axs[1].tick_params(axis='y', which='major', labelsize=12)
-    # axs[1].tick_params(axis='x', which='major', labelsize=12)
     # Check if end datetime is > current date
-    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
-    for i in range(len(now_fores_paired)):
-        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
-            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
-    if max_datetime > datetime.now(UTC):
-        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
-        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
-        #         'America/New_York')).utcoffset().total_seconds()/60/60))
-        try:
-            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-        except ValueError:
-            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
-        axs.axvline(x=dt_n, color='r', linestyle='--', lw=1)
-        axs.annotate('Nowcast-forecast transition',
-                xy=(dt_n, axs.get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
-                xytext=(85, 0), # Offset text position (points relative to xy)
-                textcoords='offset points',
-                ha='right', # Horizontal alignment
-                va='bottom', # Vertical alignment
-                fontsize=10,
-                color='r')
+    add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=1)
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()
     fig.align_ylabels()
@@ -262,25 +226,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         X1, _ = plotting_functions.get_error_range(name_var, prop, logger)
 
     # Combine obs from different casts into one main obs array
-    obs_df = None
-    for i in range(len(now_fores_paired)):
-        obs_df = pd.concat([obs_df,now_fores_paired[i]],ignore_index=True)
-        obs_df = obs_df.drop_duplicates(subset=['DateTime'],ignore_index=True)
-        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
-            pass
-        else:
-            try:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
-            except ValueError:
-                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
-
-            obs_df = obs_df.loc[((obs_df['DateTime']
-                        >= start_dt) & (obs_df['DateTime'] <= end_dt))]
-            now_fores_paired[i] = now_fores_paired[i].loc[((
-                now_fores_paired[i].DateTime >= start_dt) & \
-                    (now_fores_paired[i].DateTime <= end_dt))]
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
 
     figtitle = get_title_static(
         prop, node, station_id, name_var, logger,
@@ -355,28 +301,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     axs[1].set_yticks(axs[1].get_yticks()[::1])
     axs[1].tick_params(axis='both', which='major', labelsize=12)
     plt.gcf().autofmt_xdate()
-    max_datetime = pytz.timezone('UTC').localize(now_fores_paired[0].DateTime.max())
-    for i in range(len(now_fores_paired)):
-        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
-            max_datetime = pytz.timezone('UTC').localize(now_fores_paired[i].DateTime.max())
-    if max_datetime > datetime.now(UTC):
-        # dt_utc = datetime.now(ZoneInfo('America/New_York')) - timedelta(
-        #     hours=int(datetime.now(UTC).astimezone(ZoneInfo(
-        #         'America/New_York')).utcoffset().total_seconds()/60/60))
-        try:
-            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-        except ValueError:
-            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
-        for i in range(nrows):
-            axs[i].axvline(x=dt_n, color='r', linestyle='--', lw=1)
-            axs[i].annotate('Nowcast-forecast transition',
-                    xy=(dt_n, axs[i].get_ylim()[1]), # Point to annotate (x=event_date, y=top of plot)
-                    xytext=(85, 0), # Offset text position (points relative to xy)
-                    textcoords='offset points',
-                    ha='right', # Horizontal alignment
-                    va='bottom', # Vertical alignment
-                    fontsize=10,
-                    color='r')
+    add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=nrows)
 
     axs[1].set_xlabel('Time', fontsize=16)
 

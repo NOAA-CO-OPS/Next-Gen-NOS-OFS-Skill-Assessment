@@ -73,7 +73,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-import pytz
 
 from ofs_skill.model_processing import (
     check_model_files,
@@ -378,13 +377,13 @@ def create_1dplot(prop, logger):
             logger.info(f'Forecast_a: end date reassigned to '
                              f'{prop.end_date_full}')
         else:
-            raise SystemExit
+            raise SystemExit(1)
     # Start Date and End Date validation
     # Enforce end date for whichcasts other than forecast_a
     if prop.end_date_full is None or prop.start_date_full is None:
         logger.error('If not using forecast_a, you must set start and end dates! '
                      'Abort.')
-        raise SystemExit
+        raise SystemExit(1)
     try:
         prop.start_date_full_before = prop.start_date_full
         prop.end_date_full_before = prop.end_date_full
@@ -395,20 +394,20 @@ def create_1dplot(prop, logger):
                          f'{prop.start_date_full}, End Date - '
                          f'{prop.end_date_full}. Abort!')
         logger.error(error_message)
-        raise SystemExit
+        raise SystemExit(1)
     if datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.strptime(
         prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
         error_message = (f'End Date {prop.end_date_full} '
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
-        raise SystemExit
-    if pytz.timezone('UTC').localize(datetime.strptime(
-            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')) > datetime.now(UTC):
+        raise SystemExit(1)
+    if datetime.strptime(
+            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=UTC) > datetime.now(UTC):
         logger.error('Start date is in the future! Unless you have a time machine, '
                      'please set a start date that is before the current date.'
                      )
-        raise SystemExit
+        raise SystemExit(1)
 
     if prop.path is None:
         prop.path = dir_params['home']
@@ -693,7 +692,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Launch GUI to accept argument input if no OFS args are present
-    if (args.OFS is None):
+    if args.OFS is None:
         args = create_gui.create_gui(parser)
         gc.collect() # garbage collect from GUI window not in main thread
 

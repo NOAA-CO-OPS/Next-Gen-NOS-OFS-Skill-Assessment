@@ -34,19 +34,9 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from ofs_skill.model_processing import get_fcst_cycle
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours, get_s3_bucket
 from ofs_skill.obs_retrieval import utils
 
-
-def get_s3_bucket(ofs):
-    # Select appropriate S3 bucket conf name from OFS
-    if ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        url_root = 'nodd_s3_stofs3d'
-    elif ofs == 'stofs_2d_global':
-        url_root = 'nodd_s3_stofs2d'
-    else:
-        url_root = 'nodd_s3'
-    return url_root
 
 def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str]:
     """
@@ -111,7 +101,7 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
         # Check if it exists on the S3 bucket
         is_exist = check_s3_for_file(s3_url, logger)
         if not is_exist:
-            raise Exception
+            raise FileNotFoundError(f'S3 file not found: {s3_url}')
         return s3_url
 
     except Exception as e:
@@ -205,7 +195,7 @@ def check_s3_for_file(file, logger):
             logger.warning('S3 file not found! Removing it from file list...')
             return False
         else:
-            # Raise other errors, if you want?
+            logger.error(f'S3 error {e.response["Error"]["Code"]}: {e}')
             return False
 
 def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[str]:
@@ -289,7 +279,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         logger.error(f'Unable to extract date from path: {dir_path}')
         return files
 
-    fcstlength, fcstcycles = get_fcst_cycle.get_fcst_hours(prop.ofs)
+    fcstlength, fcstcycles = get_fcst_hours(prop.ofs)
     # Forecast cycles from int to str
     fcstcycles = [f'{item:02}' for item in fcstcycles]
 
@@ -822,7 +812,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (a_start, '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -834,7 +824,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (a_start, '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -850,7 +840,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (a_start, '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -862,7 +852,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (a_start, '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -1067,7 +1057,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
 
     if list_files == []:
         logger.error('Problem in list_of_files.py; no files found! Aborting program')
-        raise SystemExit()
+        raise SystemExit(1)
 
     # Now check individual files and use S3 fallback if enabled
     if use_s3_fallback:
@@ -1089,7 +1079,6 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     missing_count += 1
                 else:
                     logger.error(f'Could not construct S3 URL for: {file_path}')
-                    #final_list.append(file_path)  # Keep original, will fail downstream
 
         if missing_count > 0:
             logger.info(f'Using S3 URLs for {missing_count} missing local files')

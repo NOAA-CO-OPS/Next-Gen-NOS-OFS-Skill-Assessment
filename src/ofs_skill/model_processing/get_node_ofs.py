@@ -713,7 +713,7 @@ def get_node_ofs(prop, logger):
             '%Y%m%d') + '23'
     except Exception as e:
         logger.error(f'Problem with date format in get_node_ofs: {e}')
-        raise SystemExit
+        raise SystemExit(1)
 
     # Lazy load the model data
     dir_list = list_of_dir(prop, logger)
@@ -724,7 +724,7 @@ def get_node_ofs(prop, logger):
 
     if not model:
         logger.error('No model files or URLs to load in intake! Exiting...')
-        raise SystemExit
+        raise SystemExit(1)
 
     # Write filenames to CSV
     try:
