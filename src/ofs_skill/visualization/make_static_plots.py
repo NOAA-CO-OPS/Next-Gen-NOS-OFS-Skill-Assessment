@@ -124,6 +124,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         ncolors, 2.5, 0.9, 0.65,
     )
     image_type = 'png'
+    dpi = 100
 
     # Get target error range
     if name_var != 'ice_conc':
@@ -201,7 +202,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     filename = f'{prop.ofs}_{station_id[0]}_{save_name}_timeseries_' +\
         f'{naming_ws}_{prop.ofsfiletype}.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=200, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
 
 
 def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
@@ -220,6 +221,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         ncolors, 2.5, 0.9, 0.65,
     )
     image_type = 'png'
+    dpi = 100
 
     # Get target error range
     if name_var != 'ice_conc':
@@ -312,7 +314,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     filename = f'{prop.ofs}_{station_id[0]}_currents_timeseries_{naming_ws}_' \
         + f'{prop.ofsfiletype}.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=200, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
     plt.close('all')
 
 
@@ -324,6 +326,7 @@ def bar_plots(data, info, ytitle, prop, logger):
     '''
 
     image_type = 'png'
+    dpi = 100
 
     #Format y axis label
     ytitle=ytitle.replace('<br>', '\n').replace('<i>','').replace(' or error','')
@@ -457,5 +460,5 @@ def bar_plots(data, info, ytitle, prop, logger):
     plt.tight_layout(pad=3)
     filename = f'{prop.ofs}_{info[2]}_{info[7]}_{namestat}_bars.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=300, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
     plt.close('all')
