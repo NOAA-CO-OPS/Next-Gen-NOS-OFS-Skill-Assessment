@@ -136,13 +136,15 @@ def check_model_files(prop: Any, logger: Logger) -> None:
         prop.model_path = Path(prop.model_path).as_posix()
         dir_list = list_of_dir(prop, logger)
         try:
-            file_actual_path_list = list_of_files(prop,
-                                                  dir_list,
-                                                  logger)
+            file_actual_path_list = list_of_files(prop, dir_list, logger)
         except Exception as e_x:
             logger.error('Error in list_of_files: %s! '
                          'Unable to check if model files are present.', e_x)
             return
+
+        if len(file_actual_path_list) == 0:
+            logger.error('No model output files! Exiting...')
+            raise SystemExit(1)
 
         file_actual = []
         file_actual.append([i.split('/')[-1] for i in file_actual_path_list])
@@ -152,15 +154,12 @@ def check_model_files(prop: Any, logger: Logger) -> None:
         if list(set(file_wish[0]).difference(file_actual[0])):
             missing_files = list(set(file_wish[0]) -
                                  set(file_actual[0]))
-            logger.error('Oops, you are missing model files! The missing '
+            logger.warning('Oops, you are missing model files! The missing '
                          'files are: \n{}'.format('\n'.join(map(
                                                     str, missing_files))))
-            logger.error('NOTE: If S3 fallback is enabled, these files will '
-                        'be retrieved from NODD during processing.')
             logger.warning('Continuing despite missing local files - S3 fallback '
-                          'will attempt to retrieve them during processing.')
-            # Don't exit - let S3 fallback handle missing files
-            # raise SystemExit(1)
+                      'will attempt to retrieve them during processing.')
+
         else:
             logger.info('Located all necessary model files for %s!', cast)
             # Reset dates before returning

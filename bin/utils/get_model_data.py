@@ -119,8 +119,8 @@ def get_ofs_cycle(prop, logger):
         d_t = 3
     if prop.whichcast == 'forecast_a':
         # Select one forecast cycle for forecast_a
-        if prop.forecast_hr[:-2] in fcstcycles:
-            fcstcycles = [str(prop.forecast_hr[:-2]).zfill(2)]
+        if prop.forecast_hr[:-1] in fcstcycles:
+            fcstcycles = [str(prop.forecast_hr[:-1]).zfill(2)]
         else:
             logger.error(
                 f'Model cycle incorrect for forecast_a and {prop.ofs}!',
