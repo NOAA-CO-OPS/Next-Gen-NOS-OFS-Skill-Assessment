@@ -427,6 +427,152 @@ def retrieve_tidal_predictions(
     return None
 
 
+TIMEOUT_SEC = 120
+
+
+def retrieve_harmonic_constants(
+    station: str,
+    logger: Logger,
+    units: str = 'metric',
+) -> Optional[dict]:
+    """
+    Retrieve accepted harmonic constants from the CO-OPS API.
+
+    Calls the ``product=harcon`` endpoint and returns constituent amplitudes,
+    phases, and speeds in a format ready for
+    :func:`~ofs_skill.tidal_analysis.tidal_prediction.predict_from_constants`
+    and
+    :func:`~ofs_skill.tidal_analysis.ha_comparison.compare_harmonic_constants`.
+
+    Constituent names are normalized from CO-OPS convention to NOS/UTide
+    convention using :data:`~ofs_skill.tidal_analysis.constituents.COOPS_API_NAME_MAP`.
+
+    Args:
+        station: CO-OPS station ID (e.g., "8454000").
+        logger: Logger instance for diagnostic messages.
+        units: Unit system — ``"metric"`` (default) or ``"english"``.
+
+    Returns:
+        Dictionary with keys:
+
+        - **amplitudes** — ``{constituent_name: amplitude}`` (metres or feet)
+        - **phases** — ``{constituent_name: phase_GMT}`` (degrees Greenwich)
+        - **speeds** — ``{constituent_name: speed}`` (degrees/hour)
+        - **constituents** — list of constituent names (NOS convention)
+        - **number_of_constituents** — int
+
+        Returns ``None`` if the API call fails or the station has no
+        harmonic constants.
+
+    Example:
+        >>> harcon = retrieve_harmonic_constants("8454000", logger)
+        >>> harcon["amplitudes"]["M2"]   # amplitude in metres
+        0.543
+        >>> harcon["phases"]["M2"]       # phase in degrees
+        109.7
+    """
+    from ofs_skill.tidal_analysis.constituents import normalize_constituent_name
+
+    url_params = utils.Utils().read_config_section('urls', logger)
+    mdapi_url = url_params.get(
+        'co_ops_mdapi_base_url',
+        'https://api.tidesandcurrents.noaa.gov/mdapi/prod/',
+    )
+
+    harcon_url = (
+        f'{mdapi_url}webapi/stations/{station}/harcon.json?units={units}'
+    )
+
+    try:
+        with urllib.request.urlopen(harcon_url, timeout=TIMEOUT_SEC) as url:
+            response = json.load(url)
+        logger.info(
+            'CO-OPS station %s contacted for harmonic constants retrieval.',
+            station,
+        )
+    except HTTPError as ex:
+        error_msg = get_HTTP_error(ex)
+        logger.error(
+            'CO-OPS harmonic constants retrieval failed for station %s! '
+            'HTTP %s %s\n%s',
+            station, ex.code, ex.reason, error_msg,
+        )
+        return None
+    except Exception as ex:
+        logger.error(
+            'Unexpected error retrieving harmonic constants for station %s: %s',
+            station, ex,
+        )
+        return None
+
+    # Check for API-level error (station may not have harmonic constants)
+    if 'error' in response:
+        error_msg = response['error'].get('message', str(response['error']))
+        logger.warning(
+            'CO-OPS API error for station %s harmonic constants: %s',
+            station, error_msg,
+        )
+        return None
+
+    if 'HarmonicConstituents' not in response:
+        logger.warning(
+            'No HarmonicConstituents key in response for station %s.',
+            station,
+        )
+        return None
+
+    raw_constituents = response['HarmonicConstituents']
+    if not raw_constituents:
+        logger.warning(
+            'Empty harmonic constituents list for station %s.', station,
+        )
+        return None
+
+    amplitudes = {}
+    phases = {}
+    speeds = {}
+    constituent_names = []
+
+    for entry in raw_constituents:
+        raw_name = entry.get('name', '')
+        nos_name = normalize_constituent_name(raw_name)
+
+        try:
+            amp = float(entry['amplitude'])
+            phase = float(entry['phase_GMT'])
+            speed = float(entry['speed'])
+        except (KeyError, ValueError, TypeError) as ex:
+            logger.debug(
+                'Skipping constituent %s for station %s: %s',
+                raw_name, station, ex,
+            )
+            continue
+
+        amplitudes[nos_name] = amp
+        phases[nos_name] = phase
+        speeds[nos_name] = speed
+        constituent_names.append(nos_name)
+
+    if not constituent_names:
+        logger.warning(
+            'No valid harmonic constants parsed for station %s.', station,
+        )
+        return None
+
+    logger.info(
+        'Retrieved %d harmonic constants for station %s.',
+        len(constituent_names), station,
+    )
+
+    return {
+        'amplitudes': amplitudes,
+        'phases': phases,
+        'speeds': speeds,
+        'constituents': constituent_names,
+        'number_of_constituents': len(constituent_names),
+    }
+
+
 def find_nearest_tidal_stations(
     lat: float,
     lon: float,

@@ -21,6 +21,7 @@ list_of_dir : Creates list of directories containing model netCDF files
 list_of_files : Lists and sorts all files inside model directories
 """
 
+import calendar
 import os
 from datetime import datetime, timedelta
 from logging import Logger
@@ -28,6 +29,12 @@ from os import listdir
 from pathlib import Path
 from typing import Any, Optional
 
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours, get_s3_bucket
 from ofs_skill.obs_retrieval import utils
 
 
@@ -82,8 +89,8 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
                 return None
 
         # Select appropriate S3 bucket URL based on OFS
+        url_root = url_params[get_s3_bucket(prop.ofs)]
         if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-            url_root = url_params['nodd_s3_stofs3d']
             # STOFS uses different path structure - no 'netcdf' subdirectory
             # Bucket structure: STOFS-3D-Atl/stofs_3d_atl.YYYYMMDD/filename.nc
             ofs_relative_path = ofs_relative_path.replace('stofs_3d_atl/', 'STOFS-3D-Atl/')
@@ -99,7 +106,10 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
 
         # Construct full S3 URL
         s3_url = f'{url_root}{ofs_relative_path}'
-
+        # Check if it exists on the S3 bucket
+        is_exist = check_s3_for_file(s3_url, logger)
+        if not is_exist:
+            raise FileNotFoundError(f'S3 file not found: {s3_url}')
         return s3_url
 
     except Exception as e:
@@ -194,6 +204,34 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str, logger
 
     return dates
 
+def check_s3_for_file(file, logger):
+    '''
+    Check to see if file exists in S3 bucket.
+
+    Parameters
+    ----------
+    file : file/url path to S3 bucket.
+    logger : so you know what is happening as the program runs
+
+    Returns
+    -------
+    bool; True if file exists, False if file does not exist. Easy peasy.
+
+    '''
+    s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    try:
+        s3.head_object(Bucket=file.split('//')[1].split('.')[0],
+                       Key=file.split('//')[1].split('/',1)[1])
+        return True
+    except ClientError as e:
+        # if a ClientError is raised, check the error code...
+        # '404' indicates the object does not exist, so return False
+        if e.response['Error']['Code'] == '404':
+            logger.warning('S3 file not found! Removing it from file list...')
+            return False
+        else:
+            logger.error(f'S3 error {e.response["Error"]["Code"]}: {e}')
+            return False
 
 def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[str]:
     """
@@ -276,18 +314,13 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         logger.error(f'Unable to extract date from path: {dir_path}')
         return files
 
-    #TODO: This model/OFS specific info is repeated in other modules. Should
-    # it have a central store/definition?
-    # Get forecast cycles based on OFS
-    if prop.ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
-                    'loofs2','lsofs', 'tbofs', 'necofs', 'stofs_2d_glo'):
-        fcstcycles = ['00', '06', '12', '18']
-    elif prop.ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = ['03', '09', '15', '21']
-    elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = ['12']
-    else:
-        fcstcycles = ['03']
+    fcstlength, fcstcycles = get_fcst_hours(prop.ofs)
+    # Forecast cycles from int to str
+    fcstcycles = [f'{item:02}' for item in fcstcycles]
+
+    # Switch fcstcycles if using forecast_a
+    if prop.whichcast == 'forecast_a':
+        fcstcycles = [prop.forecast_hr[:-1]]
 
     # Determine file type indicator
     if prop.whichcast == 'nowcast':
@@ -299,7 +332,26 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         cast_type = prop.whichcast
 
     # Construct file names based on format (new format after 9/1/2024)
-    date_obj = datetime.strptime(date_str, '%Y%m%d')
+    # Handle YYYYMM (old) vs YYYYMMDD date strings
+    if len(date_str) == 6:
+        # Old YYYYMM directory format — generate files for each day in the
+        # month that falls within the requested date range.
+        ym_obj = datetime.strptime(date_str, '%Y%m')
+        _, last_day = calendar.monthrange(ym_obj.year, ym_obj.month)
+        month_start = datetime(ym_obj.year, ym_obj.month, 1)
+        month_end = datetime(ym_obj.year, ym_obj.month, last_day)
+        range_start = datetime.strptime(prop.startdate[:8], '%Y%m%d')
+        range_end = datetime.strptime(prop.enddate[:8], '%Y%m%d')
+        eff_start = max(range_start, month_start)
+        eff_end = min(range_end, month_end)
+        date_objs = []
+        current = eff_start
+        while current <= eff_end:
+            date_objs.append(current)
+            current += timedelta(days=1)
+    else:
+        date_objs = [datetime.strptime(date_str, '%Y%m%d')]
+
     datechange = datetime.strptime('09/01/2024', '%m/%d/%Y')
 
     # Get hour strings based on OFS and whichcast
@@ -311,117 +363,98 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     else:
         d_t = 3
 
-    # Get forecast length
-    if prop.ofs in ('cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-                    'tbofs', 'stofs_3d_pac'):
-        fcstlength = 48
-    elif prop.ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
-        fcstlength = 72
-    elif prop.ofs in ('stofs_3d_atl'):
-        fcstlength = 96
-    elif prop.ofs in ('stofs_2d_glo'):
-        fcstlength = 180
-    else:
-        fcstlength = 120
 
-    if prop.ofsfiletype == 'stations':
+    for date_obj in date_objs:
+        day_date_str = date_obj.strftime('%Y%m%d')
 
-        if prop.ofs in ('stofs_2d_glo'):
+        if prop.ofsfiletype == 'stations':
             for cycle in fcstcycles:
-                # For now we're just doing the combined water level ("cwl").
-                # Note that this is bias corrected for station files.
-                files.append(f'{dir_path}//{prop.ofs}.t{cycle}z.points.cwl.nc')
-
-        else:
-            for cycle in fcstcycles:
-                if date_obj >= datechange:
-                    # New format: cbofs.t00z.20251215.stations.nowcast.nc
-                    filename = f'{prop.ofs}.t{cycle}z.{date_str}.stations.{cast_type}.nc'
+                if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                    filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
+                elif prop.ofs in ('stofs_2d_glo'):
+                    filename = f'{dir_path}//{prop.ofs}.t{cycle}z.points.cwl.nc'
                 else:
-                    # Old format: nos.cbofs.stations.nowcast.20251215.t00z.nc
-                    filename = f'nos.{prop.ofs}.stations.{cast_type}.{date_str}.t{cycle}z.nc'
+                    if date_obj >= datechange:
+                        # New format: cbofs.t00z.20251215.stations.nowcast.nc
+                        filename = f'{prop.ofs}.t{cycle}z.{day_date_str}.stations.{cast_type}.nc'
+                    else:
+                        # Old format: nos.cbofs.stations.nowcast.20251215.t00z.nc
+                        filename = f'nos.{prop.ofs}.stations.{cast_type}.{day_date_str}.t{cycle}z.nc'
 
                 filepath = f'{dir_path}//{filename}'
                 files.append(filepath)
 
-    elif prop.ofsfiletype == 'fields':
+        elif prop.ofsfiletype == 'fields':
+            # STOFS 3D models use different file naming pattern
+            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                # STOFS 3D variables
+                stofs_vars = ['out2d','horizontalVelX', 'horizontalVelY', 'salinity',
+                              'temperature', 'zCoordinates']
 
-        # STOFS 3D models use different file naming pattern
-        if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-            # STOFS 3D variables
-            stofs_vars = ['out2d','horizontalVelX', 'horizontalVelY', 'salinity',
-                          'temperature', 'zCoordinates']
+                # Determine cast prefix and hour ranges
+                if prop.whichcast == 'nowcast':
+                    cast_prefix = 'n'
+                    # Nowcast: 12-hour ranges up to 24 hours
+                    hour_ranges = [(1, 12), (13, 24)]
+                else:
+                    cast_prefix = 'f'
+                    # Forecast: 12-hour ranges up to forecast length
+                    hour_ranges = []
+                    for end_hr in range(12, fcstlength + 1, 12):
+                        start_hr = end_hr - 11
+                        hour_ranges.append((start_hr, end_hr))
 
-            # Determine cast prefix and hour ranges
-            if prop.whichcast == 'nowcast':
-                cast_prefix = 'n'
-                # Nowcast: 12-hour ranges up to 24 hours
-                hour_ranges = [(1, 12), (13, 24)]
+                for cycle in fcstcycles:
+                    for start_hr, end_hr in hour_ranges:
+                        hr_range = f'{cast_prefix}{str(start_hr).zfill(3)}_{str(end_hr).zfill(3)}'
+                        # 3D field files for each variable
+                        for var_name in stofs_vars:
+                            filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
+                            filepath = f'{dir_path}//{filename}'
+                            files.append(filepath)
+            
+            elif prop.ofs in ('stofs_2d_glo'):
+                for cycle in fcstcycles:
+                    # For now we're just doing the combined water level ("cwl").
+                    files.append(f'{dir_path}//{prop.ofs}.t{cycle}z.fields.cwl.nc')
+
             else:
-                cast_prefix = 'f'
-                # Forecast: 12-hour ranges up to forecast length
-                hour_ranges = []
-                for end_hr in range(12, fcstlength + 1, 12):
-                    start_hr = end_hr - 11
-                    hour_ranges.append((start_hr, end_hr))
+                # Standard OFS file naming
+                if prop.whichcast == 'nowcast':
+                    # Nowcast uses n001, n002, etc.
+                    cast_prefix = 'n'
+                    if prop.ofs == 'wcofs':
+                        max_hours = int(24/len(fcstcycles))
+                    else:
+                        max_hours = int(24/len(fcstcycles))
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
+                elif prop.whichcast == 'forecast_a':
+                    # Forecast_a uses f001, f002, etc. up to forecast length
+                    cast_prefix = 'f'
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, fcstlength + 1, d_t)]
+                elif prop.whichcast == 'forecast_b':
+                    # Forecast_b uses f001-f006 (or f001-f024 for WCOFS)
+                    cast_prefix = 'f'
+                    if prop.ofs == 'wcofs':
+                        max_hours = 24
+                    else:
+                        max_hours = 6
+                    hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
+                else:
+                    cast_prefix = 'n'
+                    hrstrings = ['001']
 
-            for cycle in fcstcycles:
-                for start_hr, end_hr in hour_ranges:
-                    hr_range = f'{cast_prefix}{str(start_hr).zfill(3)}_{str(end_hr).zfill(3)}'
-                    '''
-                    # 2D field file
-                    filename = f'{prop.ofs}.t{cycle}z.field2d_{hr_range}.nc'
-                    filepath = f'{dir_path}//{filename}'
-                    files.append(filepath)
-                    '''
-                    # 3D field files for each variable
-                    for var_name in stofs_vars:
-                        filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
+                for cycle in fcstcycles:
+                    for hrstring in hrstrings:
+                        if date_obj >= datechange:
+                            # New format: cbofs.t00z.20251215.fields.n001.nc
+                            filename = f'{prop.ofs}.t{cycle}z.{day_date_str}.fields.{cast_prefix}{hrstring}.nc'
+                        else:
+                            # Old format: nos.cbofs.fields.n001.20251215.t00z.nc
+                            filename = f'nos.{prop.ofs}.fields.{cast_prefix}{hrstring}.{day_date_str}.t{cycle}z.nc'
+
                         filepath = f'{dir_path}//{filename}'
                         files.append(filepath)
-
-        elif prop.ofs in ('stofs_2d_glo'):
-            for cycle in fcstcycles:
-                # For now we're just doing the combined water level ("cwl").
-                files.append(f'{dir_path}//{prop.ofs}.t{cycle}z.fields.cwl.nc')
-
-        else:
-            # Standard OFS file naming
-            if prop.whichcast == 'nowcast':
-                # Nowcast uses n001, n002, etc.
-                cast_prefix = 'n'
-                if prop.ofs == 'wcofs':
-                    max_hours = int(24/len(fcstcycles))
-                else:
-                    max_hours = int(24/len(fcstcycles))
-                hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
-            elif prop.whichcast == 'forecast_a':
-                # Forecast_a uses f001, f002, etc. up to forecast length
-                cast_prefix = 'f'
-                hrstrings = [str(h).zfill(3) for h in range(d_t, fcstlength + 1, d_t)]
-            elif prop.whichcast == 'forecast_b':
-                # Forecast_b uses f001-f006 (or f001-f024 for WCOFS)
-                cast_prefix = 'f'
-                if prop.ofs == 'wcofs':
-                    max_hours = 24
-                else:
-                    max_hours = 6
-                hrstrings = [str(h).zfill(3) for h in range(d_t, max_hours + 1, d_t)]
-            else:
-                cast_prefix = 'n'
-                hrstrings = ['001']
-
-            for cycle in fcstcycles:
-                for hrstring in hrstrings:
-                    if date_obj >= datechange:
-                        # New format: cbofs.t00z.20251215.fields.n001.nc
-                        filename = f'{prop.ofs}.t{cycle}z.{date_str}.fields.{cast_prefix}{hrstring}.nc'
-                    else:
-                        # Old format: nos.cbofs.fields.n001.20251215.t00z.nc
-                        filename = f'nos.{prop.ofs}.fields.{cast_prefix}{hrstring}.{date_str}.t{cycle}z.nc'
-
-                    filepath = f'{dir_path}//{filename}'
-                    files.append(filepath)
 
     return files
 
@@ -539,13 +572,13 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
                 # Backup also not found, fall back to S3
                 logger.info('Backup dir not found either. S3 fallback enabled - will use expected directory path for URL construction')
             else:
-                # No S3 fallback and backup not found - error out
-                logger.error(
+                # No S3 fallback and backup not found
+                logger.warning(
                     'Model file path ' + model_dir + ' not found, and backup '
-                    + backup_model_dir + ' also not found. Abort!')
-                raise SystemExit(-1)
+                    + backup_model_dir + ' also not found.')
+                model_dir = None
 
-        if model_dir not in dir_list:
+        if model_dir and model_dir not in dir_list:
             dir_list.append(model_dir)
             if os.path.exists(model_dir):
                 logger.info('Found model output dir: %s', model_dir)
@@ -767,14 +800,10 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     files = construct_expected_files(prop, dir_list[i_index], logger)
 
             elif prop.whichcast == 'hindcast':
-                #TODO: If this is just for testing of LOOFS2 (as described in PR), shouldn't it raise an exception (e.g., ValueError) if prop.ofs != 'loofs2'?
                 all_files = listdir(dir_list[i_index])
                 files = []
                 hr_cyc_day = []
-                if prop.ofs == 'wcofs':
-                    ndays = 1
-                else:
-                    ndays = 0
+                ndays = 0
                 for af_name in all_files:
                     spltstr = af_name.split('.')
                     if ('stations.h' in af_name and
@@ -791,7 +820,20 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             ):
                             hr_cyc_day.append(checkstr)
                             files.append(af_name)
-
+                    elif ('out2d' in af_name and prop.ofsfiletype == 'fields'):
+                            checkstr = '999' + spltstr[-5][1:3] + \
+                                spltstr[-4][-2:]
+                            if (checkstr not in hr_cyc_day
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                     datetime.strptime
+                                     (prop.startdate[:-2], '%Y%m%d'))
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                     + timedelta(days=ndays))
+                                and checkstr[0:3] != '000'
+                                ):
+                                hr_cyc_day.append(checkstr)
+                                files.append(af_name)
                 files = [dir_list[i_index] + '//' + i for i in files]
 
                 # Only sort if we have files
@@ -814,11 +856,11 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 # cbofs.t00z.20240901.fields.f001.nc
                 # Old file format:
                 # nos.cbofs.fields.f001.20240901.t00z.nc
-
+                a_start = prop.startdate
                 all_files = listdir(dir_list[i_index])
                 files = []
                 hr_cyc_day = []
-                cycle_z = prop.forecast_hr[:-2] + 'z'
+                cycle_z = a_start[-2:] + 'z'
                 for af_name in all_files:
                     spltstr = af_name.split('.')
                     # First do old file names
@@ -831,7 +873,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -843,7 +885,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -859,7 +901,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -871,7 +913,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             if (checkstr not in hr_cyc_day
                                 and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
                                      datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
+                                     (a_start[:8], '%Y%m%d'))
                                 and checkstr[0:3] != '000'
                                 ):
                                 hr_cyc_day.append(checkstr)
@@ -884,7 +926,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 checkstr1 = spltstr[-2][-2:]
                                 checkstr2 = spltstr[-1].split('.')[0][1:3]
 
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                                if (int(checkstr2) - 1 >= int(a_start[-2:])):
                                     files.append(af_name)
                                     hr_cyc_day.append(checkstr1)
 
@@ -895,7 +937,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 checkstr1 = spltstr[-2][-2:]
                                 checkstr2 = spltstr[-1].split('.')[0][1:3]
 
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                                if (int(checkstr2) - 1 >= int(a_start[-2:])):
                                     files.append(af_name)
                                     hr_cyc_day.append(checkstr1)
                         elif prop.ofs in ('stofs_2d_glo'):
@@ -1110,7 +1152,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
 
     if list_files == []:
         logger.error('Problem in list_of_files.py; no files found! Aborting program')
-        raise SystemExit()
+        raise SystemExit(1)
 
     # Now check individual files and use S3 fallback if enabled
     if use_s3_fallback:
@@ -1132,12 +1174,12 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     missing_count += 1
                 else:
                     logger.error(f'Could not construct S3 URL for: {file_path}')
-                    final_list.append(file_path)  # Keep original, will fail downstream
 
         if missing_count > 0:
             logger.info(f'Using S3 URLs for {missing_count} missing local files')
         else:
-            logger.info('All model files found locally')
+            logger.info('All model files found locally, or are unavailable '
+                        'on the S3 bucket!')
 
         return final_list
     else:

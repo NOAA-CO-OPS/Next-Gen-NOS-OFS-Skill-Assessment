@@ -19,6 +19,7 @@ def paired_scalar(
     start_date_full: str,
     end_date_full: str,
     logger: Logger,
+    lookback_hours: int = 6,
 ) -> Optional[tuple[list[list], pd.DataFrame]]:
     """
     Create paired time series for scalar variables.
@@ -41,6 +42,11 @@ def paired_scalar(
         End date in format 'YYYY-MM-DDThh:mm:ssZ' or 'YYYYMMDD-HH:MM:SS'
     logger : Logger
         Logger instance for logging messages
+    lookback_hours : int, optional
+        Number of hours before start_date to include in paired data.
+        Default is 6 hours. The lookback ensures overlap between
+        consecutive casts (e.g., nowcast + forecast_a). Set to 0
+        to disable the lookback.
 
     Returns
     -------
@@ -108,21 +114,14 @@ def paired_scalar(
     )
 
     # Second we concat the ofs to the reference time, remove duplicates,
-    # interpolate to the 6 min timestep, fill gaps, reindex
-    paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
-        by='DateTime'
-    )
-    paired_ofs = paired_ofs[
-        ~paired_ofs['DateTime'].duplicated(keep=False)
-        | paired_ofs[['OFS']].notnull().any(axis=1)
+    # reindex
+    paired_ofs = ofs_df[
+        ~ofs_df['DateTime'].duplicated(keep=False)
     ]
     paired_ofs = (
         paired_ofs.sort_values(by='DateTime')
         .set_index('DateTime')
         .astype(float)
-        .interpolate(method='linear')
-        .ffill()
-        .bfill()
         .reset_index()
     )
 
@@ -163,11 +162,12 @@ def paired_scalar(
     # create julian
     paired['BIAS'] = paired['OFS'] - paired['OBS']
 
+    # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
     paired = paired.loc[
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=lookback_hours)
             )
             & (
                 paired['DateTime']
@@ -175,16 +175,6 @@ def paired_scalar(
             )
         )
     ]
-    julian = (
-        pd.array(paired['DateTime']).to_julian_date()
-        - pd.Timestamp(
-            datetime.strptime(
-                str(datetime.strptime(start_date_full,
-                                      '%Y%m%d-%H:%M:%S').year), '%Y'
-            )
-        ).to_julian_date()
-    )
-
     # Finally, we write the file and return the results
     paired = paired.drop(columns=['index', 'DateTime'])
     paired = paired.astype({0: float, 1: int, 2: int, 3: int, 4: int, 5: int,
@@ -236,6 +226,7 @@ def paired_vector(
     start_date_full: str,
     end_date_full: str,
     logger: Logger,
+    lookback_hours: int = 6,
 ) -> Optional[tuple[list[list], pd.DataFrame]]:
     """
     Create paired time series for vector variables.
@@ -258,6 +249,11 @@ def paired_vector(
         End date in format 'YYYY-MM-DDThh:mm:ssZ' or 'YYYYMMDD-HH:MM:SS'
     logger : Logger
         Logger instance for logging messages
+    lookback_hours : int, optional
+        Number of hours before start_date to include in paired data.
+        Default is 6 hours. The lookback ensures overlap between
+        consecutive casts (e.g., nowcast + forecast_a). Set to 0
+        to disable the lookback.
 
     Returns
     -------
@@ -307,16 +303,6 @@ def paired_vector(
                                     8: 'OFS_U',
                                     9: 'OFS_V'})
 
-    # This is the reference time:
-    paired_start_time = datetime.strptime(start_date_full,
-                                          '%Y%m%d-%H:%M:%S').replace(
-        second=0,
-        microsecond=0,
-        minute=0,
-        hour=datetime.strptime(start_date_full,
-                               '%Y%m%d-%H:%M:%S').hour,
-    )
-
     paired_end_time = datetime.strptime(end_date_full,
         '%Y%m%d-%H:%M:%S').replace(
             second=0,
@@ -349,21 +335,14 @@ def paired_vector(
     )
 
     # Second we concat the ofs to the reference time, remove duplicates,
-    # interpolate to the 6 min timestep, fill gaps, reindex
-    paired_ofs = pd.concat([paired_0, ofs_df]).sort_values(
-        by='DateTime'
-    )
-    paired_ofs = paired_ofs[
-        ~paired_ofs['DateTime'].duplicated(keep=False)
-        | paired_ofs[['OFS']].notnull().any(axis=1)
+    # reindex
+    paired_ofs = ofs_df[
+        ~ofs_df['DateTime'].duplicated(keep=False)
     ]
     paired_ofs = (
         paired_ofs.sort_values(by='DateTime')
         .set_index('DateTime')
         .astype(float)
-        .interpolate(method='linear')
-        .ffill()
-        .bfill()
         .reset_index()
     )
 
@@ -381,11 +360,12 @@ def paired_vector(
     # Then we create the speed bias, mask for start and end time and
     # create julian
     paired['SPD_BIAS'] = paired['OFS'] - paired['OBS']
+    # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
     paired = paired.loc[
         (
             (
                 paired['DateTime']
-                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
+                >= datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S') - timedelta(hours=lookback_hours)
             )
             & (
                 paired['DateTime']

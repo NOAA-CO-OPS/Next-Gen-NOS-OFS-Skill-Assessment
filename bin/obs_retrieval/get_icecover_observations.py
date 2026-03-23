@@ -25,6 +25,7 @@ import logging.config
 import os
 import sys
 import urllib.request
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
@@ -140,7 +141,8 @@ def concat_sat(list_of_files, obs2d_dir, logger):
 
     try:
         nc_item = xr.open_mfdataset(list_of_files,
-                                    combine = 'nested', concat_dim='time',
+                                    combine = 'nested',
+                                    concat_dim='time',
                                     lock=False
                                     )
         logger.info('Concatenation complete!')
@@ -165,7 +167,7 @@ def concat_sat(list_of_files, obs2d_dir, logger):
             )
     except MemoryError as ex:
         logger.error(f'Error happened at saving file {save_path} -- {str(ex)}')
-        sys.exit(-1)
+        sys.exit()
 
     return nc_item, save_path
 
@@ -212,6 +214,43 @@ def masksat_by_ofs(sat_path, shape_file, prop):
     masked_clim = gl_clim[:,latindex,lonindex]
 
     return masked_sat, masked_clim
+
+def remove_outlier_size_files(directory_path, logger):
+    # Dictionary to store file paths and their sizes
+    file_sizes = {}
+    for filename in os.listdir(directory_path):
+        file_path = os.path.join(directory_path, filename)
+        if os.path.isfile(file_path) and 'concat' not in filename and\
+            'glsea' in filename:
+            try:
+                size = os.path.getsize(file_path) #size in bytes
+                file_sizes[file_path] = size
+            except (FileNotFoundError, PermissionError) as ex:
+                logger.error(f'Error accessing file {file_path}: {ex}')
+                continue
+
+    if not file_sizes:
+        return
+
+    # Find the most common file size
+    # Counter returns a list of (size, count) tuples, sorted by count
+    size_counts = Counter(file_sizes.values()).most_common()
+    if len(size_counts) < 2:
+        return
+
+    # The most common size is the first item in the list
+    majority_size = size_counts[0][0]
+    outlier_files = [file_path for file_path, size in file_sizes.items() if size != majority_size]
+
+    if not outlier_files:
+        return
+
+    for file_path in outlier_files:
+        try:
+            logger.info('Removing incomplete GLSEA file...')
+            os.remove(file_path)
+        except (FileNotFoundError, PermissionError, OSError) as ex:
+            logger.error(f'Error removing file {file_path}: {ex}')
 
 def parameter_dir_validation (prop,dir_params, logger):
     '''
@@ -297,15 +336,20 @@ def get_icecover_observations(prop, logger):
     logger.info('--- Starting Ice Cover Satellite Observation Process ---')
 
     hours = hours_range(prop.start_date_full, prop.end_date_full)
-
-    #if prop.ofs in ["loofs", "lmhofs", "lsofs", "leofs"]:
     list_of_urls, list_of_urls_backup = list_of_urls_glsea(hours,logger)
+
+    # First check for existing GLSEA files, and remove any that are partial/
+    # incomplete. This prevents a common concatenation error.
+    if os.path.isdir(prop.data_observations_2d_satellite_path):
+        remove_outlier_size_files(prop.data_observations_2d_satellite_path,
+                                  logger)
+    else:
+        logger.error(f'Directory not found: {prop.data_observations_2d_satellite_path}')
 
     logger.info(
         'Begin retrieving the following files:%s',
         [i.split ('/')[-1] for i in list_of_urls]
     )
-
     try:
         list_of_files = get_sat(
             list_of_urls, list_of_urls_backup,

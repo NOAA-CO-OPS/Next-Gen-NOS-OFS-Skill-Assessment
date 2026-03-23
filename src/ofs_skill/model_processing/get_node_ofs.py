@@ -75,6 +75,61 @@ def name_convent(variable):
 
     return name_var, model_var
 
+def get_time_step(prop, logger):
+    '''
+    Gets the model time step depending on OFS and file type (fields or stations)
+
+    Parameters
+    ----------
+    prop : program input arguments
+    logger : logger
+
+    Returns
+    -------
+    Time step in integer minutes
+
+    '''
+    # Define your expected frequency in minutes (e.g. 6 minutes)
+    exp_freq = 6
+    if prop.ofsfiletype == 'fields':
+        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2', 'necofs']:
+            exp_freq = 180
+        else:
+            exp_freq = 60
+    return exp_freq
+
+def find_time_gaps(prop, model, logger):
+    '''
+    Look for missing data/time gaps in the model time series.
+
+    Parameters
+    ----------
+    prop : main input arguments
+    model : lazily loaded concatenated model dataset
+    logger : logger
+
+    Returns
+    -------
+    True if gaps detected, False if no gaps detected.
+
+    '''
+
+    # Get time name depending on model source
+    time_name = 'time'
+    if prop.model_source == 'roms':
+        time_name = 'ocean_time'
+
+    # Calculate time differences between consecutive time steps in minutes
+    time_deltas = np.diff(model[time_name].values)/np.timedelta64(1, 'm')
+
+    # Define your expected frequency in minutes (e.g. 6 minutes)
+    exp_freq = float(get_time_step(prop, logger))
+
+    # Check for gaps (where the delta is greater than expected)
+    gaps = (time_deltas != exp_freq)
+
+    return bool(np.any(gaps))
+
 
 def ofs_ctlfile_extract(prop, name_var, model, logger):
     """
@@ -94,29 +149,44 @@ def ofs_ctlfile_extract(prop, name_var, model, logger):
             write_ofs_ctlfile(prop, model, logger)
             prop.ctl_flag += 1 # Raise flag -- we've gone through ctl file production
 
-    with open(
-            filename, encoding='utf-8'
-    ) as file:
-        model_ctlfile = file.read()
-        lines = model_ctlfile.split('\n')
-        lines = [i.split(' ') for i in lines]
-        lines = [list(filter(None, i)) for i in lines]
-        nodes = np.array(lines[:-1])[:, 0]
-        nodes = [int(i) for i in nodes]
-        depths = np.array(lines[:-1])[:, 1]
-        depths = [int(i) for i in depths]
+    try:
+        with open(
+                filename, encoding='utf-8'
+        ) as file:
+            model_ctlfile = file.read()
+            lines = model_ctlfile.split('\n')
+            lines = [i.split(' ') for i in lines]
+            lines = [list(filter(None, i)) for i in lines]
+            nodes = np.array(lines[:-1])[:, 0]
+            nodes = [int(i) for i in nodes]
+            depths = np.array(lines[:-1])[:, 1]
+            depths = [int(i) for i in depths]
 
-        # this is the shift that can be applied to the ofs timeseries,
-        # for instance if there is a known bias in the model
-        shifts = np.array(lines[:-1])[:, -1]
-        shifts = [float(i) for i in shifts]
+            # this is the shift that can be applied to the ofs timeseries,
+            # for instance if there is a known bias in the model
+            shifts = np.array(lines[:-1])[:, -1]
+            shifts = [float(i) for i in shifts]
 
-        # This is the station id, of the nearest station to the mesh node
-        ids = np.array(lines[:-1])[:, -2]
-        ids = [str(i) for i in ids]
+            # This is the station id, of the nearest station to the mesh node
+            ids = np.array(lines[:-1])[:, -2]
+            ids = [str(i) for i in ids]
 
-        return lines, nodes, depths, shifts, ids
-
+            return lines, nodes, depths, shifts, ids
+    except IndexError:
+        logger.warning('%s model ctl file is blank -- no '
+                     'model nodes/stations found! Moving on...',
+                     name_var)
+        return None
+    except FileNotFoundError:
+        logger.warning('%s model ctl file is missing, probably because there '
+                       'are no matches between obs and model stations! '
+                       'Moving on...', name_var)
+        return None
+    except Exception as ex:
+        logger.error('Unexpected error when processing %s model ctl '
+                     'file! Error: %s',
+                     name_var, ex)
+        return None
 
 def roms_nodes(model, node_num):
     """
@@ -441,13 +511,15 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             model_obs = model_obs + ofs_ctlfile[3][i]
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs - datum_offset
+                sign = 1 if 'stofs' in prop.ofs else -1
+                model_obs = model_obs + sign * datum_offset
         elif prop.ofsfiletype == 'stations':
             model_time = np.array(model['time'])
             model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
             if datum_offset > -999 and datum_offset < 999:
-                model_obs = model_obs - datum_offset
-    elif prop.model_source=='adcirc':
+                sign = 1 if 'stofs' in prop.ofs else -1
+                model_obs = model_obs + sign * datum_offset
+    elif prop.model_source =='adcirc':
         model_time = np.array(model['time'])
         model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
         if datum_offset > -999 and datum_offset < 999:
@@ -669,21 +741,65 @@ def get_node_ofs(prop, logger):
             '%Y%m%d') + '23'
     except Exception as e:
         logger.error(f'Problem with date format in get_node_ofs: {e}')
-        sys.exit(-1)
+        raise SystemExit(1)
 
     # Lazy load the model data
     dir_list = list_of_dir(prop, logger)
     list_files = list_of_files_func(prop, dir_list, logger)
     logging.info('About to start intake_scisa from get_node ...')
     model = intake_model(list_files, prop, logger)
-    logging.info(f'Lazily loaded dataset complete for {prop.whichcast}!')
+    logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
+
+    if not model:
+        logger.error('No model files or URLs to load in intake! Exiting...')
+        raise SystemExit(1)
+
+    # Write filenames to CSV
+    try:
+        time_name = 'time'
+        if prop.model_source == 'roms':
+            time_name = 'ocean_time'
+        # Format time step
+        time_step = str(get_time_step(prop, logger)) + 'min'
+        serieskey = model[[time_name, 'filename']].to_dataframe()
+        full_date_range = pd.date_range(start=serieskey.index.min(),
+                                        end=serieskey.index.max(), freq=time_step)
+        serieskey = serieskey.reindex(full_date_range)
+        # Write 'key' that lists all model files used to construct
+        # time series
+        logger.info('Writing model time series filename key!')
+        filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
+        filepath = Path(os.path.join(prop.data_model_1d_node_path,
+                                     filename)).as_posix()
+        serieskey.to_csv(filepath, index_label='DateTime')
+    except KeyError:
+        logger.error('No filename variable found in the lazy loaded model '
+                     'dataset! Cannot write filename time series key. '
+                     'Moving on...')
+    except Exception as ex:
+        logger.error('Error writing model time series filename '
+                     'key: %s', ex)
+
+    # Check for time gaps caused by missing model output files.
+    # If there is a gap, resample data to the correct time step and add nans
+    # to fill gap
+    isgap = find_time_gaps(prop, model, logger)
+    if isgap: # Resample if time gap
+        logger.info('Preserving model time series gaps as nans...')
+        # Now resample
+        if prop.model_source == 'roms':
+            model = model.resample(
+                ocean_time=time_step).asfreq()
+        elif prop.model_source in ('fvcom', 'schism'):
+            model = model.resample(
+                time=time_step).asfreq()
 
     prop.ctl_flag = 0 #Need flag to track control file production if
                  #user_input_location == True
     for variable in prop.var_list:
         try:
             name_conventions = name_convent(variable)
-            if prop.user_input_location == False:
+            if not prop.user_input_location:
                 control_file = f'{prop.control_files_path}/{prop.ofs}_' \
                                f'{name_conventions[0]}_station.ctl'
                 if os.path.isfile(control_file) is False:
@@ -691,120 +807,19 @@ def get_node_ofs(prop, logger):
                                 'input file, then an observation control file '
                                 'must be present! Exiting...', control_file)
                     sys.exit()
-                if os.path.getsize(control_file):
+                if os.path.getsize(control_file): # Gets size of obs ctl file!
                     ofs_ctlfile = ofs_ctlfile_extract(
                         prop, name_conventions[0], model, logger)
+                    if ofs_ctlfile is None:
+                        continue
                 else:
-                    logger.info('%s ctl file is blank!', variable)
+                    logger.info('%s obs ctl file is blank!', variable)
                     logger.info('For GLOFS, salt and cu ctl files may be blank. '
                                 'If running with a single station provider/owner, '
                                 'ctl files may also be blank.')
                     continue # skip to next variable
             else:
-                ofs_ctlfile = ofs_ctlfile_extract(
-                    prop, name_conventions[0], model, logger)
-
-            if prop.model_source=='fvcom':
-                if prop.ofsfiletype == 'fields':
-                    if prop.ofs == 'ngofs2' or prop.ofs == 'necofs':
-                        model['time'] = pd.date_range(
-                            start=datetime.strptime(model['time'][0].
-                                        values.astype(str).
-                                        split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                            periods=model.sizes['time'],
-                            freq='3H',
-                        )
-                    else:
-                        model['time'] = pd.date_range(
-                            start=datetime.strptime(model['time'][0].
-                                        values.astype(str).
-                                        split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                            periods=model.sizes['time'],
-                            freq='H',
-                        )
-                elif prop.ofsfiletype == 'stations':
-                    if prop.ofs == 'ngofs2':
-                        model['time'] = pd.date_range(
-                            start=datetime.strptime(model['time'][0].
-                                        values.astype(str).
-                                        split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                            periods=model.sizes['time'],
-                            freq='6min',
-                        )
-                    else:
-                        model['time'] = pd.date_range(
-                            start=datetime.strptime(model['time'][0].
-                                        values.astype(str).
-                                        split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                            periods=model.sizes['time'],
-                            freq='6min',
-                        )
-            elif prop.model_source=='roms':
-                if prop.ofsfiletype == 'fields':
-                    if prop.ofs in ['gomofs', 'wcofs']:
-                        model['ocean_time'] = pd.date_range(
-                              start=datetime.strptime(model['ocean_time'][0].
-                                         values.astype(str).
-                                         split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                              periods=model.sizes['ocean_time'],
-                              freq='3H',
-                          )
-                    else:
-                        model['ocean_time'] = pd.date_range(
-                              start=datetime.strptime(model['ocean_time'][0].
-                                         values.astype(str).
-                                         split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                              periods=model.sizes['ocean_time'],
-                              freq='H',
-                          )
-                elif prop.ofsfiletype == 'stations':
-                    if prop.ofs in ['gomofs', 'wcofs']:
-                        model['ocean_time'] = pd.date_range(
-                             start=datetime.strptime(model['ocean_time'][0].
-                                         values.astype(str).
-                                         split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                             periods=model.sizes['ocean_time'],
-                             freq='6min',
-                         )
-                    else:
-                        model['ocean_time'] = pd.date_range(
-                             start=datetime.strptime(model['ocean_time'][0].
-                                         values.astype(str).
-                                         split('.')[0],'%Y-%m-%dT%H:%M:%S'),
-                             periods=model.sizes['ocean_time'],
-                             freq='6min',
-                         )
-            elif prop.model_source=='schism':
-                #TODO: This line doesn't look right. Maybe:
-                # >>> if prop.ofsfiletype in ('fields', 'stations'):
-                # But then also, why not just get rid of it because they're
-                # the only two options?
-                if prop.ofsfiletype == 'fields' and 'stations':
-                    if prop.whichcast != 'nowcast' and variable == 'water_level':
-                        # Go 25 hours from the current 'start' time for STOFS_3d_atl
-                        # as it start from nowcast period
-                        base_date_str = model.time.attrs['base_date']
-                        try:
-                            # Try the standard format first
-                            base_date = datetime.strptime(base_date_str, '%Y-%m-%d %H:%M:%S %Z')
-                        except ValueError:
-                            # Fallback to the space-separated format
-                            base_date = datetime.strptime(base_date_str, '%Y %m %d %H %M')
-                        start_time_one_day_forward = base_date + timedelta(days=1, hours=1)
-                        model['time'] = pd.date_range(
-                            start=start_time_one_day_forward,
-                            periods=model.sizes['time'],
-                            freq='H',
-                        )
-
-                    else:
-                       model['time'] = model['time']
-
-            elif prop.model_source=='adcirc':
-                if variable != 'water_level':
-                    logger.warning('ADCIRC data are presently only available for water level. '
-                                   'Skipping variable %s...', variable)
-                    continue
+                ofs_ctlfile = ofs_ctlfile_extract(prop, name_conventions[0], model, logger)
 
             datum_offsets = []
             model_stations = []
@@ -833,7 +848,7 @@ def get_node_ofs(prop, logger):
                     datum_offsets.append(datum_offset)
                     model_stations.append(ofs_ctlfile[4][i])
                 if (prop.whichcast == 'forecast_a' and
-                    prop.horizonskill == False):
+                    not prop.horizonskill):
                     with open(
                         r''
                         + f'{prop.data_model_1d_node_path}'
@@ -859,7 +874,7 @@ def get_node_ofs(prop, logger):
                             prop.forecast_hr,
                             prop.ofsfiletype
                         )
-                elif (prop.horizonskill == True and os.path.isfile(
+                elif (prop.horizonskill and os.path.isfile(
                         f'{prop.data_model_1d_node_path}/'
                         f'{ofs_ctlfile[-1][i]}_{prop.ofs}_{name_conventions[0]}_'
                         f'{ofs_ctlfile[1][i]}_forecast_b_{prop.ofsfiletype}_'
@@ -920,7 +935,7 @@ def get_node_ofs(prop, logger):
                         )
 
             # Generate datum report
-            if prop.user_input_location == False:
+            if not prop.user_input_location:
                 datum_filename = (f'{prop.ofs}_wl_datum_report.csv')
                 filepath = os.path.join(prop.control_files_path,
                                         datum_filename)

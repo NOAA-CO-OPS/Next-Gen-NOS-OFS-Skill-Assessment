@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 
 Utility functions to support the forecast horizon skill option. Called by
@@ -6,7 +5,6 @@ do_horizon_skill and/or get_node_ofs, the functions are
 described below and include:
     -pandas_merge
     -pandas_processing
-    -get_forecast_hours
     -get_horizon_filenames
 
 Created on Wed Jan 14 08:24:39 2026
@@ -18,8 +16,13 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
+
+from ofs_skill.model_processing import (
+    get_fcst_cycle,
+)
 
 
 def pandas_merge(filepath, df, datecycle, prop):
@@ -145,57 +148,6 @@ def pandas_processing(name_conventions, datecycle, formatted_series):
     df = df.drop(columns_to_drop, axis=1)
     return df
 
-
-def get_forecast_hours(ofs):
-    '''
-    Just what the name says -- gets model forecast cycle hours and forecast
-    length (max horizon) in hours.
-    Called by do_horizon_skill_utils.get_horizon_filenames
-
-    Parameters
-    ----------
-    ofs: string, model OFS
-    logger: logging interface
-
-    Returns
-    -------
-    fcstlength: max length of forecast in hours for OFS
-    fcstcycles: list of forecast cycle hours for OFS
-
-    '''
-
-    # Need to know forecast cycle hours (e.g. 00Z) and forecast length (hours)
-    if ofs in (
-        'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
-        'lsofs', 'tbofs', 'stofs_2d_glo'
-    ):
-        fcstcycles = np.array([0, 6, 12, 18])
-    elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = np.array([3, 9, 15, 21])
-    elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = 12
-    else:
-        fcstcycles = 3
-    # Now need to know forecast length in hours
-    if ofs in (
-        'cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-        'tbofs',
-    ):
-        fcstlength = 48
-    elif ofs in ('gomofs', 'wcofs', 'sscofs'):
-        fcstlength = 72
-    elif ofs in ('stofs_3d_atl'):
-        fcstlength = 96
-    elif ofs in ('stofs_3d_pac'):
-        fcstlength = 48
-    elif ofs in ('stofs_2d_glo'):
-        fcstlength = 180
-    else:
-        fcstlength = 120
-
-    return fcstlength, fcstcycles
-
-
 def get_horizon_filenames(ofs, start_date, end_date, logger):
     '''
     This function is called by make_horizon_series. It figures out the file
@@ -226,7 +178,7 @@ def get_horizon_filenames(ofs, start_date, end_date, logger):
         sys.exit(-1)
 
     # Get OFS forecast length & cycle info
-    fcstlength, fcstcycles = get_forecast_hours(ofs)
+    fcstlength, fcstcycles = get_fcst_cycle.get_fcst_hours(ofs)
 
     dates_all = []
     fcst_horizons_all = []

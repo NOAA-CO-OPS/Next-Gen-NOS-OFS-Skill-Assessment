@@ -69,14 +69,14 @@ import logging.config
 import os
 import sys
 import warnings
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from ofs_skill.model_processing import (
     check_model_files,
-    get_fcst_cycle,
+    get_fcst_dates,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
@@ -169,6 +169,7 @@ def create_1dplot_2nd_part(
                          'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
             continue
         now_fores_paired = []
+        track_cast = []
         for cast in prop.whichcasts:
             paired_data = None
             # Here we try to open the paired data set, if not found, create.
@@ -213,9 +214,22 @@ def create_1dplot_2nd_part(
                     f'{prop.ofsfiletype}_pair.int',
                     sep=r'\s+', names=var_info[2],
                     header=0) #change to skip header for human readability
-                #print(read_ofs_ctl_file[-1][i])
+                # Format paired data dates
                 paired_data['DateTime'] = pd.to_datetime(
                     paired_data[['year', 'month', 'day', 'hour', 'minute']])
+                # Read time series key
+                filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
+                filepath = (Path(prop.data_model_1d_node_path) / filename).as_posix()
+                try:
+                    serieskey = pd.read_csv(filepath)
+                    serieskey['DateTime'] = pd.to_datetime(serieskey['DateTime'])
+                    # Now merge time series key to paired data
+                    paired_data = pd.merge(paired_data, serieskey, on='DateTime', how='inner')
+                except FileNotFoundError:
+                    logger.error('No model series filename key found! Skipping')
+                except Exception as ex:
+                    logger.error('Exception caught when loading and merging '
+                                 'model filename key! Error: %s', ex)
                 logger.info(
                     'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found in %s',
                     prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
@@ -230,6 +244,7 @@ def create_1dplot_2nd_part(
                     paired_data = paired_data.loc[paired_data.groupby(['year','month','day','hour'],
                                                                       observed=True)
                                                                     ['minute'].idxmin()]
+                track_cast.append(cast)
                 now_fores_paired.append(paired_data)
 
         if len(now_fores_paired) > 0:
@@ -351,37 +366,24 @@ def create_1dplot(prop, logger):
     logger.info('Starting parameter validation...')
 
     # Do forecast_a start and end date reshuffle
-    if 'forecast_a' in prop.whichcasts:
-        if prop.forecast_hr is None:
-            error_message = (
-                'prop.forecast_hr is required if prop.whichcast is '
-                'forecast_a. Abort!')
-            logger.error(error_message)
-            sys.exit(-1)
-        elif prop.forecast_hr is not None:
-            try:
-                int(prop.forecast_hr[:-2])
-            except ValueError:
-                error_message = (f'Please check Forecast Hr format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
-            if prop.forecast_hr[-2:] == 'hr':
-                prop.start_date_full, prop.end_date_full =\
-                get_fcst_cycle(prop.ofs,prop.start_date_full,prop.forecast_hr,logger)
-                logger.info(f'Forecast_a: end date reassigned to '
-                                 f'{prop.end_date_full}')
-            else:
-                error_message = (f'Please check Forecast Hr (hr) format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
 
+    if 'forecast_a' in prop.whichcasts:
+        if prop.forecast_hr is not None:
+            prop.start_date_full, prop.end_date_full =\
+            get_fcst_dates(prop, logger)
+            prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
+            logger.info(f'Forecast_a: start date reassigned to '
+                             f'{prop.start_date_full}')
+            logger.info(f'Forecast_a: end date reassigned to '
+                             f'{prop.end_date_full}')
+        else:
+            raise SystemExit(1)
     # Start Date and End Date validation
     # Enforce end date for whichcasts other than forecast_a
-    if prop.end_date_full is None:
-        print('If not using forecast_a, you must set an end date! Abort.')
-        sys.exit(-1)
+    if prop.end_date_full is None or prop.start_date_full is None:
+        logger.error('If not using forecast_a, you must set start and end dates! '
+                     'Abort.')
+        raise SystemExit(1)
     try:
         prop.start_date_full_before = prop.start_date_full
         prop.end_date_full_before = prop.end_date_full
@@ -392,15 +394,20 @@ def create_1dplot(prop, logger):
                          f'{prop.start_date_full}, End Date - '
                          f'{prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
-
+        raise SystemExit(1)
     if datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.strptime(
         prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
         error_message = (f'End Date {prop.end_date_full} '
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
+        raise SystemExit(1)
+    if datetime.strptime(
+            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=UTC) > datetime.now(UTC):
+        logger.error('Start date is in the future! Unless you have a time machine, '
+                     'please set a start date that is before the current date.'
+                     )
+        raise SystemExit(1)
 
     if prop.path is None:
         prop.path = dir_params['home']
@@ -663,9 +670,10 @@ if __name__ == '__main__':
         '-f',
         '--Forecast_Hr',
         required=False,
-        default='00hr',
+        default='now',
         help='Specify model cycle to assess. Used with forecast_a mode only: '
-        "'02hr', '06hr', '12hr', ... ", )
+        "'02z', '06Z', '12z'; use 'now' to assess the most recent available "
+        'model forecast cycle.', )
     parser.add_argument(
         '-so',
         '--Station_Owner',
@@ -690,10 +698,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Launch GUI to accept argument input if no required args are present
-    if (args.OFS is None or
-        args.StartDate_full is None
-        or args.EndDate_full is None):
+    # Launch GUI to accept argument input if no OFS args are present
+    if args.OFS is None:
         args = create_gui.create_gui(parser)
         gc.collect() # garbage collect from GUI window not in main thread
 

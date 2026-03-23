@@ -75,33 +75,79 @@ The USGS Water Data API has rate limits:
 - **Without API key:** 50 requests/hour
 - **With API key:** 1,000 requests/hour
 
-For production use, an API key is required. Here's how to configure it:
+For production use, an API key is required. First, request a free key from the
+[USGS Water Data API](https://api.waterdata.usgs.gov). Then choose one of the
+options below.
 
-*1. Obtain a USGS API key:*
+*Option A -- Config file (recommended):*
 
-Request a (free) key from the USGS Water Data API at https://api.waterdata.usgs.gov
+1. Copy the example template to create your config file:
 
-*2. Configure the key in the conda environment:*
+   ```bash
+   cp conf/api_keys.conf.example conf/api_keys.conf
+   ```
 
-*bash:*
->```bash
-># Set the API key as an environment variable in the ofs_dps conda >environment
->conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps
->
-># Reactivate the environment for the variable to take effect
->conda deactivate
->conda activate ofs_dps
->
-># Verify the key is set
->echo $API_USGS_PAT
+2. Open `conf/api_keys.conf` in a text editor and add your key. The file
+   uses a simple `KEY=VALUE` format:
 
-*Anaconda Powershell:*
->```
->conda activate env_name
->conda env config vars set API_USGS_PAT=<your-api-key>
->conda deactivate
->conda activate env_name
->echo $env:API_USGS_PAT
+   ```ini
+   # API Keys Configuration
+   # Lines starting with # are comments and are ignored.
+   # Keys with empty values are skipped.
+
+   # USGS Water Data API key
+   API_USGS_PAT=your-api-key-here
+   ```
+
+   Replace `your-api-key-here` with the key you received from USGS.
+
+3. That's it. The key is loaded automatically whenever `ofs_skill.obs_retrieval`
+   is imported -- no extra code or setup required. The `conf/api_keys.conf`
+   file is listed in `.gitignore`, so your key will never be committed to the
+   repository.
+
+4. To verify the key was loaded correctly, run a quick check in Python:
+
+   ```python
+   import os
+   from ofs_skill.obs_retrieval import load_api_keys
+
+   load_api_keys()  # also called automatically on import
+   print(os.environ.get("API_USGS_PAT", "NOT SET"))
+   ```
+
+*Option B -- Conda environment variable:*
+
+If you prefer to set the key through conda instead of a config file, use
+`conda env config vars set` to attach it to your conda environment.
+
+Bash:
+
+```bash
+# Set the API key as an environment variable in the conda environment
+conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps
+
+# Reactivate the environment for the variable to take effect
+conda deactivate
+conda activate ofs_dps
+
+# Verify the key is set
+echo $API_USGS_PAT
+```
+
+Anaconda PowerShell:
+
+```powershell
+conda activate env_name
+conda env config vars set API_USGS_PAT=<your-api-key>
+conda deactivate
+conda activate env_name
+echo $env:API_USGS_PAT
+```
+
+> **Note:** Environment variables always take precedence over the config file.
+> If `API_USGS_PAT` is already set in your environment (via conda, CI, or
+> `export`), the value in `conf/api_keys.conf` is ignored.
 
 **Step 3: Run scripts**
 ```bash

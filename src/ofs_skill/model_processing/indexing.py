@@ -387,8 +387,7 @@ def index_nearest_depth(
     For 'stations' file type, returns empty lists.
     Model depths are typically negative (below surface).
     """
-    # if prop.ofsfiletype != 'fields':
-    #     return [], []
+
     if prop.ofsfiletype == 'fields':
         index_min_depth = []
         depth_value = []
@@ -605,6 +604,8 @@ def index_nearest_depth(
                     raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
                 
     elif prop.ofsfiletype == 'stations':
+        if 'stofs' in prop.ofs:
+            return [], []
         index_min_depth = []
         depth_value = []
         length = len(index_min_dist)
@@ -669,6 +670,7 @@ def index_nearest_depth(
 
 
 def index_nearest_station(
+    prop: Any,
     ctl_file_extract: list[list[str]],
     model_netcdf: dict[str, Any],
     model_source: str,
@@ -684,6 +686,8 @@ def index_nearest_station(
 
     Parameters
     ----------
+    prop : Any
+        Program properties/configuration object
     ctl_file_extract : List[List[str]]
         Observation station locations
     model_netcdf : Dict[str, Any]
@@ -694,6 +698,8 @@ def index_nearest_station(
         Variable name
     logger : logging.Logger
         Logger instance
+    id_extract : List[List[str]]
+        Observation station IDs
 
     Returns
     -------
@@ -709,10 +715,25 @@ def index_nearest_station(
     index_min_dist = []
     min_dist = []
 
-    #TODO: there are two SCHISM sections in this logic block 
-    # (this one, and another below that is just for SCHISM).
-    # Needs clarification.
-    if model_source == 'fvcom' or model_source == 'schism':
+    if 'stofs' in prop.ofs:
+        length = len(ctl_file_extract)
+
+        station_names_str = model_netcdf['station_name'][0].astype(str).values
+
+        for obs_p in range(length):
+            match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
+            station_mask_contains = match_indices != -1
+            indices = np.where(station_mask_contains)[0]
+
+            if indices.size > 0:
+                index = indices[0]
+                index_min_dist.append(index)
+                logger.info('Nearest station found: station %s of %s', obs_p + 1, length)
+            else:
+                index_min_dist.append(np.nan)
+                logger.info('Nearest station NOT found: station %s of %s', obs_p + 1, length)
+
+    elif model_source == 'fvcom' or model_source == 'schism':
         length = len(ctl_file_extract)
         lon_np = np.array(model_netcdf['lon'])[1]
         lat_np = np.array(model_netcdf['lat'])[1]
@@ -765,24 +786,27 @@ def index_nearest_station(
         lon_rho_np = np.array(model_netcdf['lon_rho'])
         lat_rho_np = np.array(model_netcdf['lat_rho'])
 
+        lat_flat = lat_rho_np.ravel()
+        lon_flat = lon_rho_np.ravel()
+
         for obs_p in range(len(ctl_file_extract)):
-            dist = np.empty(len(model_netcdf['lon_rho']))
+            dist = np.empty(lat_flat.shape)
             dist[:] = np.nan
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
             nearby_nodes = np.argwhere(
-                (lon_rho_np < obs_lon + 0.1) &
-                (lon_rho_np > obs_lon - 0.1) &
-                (lat_rho_np < obs_lat + 0.1) &
-                (lat_rho_np > obs_lat - 0.1)
+                (lon_flat < obs_lon + 0.1) &
+                (lon_flat > obs_lon - 0.1) &
+                (lat_flat < obs_lat + 0.1) &
+                (lat_flat > obs_lat - 0.1)
             )
 
             if nearby_nodes.size > 0:
-                for i_index in nearby_nodes:
+                for i_index in nearby_nodes[:, 0]:
                     distance = calculate_station_distance(
-                        lat_rho_np[i_index],
-                        lon_rho_np[i_index],
+                        float(lat_flat[i_index]),
+                        float(lon_flat[i_index]),
                         obs_lat,
                         obs_lon
                     )
@@ -806,22 +830,6 @@ def index_nearest_station(
                 logger.info(
                     f'Nearest station NOT found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
-    elif model_source == 'schism' or model_source == 'adcirc':
-        length = len(ctl_file_extract)
 
-        station_names_str = model_netcdf['station_name'][0].astype(str).values
-
-        for obs_p in range(length):
-            match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
-            station_mask_contains = match_indices != -1
-            indices = np.where(station_mask_contains)[0]
-
-            if indices.size > 0:
-                index = indices[0]
-                index_min_dist.append(index)
-                logger.info(f'Nearest station found: station {obs_p + 1} of {length}')
-            else:
-                index_min_dist.append(np.nan)
-                logger.info(f'Nearest station NOT found: station {obs_p + 1} of {length}')
 
     return index_min_dist

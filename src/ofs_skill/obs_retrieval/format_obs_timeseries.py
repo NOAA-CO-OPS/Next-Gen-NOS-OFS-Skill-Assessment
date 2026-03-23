@@ -6,7 +6,7 @@ text format for skill assessment.
 """
 
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,8 @@ import pandas as pd
 def format_scalar(
     timeseries: pd.DataFrame,
     start_date_full: str,
-    end_date_full: str
+    end_date_full: str,
+    lookback_hours: int = 24,
 ) -> list[str]:
     """
     Format scalar observation data (water level, temperature, salinity).
@@ -31,6 +32,11 @@ def format_scalar(
         Start date in format 'YYYYMMDD-HH:MM:SS'
     end_date_full : str
         End date in format 'YYYYMMDD-HH:MM:SS'
+    lookback_hours : int, optional
+        Number of hours before start_date to include in the output.
+        Default is 24 hours. When used in nowcast+forecast_a mode,
+        the caller can pass 24 to ensure overlap between casts.
+        Set to 0 to disable the lookback.
 
     Returns
     -------
@@ -63,9 +69,9 @@ def format_scalar(
     start_dt_full = datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
     end_dt_full = datetime.strptime(end_date_full, '%Y%m%d-%H:%M:%S')
 
-    # Filter to date range
+    # Filter to date range (lookback ensures overlap between consecutive casts)
     mask = (
-        (timeseries['DateTime'] >= start_dt_full) &
+        (timeseries['DateTime'] >= start_dt_full - timedelta(hours=lookback_hours)) &
         (timeseries['DateTime'] <= end_dt_full)
     )
     timeseries = timeseries.loc[mask].copy()
@@ -100,7 +106,8 @@ def format_scalar(
 def format_vector(
     timeseries: pd.DataFrame,
     start_date_full: str,
-    end_date_full: str
+    end_date_full: str,
+    lookback_hours: int = 24,
 ) -> list[str]:
     """
     Format vector observation data (currents).
@@ -116,6 +123,11 @@ def format_vector(
         Start date in format 'YYYYMMDD-HH:MM:SS'
     end_date_full : str
         End date in format 'YYYYMMDD-HH:MM:SS'
+    lookback_hours : int, optional
+        Number of hours before start_date to include in the output.
+        Default is 24 hours. When used in nowcast+forecast_a mode,
+        the caller can pass 24 to ensure overlap between casts.
+        Set to 0 to disable the lookback.
 
     Returns
     -------
@@ -147,9 +159,9 @@ def format_vector(
     start_dt_full = datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
     end_dt_full = datetime.strptime(end_date_full, '%Y%m%d-%H:%M:%S')
 
-    # Filter to date range
+    # Filter to date range (lookback ensures overlap between consecutive casts)
     mask = (
-        (timeseries['DateTime'] >= start_dt_full) &
+        (timeseries['DateTime'] >= start_dt_full - timedelta(hours=lookback_hours)) &
         (timeseries['DateTime'] <= end_dt_full)
     )
     timeseries = timeseries.loc[mask].copy()
