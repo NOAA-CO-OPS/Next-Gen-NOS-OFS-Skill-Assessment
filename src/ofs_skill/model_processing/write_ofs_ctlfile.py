@@ -453,12 +453,13 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     if prop.ofs == 'stofs_2d_glo':
                         for i in range(length):
                             if ~np.isnan(list_of_nearest_node[i]):
+                                # Note the 0 and 0.0 values because STOFS-2D has no layers/depths.
                                 model_ctl_file.append(
                                     f'{list_of_nearest_node[i]} '
-                                    f'{list_of_nearest_layer[i]} '
+                                    f'0 '
                                     f"{model['y'][0, list_of_nearest_node[i]].data.compute():.3f}  "
                                     f"{model['x'][0, list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                    f'{station_id[i]}  0.0\n'
                                 )
                             else:
                                 logger.info('No matching model station found for '
