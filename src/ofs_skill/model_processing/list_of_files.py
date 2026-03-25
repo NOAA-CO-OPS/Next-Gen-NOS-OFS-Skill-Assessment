@@ -372,7 +372,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
                 if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
                     filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
                 elif prop.ofs in ('stofs_2d_glo'):
-                    filename = f'{dir_path}//{prop.ofs}.t{cycle}z.points.cwl.nc'
+                    filename = f'{prop.ofs}.t{cycle}z.points.cwl.nc'
                 else:
                     if date_obj >= datechange:
                         # New format: cbofs.t00z.20251215.stations.nowcast.nc
@@ -412,7 +412,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
                             filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
                             filepath = f'{dir_path}//{filename}'
                             files.append(filepath)
-            
+
             elif prop.ofs in ('stofs_2d_glo'):
                 for cycle in fcstcycles:
                     # For now we're just doing the combined water level ("cwl").
@@ -771,12 +771,12 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
                             # For sorting, we need just the model cycle (only one file per time series;
                             # only one day per directory).
-                            # But to work with the sorting method used for other OFS, 
-                            # we have to construct a string that looks like the other checkstrs. 
+                            # But to work with the sorting method used for other OFS,
+                            # we have to construct a string that looks like the other checkstrs.
                             if af_name.endswith('.nc'):
                                 if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
                                     files.append(af_name)
-                                    hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00') 
+                                    hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
                                 elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
                                     files.append(af_name)
                                     hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
@@ -949,14 +949,14 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
                             # The sorting variable is unnecessary in this case as we only have one model cycle,
                             # only one file per time series, and only one day per directory. But
-                            # we need to assign it anyway.  
+                            # we need to assign it anyway.
                             if af_name.endswith('.nc') and (cycle_z in af_name):
                                 if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
                                     files.append(af_name)
-                                    hr_cyc_day.append('0000000') 
+                                    hr_cyc_day.append('0000000')
                                 elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
                                     files.append(af_name)
-                                    hr_cyc_day.append('0000000') 
+                                    hr_cyc_day.append('0000000')
 
                 files = [dir_list[i_index] + '//' + i for i in files]
 
@@ -1096,7 +1096,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                     ):
                                     files.append(af_name)
                                     hr_cyc_day.append(checkstr1)
-                        elif prop.ofs in ('stofs_2d_glo'):
+                        elif prop.ofs in ['stofs_2d_glo']:
                             # STOFS-2D-Global files each contain the full timeseries,
                             # so we filter only on:
                             # (1) station vs fields;
@@ -1104,12 +1104,12 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                             # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
                             # For sorting, we need just the model cycle (only one file per time series;
                             # only one day per directory).
-                            # But to work with the sorting method used for other OFS, 
-                            # we have to construct a string that looks like the other checkstrs. 
+                            # But to work with the sorting method used for other OFS,
+                            # we have to construct a string that looks like the other checkstrs.
                             if af_name.endswith('.nc'):
                                 if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
                                     files.append(af_name)
-                                    hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00') 
+                                    hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
                                 elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
                                     files.append(af_name)
                                     hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
