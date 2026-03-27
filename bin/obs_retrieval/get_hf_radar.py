@@ -18,6 +18,77 @@ from shapely.geometry import Polygon, Point
 NRT_DELAY = timedelta(hours=1)
 
 
+"""
+-*- coding: utf-8 -*-
+
+Documentation for Scripts get_hf_radar.py
+
+Script Name: get_hf_radar.py
+
+Author: RA
+
+
+
+This script checks for available HF radar data for a user-provided OFS and
+generates mag/dir ASCII files to be used with the frontend. HF radar sources
+and OFSes are not hard-coded and just quickly checked to account for any
+future HF radar or OFS additions.
+
+    1) Check which HF radar source areas intersect with the provided OFS
+        by computing the geographic bounds of both.
+    2) Get the u/v data.
+        2.5) Average the u/v data for the daily average mode.
+    3) Convert it to mag/dir data.
+    4) Output ASCII files from NetCDF.
+        - For 25-hr daily average, expected file output looks like this:
+            {ofs_name}_hfradar_dir_YYYYMMDD.asc
+            {ofs_name}_hfradar_dir_YYYYMMDD.prj
+            {ofs_name}_hfradar_mag_YYYYMMDD.asc
+            {ofs_name}_hfradar_mag_YYYYMMDD.prj
+        - For hourly, expected file output looks like this per hour:
+            {ofs_name}_hfradar_dir_YYYYMMDD_HH00.asc
+            {ofs_name}_hfradar_dir_YYYYMMDD_HH00.prj
+            {ofs_name}_hfradar_mag_YYYYMMDD_HH00.asc
+            {ofs_name}_hfradar_mag_YYYYMMDD_HH00.prj
+"""
+
+
+"""
+Example daily average call looks like this:
+
+python ./bin/obs_retrieval/get_hf_radar.py 20260310 ./data/observations/ ./ofs_extents/sfbofs.shp sfbofs
+"""
+
+
+"""
+Example hourly call looks like this:
+
+python ./bin/obs_retrieval/get_hf_radar.py 20260310 ./data/observations/ ./ofs_extents/sfbofs.shp sfbofs --mode hourly --start 2026030900 --end 2026031023
+"""
+
+
+"""
+HF Radar sources and times available per source (as of March 11, 2026)
+
+USEGC (US East Coast and Gulf of America) - Dec 1, 2025 2100 to Mar 11, 2026 1200
+USWC (US West Coast) - Dec 8, 2025 1800 to Mar 11, 2026 1000
+GLNA (Great Lakes North America) - Dec 9, 2025 0200 to Feb 26, 2026 0000
+GAK (Gulf of Alaska) - Dec 9, 2025 0200 to Dec 14, 2025 0700
+"""
+
+
+"""
+HF Radar sources and corresponding OFSes
+
+USEGC -> CBOFS, DBOFS, GOMOFS, NGOFS2, NYOFS, TBOFS
+USWC -> SFBOFS, SSCOFS, WCOFS
+GLNA -> LMHOFS
+GAK -> CIOFS
+
+(There may be some instances where there is technically overlap but there is not data actually available, like GAK and WCOFS, or USEGC and the other GL OFSes. The empty dataset will be ignored.)
+"""
+
+
 '''
 Intersection detection logic
 '''
@@ -285,6 +356,30 @@ def check_for_overlap(
     prvi: Puerto Rico/Virgin Islands
     """
 
+
+    # add this to imports
+    from ofs_skill.obs_retrieval import utils
+
+    # then add this to beginning of check_for_overlap
+    if logger is None:
+        config_file = utils.Utils().get_config_file()
+        log_config_file = 'conf/logging.conf'
+        log_config_file = os.path.join(Path(prop.path), log_config_file)
+
+        # Check if log file exists
+        if not os.path.isfile(log_config_file):
+            sys.exit(-1)
+        # Check if config file exists
+        if not os.path.isfile(config_file):
+            sys.exit(-1)
+
+    # Creater logger
+    logging.config.fileConfig(log_config_file)
+    logger = logging.getLogger('root')
+    logger.info('Using config %s', config_file)
+    logger.info('Using log config %s', log_config_file)
+
+    
     #akns never seems to have data
     #hf_datasets = ["usegc", "uswc", "glna", "ushi", "akns", "gak", "prvi"]
     hf_datasets = ["usegc", "uswc", "glna", "ushi", "gak", "prvi"]
@@ -298,9 +393,11 @@ def check_for_overlap(
         (lon_min, lat_min),
     ]
     study_area = ensure_clockwise(study_area)
-
+    logger.info("Made study area")
+    
     matching_files = {}
 
+    logger.info("Starting check for overlap")
     for hfd in hf_datasets:
         url = f"https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar_{hfd}_6km"
 
@@ -310,6 +407,7 @@ def check_for_overlap(
             print(e)
             continue
 
+        logger.info("Checking for and normalizing formatting")
         geospatial_bounds = get_geospatial_bounds(ds)
 
         if not geospatial_bounds:
@@ -328,6 +426,7 @@ def check_for_overlap(
                 )
 
                 matching_files[url] = ds
+                logger.info("Added HF radar data with overlap of study area to list")
 
             except Exception as e:
                 print(e)
@@ -365,11 +464,9 @@ def process_files(
             et = end_time
             st = start_time
 
-
+    logger.info("Got start time and end time")
+    
     for url, ds in matching_files.items():
-        #print("TIME RANGE IN FILE:", ds.time.min().values, ds.time.max().values)
-        #print("REQUESTED:", st, et)
-        
         dtp = ds.sel(time=slice(st, et))
 
         u_var = "u" if "u" in dtp.variables else "ssu"
@@ -386,6 +483,8 @@ def process_files(
         if np.isfinite(u_data).sum() == 0:
             continue
 
+        logger.info("Clipped u/v data to study area")
+
         if mode == "daily":
             u_avg = u_data.mean(dim="time", skipna=True)
             v_avg = v_data.mean(dim="time", skipna=True)
@@ -396,6 +495,8 @@ def process_files(
             u_avg = u_avg.astype("float64")
             v_avg = v_avg.astype("float64")
 
+            logger.info("Created u and v averages for daily average option")
+
             mag = np.sqrt(u_avg**2 + v_avg**2)
             dir_rad = np.arctan2(u_avg, v_avg)
             direction = (np.degrees(dir_rad) + 360) % 360
@@ -405,10 +506,16 @@ def process_files(
             mag_outfile = data_dir / f"{ofs}_hfradar_mag_{date_obj.strftime('%Y%m%d')}.asc"
             dir_outfile = data_dir / f"{ofs}_hfradar_dir_{date_obj.strftime('%Y%m%d')}.asc"
 
+            logger.info("Translated u/v into mag/dir data")
+            
             export_ascii(mag, mag_outfile)
             export_ascii(direction, dir_outfile)
 
+            logger.info("Finished writing daily average mag/dir file")
+
         elif mode == "hourly":
+            logger.info("Starting hourly u/v -> mag/dir file creation")
+            
             for t in range(len(u_data.time)):
                 u_hour = u_data.isel(time=t)
                 v_hour = v_data.isel(time=t)
@@ -424,26 +531,64 @@ def process_files(
                 export_ascii(mag, mag_outfile)
                 export_ascii(direction, dir_outfile)
 
+                logger.info("Finished writing hourly mag/dir files")
+
+    logger.info("Finished get_hf_radar.py!")
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog="get_hf_radar.py",
+        usage="%(prog)s",
+        description="Create ASCII output for a given OFS's HF radar data"
+    )
 
-    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-d", "--date",
+        help="Date for daily data collection"
+    )
 
-    parser.add_argument("my_date", help="Date for data collection")
-    parser.add_argument("catalogue", help="File directory to write the files to")
-    parser.add_argument("my_box", help="Bounding box (shapefile)")
-    parser.add_argument("ofs", help="OFS of interest")
+    parser.add_argument(
+        "-c", "--catalogue",
+        help="File directory to write the output files to"
+    )
 
-    parser.add_argument("--mode", choices=["daily", "hourly"], default="daily")
-    parser.add_argument("--start", help="Start time YYYYMMDDHH (UTC)")
-    parser.add_argument("--end", help="End time YYYYMMDDHH (UTC)")
+    parser.add_argument(
+        "-b", "--bounds",
+        help="Bounds (shapefile)"
+    )
+
+    parser.add_argument(
+        "-o", "--ofs",
+        required=False,
+        help="OFS of interest"
+    )
+
+    parser.add_argument(
+        "-m", "--mode",
+        choices=["daily", "hourly"],
+        default="daily",
+        help="Choose daily or hourly period"
+    )
+
+    parser.add_argument(
+        "-s", "--start",
+        help="Start time for hourly period in format YYYYMMDDHH (UTC)"
+    )
+
+    parser.add_argument(
+        "-e", "--end",
+        help="End time for hourly period in format YYYYMMDDHH (UTC)"
+    )
 
 
     args = parser.parse_args()
 
-    date_obj = datetime.strptime(args.my_date, "%Y%m%d")
+    date_obj = datetime.strptime(args.date, "%Y%m%d")
 
     data_dir = Path(args.catalogue)
+
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
 
     mode = args.mode
 
@@ -456,21 +601,19 @@ if __name__ == '__main__':
     if args.end:
         end_time = parse_utc_timestamp(args.end)
 
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
+    if args.bounds is not None:
+        ofs = Path(args.bounds).stem
 
-    if os.path.exists(Path(args.my_box)):
-        gdf = gpd.read_file(Path(args.my_box))
-        
-        #print("OFS bounds:", gdf.total_bounds)
-        
+    elif args.ofs is not None:
+        ofs = args.ofs
+
+    if args.bounds is not None and os.path.exists(Path(args.bounds)):
+        gdf = gpd.read_file(Path(args.bounds))
         bounds = gdf.total_bounds
         lon_min, lat_min, lon_max, lat_max = bounds
 
         if mode == "daily":
-            check_for_overlap(date_obj, data_dir, gdf, args.ofs, mode)
+            check_for_overlap(date_obj, data_dir, gdf, ofs, mode)
 
         elif mode == "hourly":
-            check_for_overlap(date_obj, data_dir, gdf, args.ofs, mode, start_time, end_time)
-
-
+            check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
