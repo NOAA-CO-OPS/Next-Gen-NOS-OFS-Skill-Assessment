@@ -238,6 +238,8 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
     # Check if lons in -180 to 180 or 0 to 360
     lon_grid = normalize_longitudes(lon_grid)
     lons = normalize_longitudes(lons)
+    if prop1.model_source == 'fvcom':
+        lons_c = normalize_longitudes(lons_c)
 
     # Flag to track if satellite data is available
     has_satellite_data = False
