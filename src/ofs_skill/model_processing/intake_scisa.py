@@ -209,7 +209,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'engine': engine,
                         'preprocess': preprocess_with_filename,
                         'concat_dim': time_name,
-                        'decode_times': False,
+                        'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
                 )
@@ -222,7 +222,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'engine': engine,
                     'preprocess': preprocess_with_filename,
                     'concat_dim': time_name,
-                    'decode_times': False,
+                    'decode_times': True,
                     'drop_variables': drop_variables,
                     'chunks': 'auto',  # Enables lazy loading with Dask
                 },
@@ -654,7 +654,7 @@ def remove_extra_stations(engine: str,
             xarray_kwargs={
                 'engine': 'h5netcdf',
                 'drop_variables': drop_variables,
-                'decode_times': False,
+                'decode_times': True,
                 'chunks': 'auto',
             },
         )
