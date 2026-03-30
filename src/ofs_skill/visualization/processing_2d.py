@@ -60,6 +60,12 @@ if TYPE_CHECKING:
 # Module-level constants for model variable processing
 MODEL_VAR_NAMES = ('sst', 'ssh', 'sss', 'ssu', 'ssv')
 VELOCITY_VARS = ('ssu', 'ssv')
+CAST_PREFIX_MAP = {
+    'nowcast': 'n',
+    'forecast_a': 'f',
+    'forecast_b': 'f',
+    'hindcast': 'h',
+}
 
 
 def param_val(netcdf_file_sat: str | None, prop1=None) -> tuple[Logger, list]:
@@ -360,6 +366,7 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
 
         try:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
+            daily_interp_cache = {}
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -376,9 +383,42 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=True,
                 )
-                _process_and_write_variable(
+                result = _process_and_write_variable(
                     var_name, data_1d, lons_src, lats_src,
                     lon_grid, lat_grid, output_file, logger, prop1,
+                )
+                if var_name in VELOCITY_VARS:
+                    daily_interp_cache[var_name] = result
+
+            # Compute and write daily current magnitude/direction ASCII grids
+            if 'ssu' in daily_interp_cache and 'ssv' in daily_interp_cache:
+                magnitude, direction = _compute_current_mag_dir(
+                    daily_interp_cache['ssu'], daily_interp_cache['ssv'],
+                )
+                cycle_start_daily = datetime.fromisoformat(
+                    prop1.start_date_full.replace('Z', '+00:00'),
+                )
+                mag_file = _build_ascii_grid_filename(
+                    outdir[0], prop1.ofs, dtime, 'mag',
+                    prop1.whichcast, cycle_start_daily, is_daily=True,
+                )
+                dir_file = _build_ascii_grid_filename(
+                    outdir[0], prop1.ofs, dtime, 'dir',
+                    prop1.whichcast, cycle_start_daily, is_daily=True,
+                )
+                logger.info(
+                    '--- Writing daily current magnitude to: %s ---', mag_file,
+                )
+                write_2d_array_to_ascii_grid(
+                    np.round(magnitude, decimals=4),
+                    lon_grid, lat_grid, mag_file,
+                )
+                logger.info(
+                    '--- Writing daily current direction to: %s ---', dir_file,
+                )
+                write_2d_array_to_ascii_grid(
+                    np.round(direction, decimals=1) % 360,
+                    lon_grid, lat_grid, dir_file,
                 )
         except Exception as e:
             logger.error('Problem writing daily averaged model JSON file: %s', e)
@@ -421,6 +461,9 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
     }
 
     # Loop over times and write out leaflet JSON files
+    cycle_start = datetime.fromisoformat(
+        prop1.start_date_full.replace('Z', '+00:00'),
+    )
     while dtime <= datetime.fromisoformat(prop1.end_date_full.replace('Z', '+00:00')):
         # Find index for model data
         i_model = next(
@@ -435,6 +478,7 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
             logger.warning('Model time not found for %s', dtime)
         else:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
+            interpolated_cache = {}
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -451,9 +495,39 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=False,
                 )
-                _process_and_write_variable(
+                result = _process_and_write_variable(
                     var_name, data_1d, lons_src, lats_src,
                     lon_grid, lat_grid, output_file, logger, prop1,
+                )
+                if var_name in VELOCITY_VARS:
+                    interpolated_cache[var_name] = result
+
+            # Compute and write current magnitude/direction ASCII grids
+            if 'ssu' in interpolated_cache and 'ssv' in interpolated_cache:
+                magnitude, direction = _compute_current_mag_dir(
+                    interpolated_cache['ssu'], interpolated_cache['ssv'],
+                )
+                mag_file = _build_ascii_grid_filename(
+                    outdir[0], prop1.ofs, dtime, 'mag',
+                    prop1.whichcast, cycle_start,
+                )
+                dir_file = _build_ascii_grid_filename(
+                    outdir[0], prop1.ofs, dtime, 'dir',
+                    prop1.whichcast, cycle_start,
+                )
+                logger.info(
+                    '--- Writing current magnitude to: %s ---', mag_file,
+                )
+                write_2d_array_to_ascii_grid(
+                    np.round(magnitude, decimals=4),
+                    lon_grid, lat_grid, mag_file,
+                )
+                logger.info(
+                    '--- Writing current direction to: %s ---', dir_file,
+                )
+                write_2d_array_to_ascii_grid(
+                    np.round(direction, decimals=1) % 360,
+                    lon_grid, lat_grid, dir_file,
                 )
 
         # Process satellite data (only if satellite data is available)
@@ -621,6 +695,45 @@ def _build_model_output_filename(
     )
 
 
+def _build_ascii_grid_filename(
+    outdir: str,
+    ofs: str,
+    dtime: datetime,
+    derived_var: str,
+    whichcast: str,
+    cycle_start: datetime,
+    is_daily: bool = False,
+) -> str:
+    """
+    Generate output filename for current vector ASCII grid files.
+
+    Args:
+        outdir: Output directory path
+        ofs: OFS name (e.g., 'cbofs', 'wcofs')
+        dtime: Datetime for the file
+        derived_var: Derived variable name ('mag' or 'dir')
+        whichcast: Forecast type ('nowcast', 'forecast_a', etc.)
+        cycle_start: Start time of the model cycle
+        is_daily: If True, generate daily average filename
+
+    Returns:
+        Full path to output .txt file
+    """
+    date_str = dtime.strftime('%Y%m%d')
+    if is_daily:
+        suffix = 'daily'
+    else:
+        prefix = CAST_PREFIX_MAP.get(whichcast, 'n')
+        hour_offset = int(
+            (dtime - cycle_start).total_seconds() / 3600,
+        ) + 1
+        suffix = f'{prefix}{hour_offset:03d}'
+    return os.path.join(
+        outdir,
+        f'{ofs}_{derived_var}_{date_str}_{suffix}.txt',
+    )
+
+
 def _process_and_write_variable(
     var_name: str,
     data_1d: npt.NDArray,
@@ -631,7 +744,7 @@ def _process_and_write_variable(
     output_file: str,
     logger: Logger,
     prop1,
-) -> None:
+) -> npt.NDArray:
     """
     Interpolate variable data and write to JSON file.
 
@@ -645,6 +758,9 @@ def _process_and_write_variable(
         output_file: Output JSON file path
         logger: Logger instance
         prop1: Properties object
+
+    Returns:
+        Interpolated 2D grid array
     """
     interpolated = interp_grid(
         lons_src, lats_src, data_1d, lon_grid, lat_grid, logger, prop1,
@@ -653,6 +769,28 @@ def _process_and_write_variable(
     write_2d_arrays_to_json(
         lat_grid, lon_grid, np.round(interpolated, decimals=2), output_file,
     )
+    return interpolated
+
+
+def _compute_current_mag_dir(
+    ssu_grid: npt.NDArray,
+    ssv_grid: npt.NDArray,
+) -> tuple[npt.NDArray, npt.NDArray]:
+    """
+    Compute current magnitude and direction from u/v components.
+
+    Args:
+        ssu_grid: 2D array of eastward velocity (u component)
+        ssv_grid: 2D array of northward velocity (v component)
+
+    Returns:
+        Tuple of (magnitude, direction) arrays.
+        Direction is in degrees, clockwise from north (oceanographic
+        convention: direction current is flowing toward).
+    """
+    magnitude = np.sqrt(ssu_grid**2 + ssv_grid**2)
+    direction = np.degrees(np.arctan2(ssu_grid, ssv_grid)) % 360
+    return magnitude, direction
 
 
 def interp_grid(
@@ -922,6 +1060,49 @@ def write_2d_arrays_to_json(
             else:
                 json_file.write('\n')
         json_file.write('}\n')
+
+
+def write_2d_array_to_ascii_grid(
+    data: npt.NDArray,
+    lon_grid: npt.NDArray,
+    lat_grid: npt.NDArray,
+    filename: str,
+    nodata_value: int = -9999,
+) -> None:
+    """
+    Write a 2D data array as an ESRI ASCII Grid (.asc/.txt) file.
+
+    Creates a geospatial raster file with a 6-line header followed by
+    space-separated grid data. Data rows are written north-to-south
+    per the ESRI ASCII Grid convention.
+
+    Args:
+        data: 2D array of data values (same shape as lon_grid/lat_grid)
+        lon_grid: 2D meshgrid of longitudes
+        lat_grid: 2D meshgrid of latitudes
+        filename: Output file path
+        nodata_value: Value to represent missing data (default -9999)
+    """
+    nrows, ncols = data.shape
+    xllcorner = float(lon_grid[0, 0])
+    yllcorner = float(lat_grid[0, 0])
+    cellsize = float(lon_grid[0, 1] - lon_grid[0, 0])
+
+    # Replace NaN with nodata_value
+    out_data = np.where(np.isnan(data), nodata_value, data)
+
+    # Flip rows so first row is northernmost (ESRI convention)
+    out_data = out_data[::-1]
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f'ncols        {ncols}\n')
+        f.write(f'nrows        {nrows}\n')
+        f.write(f'xllcorner    {xllcorner:.12f}\n')
+        f.write(f'yllcorner    {yllcorner:.12f}\n')
+        f.write(f'cellsize     {cellsize:.12f}\n')
+        f.write(f'NODATA_value {nodata_value}\n')
+        for row in out_data:
+            f.write(' '.join(f'{v:g}' for v in row) + '\n')
 
 
 def resample_latlon(
