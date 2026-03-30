@@ -1,17 +1,59 @@
 """
-Reads JSON file output from leaflet routine and visualizes as a cartopy plot.
+Script Name: plot_leafletJSON.py
 
-Supports all model variables (SST, SSH, SSS, SSU, SSV) and current vector
-quiver maps. Can auto-detect variable from filename or accept explicit
-variable flag.
+Directory Location: bin/utils/
+
+Technical Contact(s): AJK
+
+Abstract:
+    Standalone utility to generate static cartopy PNG maps from the 2D JSON
+    grid files produced by the leaflet processing pipeline (processing_2d.py).
+    Reads the JSON structure (lats, lons, sst keys) and renders a georeferenced
+    map with coastlines, land masking, state boundaries, and a colorbar.
+
+    Supports two modes:
+      1. Scalar map (-f): Renders a single variable (SST, SSH, SSS, SSU, or
+         SSV) as a filled pcolormesh plot. The variable is auto-detected from
+         the filename or can be overridden with -v. Each variable uses a
+         default colormap and unit label (e.g., SSS -> YlGnBu, psu).
+      2. Current quiver map (-fu, -fv): Takes paired SSU and SSV JSON files,
+         computes current magnitude for the color background, and overlays
+         subsampled quiver arrows showing flow direction and speed.
+
+    Output is saved as PNG at 100 DPI. Output path defaults to the input
+    filename with .png appended, or can be specified with -o.
+
+    This script wraps library functions from ofs_skill.visualization.plotting_2d
+    (plot_2d_scalar_map, plot_2d_current_quiver_map, load_json_grid) which are
+    also called by the automated pipeline in create_2dplot.py when
+    static_plots=True in conf/ofs_dps.conf.
+
+Language: Python 3.11
 
 Usage:
     # Scalar map (auto-detects variable from filename)
     python plot_leafletJSON.py -f data/model/2d/cbofs_20260328-00z_sss_model.nowcast.json
 
-    # Current quiver map (provide both u and v files)
+    # Scalar map with variable override and custom output path
+    python plot_leafletJSON.py -f data/model/2d/cbofs_20260328-00z_sss_model.nowcast.json \
+                               -v sss -o ./output/cbofs_sss.png
+
+    # Current quiver map (provide both u and v component files)
     python plot_leafletJSON.py -fu data/model/2d/cbofs_20260328-00z_ssu_model.nowcast.json \
                                -fv data/model/2d/cbofs_20260328-00z_ssv_model.nowcast.json
+
+Arguments:
+    -f,  --filename     Path to a single JSON file (scalar map mode)
+    -fu, --filename_u   Path to SSU (eastward velocity) JSON file (quiver mode)
+    -fv, --filename_v   Path to SSV (northward velocity) JSON file (quiver mode)
+    -v,  --variable     Variable name override: sst, ssh, sss, ssu, ssv
+    -o,  --output       Output PNG file path (default: input filename + .png)
+
+Revisions:
+    Date        Author      Description
+    09/2024     AJK         Initial version (SST only, cartopy pcolor)
+    03/2026     AJK         Refactored to use plotting_2d library functions,
+                            added support for all variables and quiver maps
 """
 import argparse
 import logging
