@@ -684,16 +684,16 @@ def plot_2d_scalar_map(
     fig = plt.figure(figsize=(12, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
 
-    ax.coastlines(resolution='10m')
-    ax.gridlines(draw_labels=True)
-    ax.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax.add_feature(cfeature.STATES, linewidth=0.5)
-
     mesh = ax.pcolormesh(
         lons, lats, data, cmap=cmap,
         vmin=vmin, vmax=vmax,
-        transform=ccrs.PlateCarree(),
+        transform=ccrs.PlateCarree(), zorder=1,
     )
+    # Land on top of data to cover interpolation bleed-through
+    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=2)
+    ax.coastlines(resolution='10m', zorder=3)
+    ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=3)
+    ax.gridlines(draw_labels=True)
     plt.colorbar(mesh, orientation='vertical', label=label, pad=0.05)
     plt.title(title)
 
@@ -735,15 +735,10 @@ def plot_2d_current_quiver_map(
     fig = plt.figure(figsize=(12, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
 
-    ax.coastlines(resolution='10m')
-    ax.gridlines(draw_labels=True)
-    ax.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax.add_feature(cfeature.STATES, linewidth=0.5)
-
     mesh = ax.pcolormesh(
         lons, lats, magnitude, cmap='cividis',
         vmin=0, vmax=np.nanmax(magnitude),
-        transform=ccrs.PlateCarree(),
+        transform=ccrs.PlateCarree(), zorder=1,
     )
     plt.colorbar(mesh, orientation='vertical',
                  label='Current Speed (m/s)', pad=0.05)
@@ -754,8 +749,13 @@ def plot_2d_current_quiver_map(
         lons[::s, ::s], lats[::s, ::s],
         ssu[::s, ::s], ssv[::s, ::s],
         transform=ccrs.PlateCarree(),
-        scale=15, width=0.002, color='black', alpha=0.7,
+        scale=15, width=0.002, color='black', alpha=0.7, zorder=2,
     )
+    # Land on top of data to cover interpolation bleed-through
+    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=3)
+    ax.coastlines(resolution='10m', zorder=4)
+    ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=4)
+    ax.gridlines(draw_labels=True)
     ax.quiverkey(q, 0.9, 1.02, 0.5, '0.5 m/s', labelpos='E')
 
     plt.title(title)
