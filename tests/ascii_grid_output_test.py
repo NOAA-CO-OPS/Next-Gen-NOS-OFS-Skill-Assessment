@@ -171,22 +171,20 @@ class TestBuildAsciiGridFilename:
     """Tests for _build_ascii_grid_filename."""
 
     def test_nowcast_filename(self):
-        """Nowcast generates n-prefixed filename."""
+        """Nowcast generates n-prefixed filename with step number."""
         result = _build_ascii_grid_filename(
             '/out', 'cbofs',
             datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
-            'mag', 'nowcast',
-            datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
+            'mag', 'nowcast', 4,
         )
         assert result == '/out/cbofs_mag_20260120_n004.txt'
 
-    def test_nowcast_first_hour(self):
-        """First hour of nowcast generates n001."""
+    def test_first_step(self):
+        """First step generates 001."""
         result = _build_ascii_grid_filename(
             '/out', 'wcofs',
             datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
-            'dir', 'nowcast',
-            datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
+            'dir', 'nowcast', 1,
         )
         assert result == '/out/wcofs_dir_20260120_n001.txt'
 
@@ -195,18 +193,16 @@ class TestBuildAsciiGridFilename:
         result = _build_ascii_grid_filename(
             '/out', 'dbofs',
             datetime(2026, 1, 20, 6, 0, tzinfo=timezone.utc),
-            'mag', 'forecast_a',
-            datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
+            'mag', 'forecast_a', 7,
         )
         assert result == '/out/dbofs_mag_20260120_f007.txt'
 
     def test_daily_filename(self):
-        """Daily filename uses 'daily' suffix instead of hour offset."""
+        """Daily filename uses 'daily' suffix instead of step number."""
         result = _build_ascii_grid_filename(
             '/out', 'cbofs',
             datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
-            'mag', 'nowcast',
-            datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
+            'mag', 'nowcast', 0,
             is_daily=True,
         )
         assert result == '/out/cbofs_mag_20260120_daily.txt'
@@ -216,7 +212,6 @@ class TestBuildAsciiGridFilename:
         result = _build_ascii_grid_filename(
             '/out', 'loofs2',
             datetime(2026, 1, 20, 2, 0, tzinfo=timezone.utc),
-            'dir', 'hindcast',
-            datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
+            'dir', 'hindcast', 3,
         )
         assert result == '/out/loofs2_dir_20260120_h003.txt'

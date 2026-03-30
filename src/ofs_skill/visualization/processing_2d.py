@@ -395,16 +395,13 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                 magnitude, direction = _compute_current_mag_dir(
                     daily_interp_cache['ssu'], daily_interp_cache['ssv'],
                 )
-                cycle_start_daily = datetime.fromisoformat(
-                    prop1.start_date_full.replace('Z', '+00:00'),
-                )
                 mag_file = _build_ascii_grid_filename(
                     outdir[0], prop1.ofs, dtime, 'mag',
-                    prop1.whichcast, cycle_start_daily, is_daily=True,
+                    prop1.whichcast, 0, is_daily=True,
                 )
                 dir_file = _build_ascii_grid_filename(
                     outdir[0], prop1.ofs, dtime, 'dir',
-                    prop1.whichcast, cycle_start_daily, is_daily=True,
+                    prop1.whichcast, 0, is_daily=True,
                 )
                 logger.info(
                     '--- Writing daily current magnitude to: %s ---', mag_file,
@@ -461,9 +458,7 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
     }
 
     # Loop over times and write out leaflet JSON files
-    cycle_start = datetime.fromisoformat(
-        prop1.start_date_full.replace('Z', '+00:00'),
-    )
+    ascii_step_counter = 0
     while dtime <= datetime.fromisoformat(prop1.end_date_full.replace('Z', '+00:00')):
         # Find index for model data
         i_model = next(
@@ -504,16 +499,17 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
 
             # Compute and write current magnitude/direction ASCII grids
             if 'ssu' in interpolated_cache and 'ssv' in interpolated_cache:
+                ascii_step_counter += 1
                 magnitude, direction = _compute_current_mag_dir(
                     interpolated_cache['ssu'], interpolated_cache['ssv'],
                 )
                 mag_file = _build_ascii_grid_filename(
                     outdir[0], prop1.ofs, dtime, 'mag',
-                    prop1.whichcast, cycle_start,
+                    prop1.whichcast, ascii_step_counter,
                 )
                 dir_file = _build_ascii_grid_filename(
                     outdir[0], prop1.ofs, dtime, 'dir',
-                    prop1.whichcast, cycle_start,
+                    prop1.whichcast, ascii_step_counter,
                 )
                 logger.info(
                     '--- Writing current magnitude to: %s ---', mag_file,
@@ -701,7 +697,7 @@ def _build_ascii_grid_filename(
     dtime: datetime,
     derived_var: str,
     whichcast: str,
-    cycle_start: datetime,
+    step_number: int,
     is_daily: bool = False,
 ) -> str:
     """
@@ -713,7 +709,7 @@ def _build_ascii_grid_filename(
         dtime: Datetime for the file
         derived_var: Derived variable name ('mag' or 'dir')
         whichcast: Forecast type ('nowcast', 'forecast_a', etc.)
-        cycle_start: Start time of the model cycle
+        step_number: Sequential 1-based timestep number
         is_daily: If True, generate daily average filename
 
     Returns:
@@ -724,10 +720,7 @@ def _build_ascii_grid_filename(
         suffix = 'daily'
     else:
         prefix = CAST_PREFIX_MAP.get(whichcast, 'n')
-        hour_offset = int(
-            (dtime - cycle_start).total_seconds() / 3600,
-        ) + 1
-        suffix = f'{prefix}{hour_offset:03d}'
+        suffix = f'{prefix}{step_number:03d}'
     return os.path.join(
         outdir,
         f'{ofs}_{derived_var}_{date_str}_{suffix}.txt',
