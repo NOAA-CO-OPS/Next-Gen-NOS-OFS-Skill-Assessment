@@ -230,9 +230,10 @@ def get_station_observations(prop,logger):
         logger.info('Using log config %s', log_config_file)
     logger.info('--- Starting Station Observation Process ---')
 
-    dir_params = utils.Utils().read_config_section(
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section(
         'directories', logger)
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     # Parse arguments to lists

@@ -58,13 +58,13 @@ def hours_range(start_date, end_date):
     return dates
 
 
-def list_of_urls_glsea(hours_range1,logger):
+def list_of_urls_glsea(hours_range1, logger, config_file=None):
     """
     This function will list the API's for all the GLSEA
     files between the range of data (output from hour_range())
     """
     # Retrieve urls from config file
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     url_root = url_params['glsea_thredds']
     url_root_backup = url_params['glsea_erddap']
 
@@ -312,8 +312,9 @@ def get_icecover_observations(prop, logger):
     3) Clip GLSEA extent from Great Lakes-wide to match OFS extent.
     4) Save clipped concatenated netcdf file.
     """
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = (Path(__file__).parent.parent.parent / log_config_file).resolve()
 
@@ -331,12 +332,12 @@ def get_icecover_observations(prop, logger):
         logger.info('Using log config %s', log_config_file)
 
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     parameter_dir_validation (prop, dir_params, logger)
     logger.info('--- Starting Ice Cover Satellite Observation Process ---')
 
     hours = hours_range(prop.start_date_full, prop.end_date_full)
-    list_of_urls, list_of_urls_backup = list_of_urls_glsea(hours,logger)
+    list_of_urls, list_of_urls_backup = list_of_urls_glsea(hours, logger, _conf)
 
     # First check for existing GLSEA files, and remove any that are partial/
     # incomplete. This prevents a common concatenation error.
@@ -423,11 +424,16 @@ if __name__ == '__main__':
         required=True,
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'",
     )
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.ofs.lower()
     prop1.path = args.path
+    prop1.config_file = args.config
     prop1.ofs_extents_path = r'' + prop1.path + 'ofs_extents' + '/'
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full

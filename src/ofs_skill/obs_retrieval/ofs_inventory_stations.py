@@ -311,7 +311,7 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
 
 
 def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
-                           logger):
+                           logger, config_file=None):
     """ Specify defaults (can be overridden with command line options) """
 
     if logger is None:
@@ -330,11 +330,11 @@ def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
 
     logger.info('--- Starting Inventory Retrieval Process ---')
 
-    dir_params = utils.Utils().read_config_section(
+    dir_params = utils.Utils(config_file).read_config_section(
         'directories', logger)
     station_list = []
     if 'list' in stationowner:
-        station_list = (utils.Utils().
+        station_list = (utils.Utils(config_file).
                         read_config_section('station_IDs', logger)\
                         ['station_id_list']).replace(',','').split(' ')
 

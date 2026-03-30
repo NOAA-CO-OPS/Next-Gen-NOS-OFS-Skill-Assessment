@@ -76,7 +76,8 @@ def validate_and_initialize_parameters(prop):
         logger (logging.Logger): Initialized logger.
     """
     # Setup logger
-    config_file = utils.Utils().get_config_file()
+    _conf = getattr(prop, 'config_file', None)
+    config_file = utils.Utils(_conf).get_config_file()
     log_config_file = (Path(__file__).parent.parent.parent / 'conf' / 'logging.conf').resolve()
 
     if not os.path.isfile(log_config_file):
@@ -91,7 +92,7 @@ def validate_and_initialize_parameters(prop):
     logger.info('--- Starting Visualization Process ---')
 
     # Load directory parameters
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     # Date validation
     try:
@@ -395,6 +396,8 @@ if __name__ == '__main__':
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument('-ws', '--whichcasts', required=True,
         help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
+    parser.add_argument('-c', '--config', required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -407,6 +410,7 @@ if __name__ == '__main__':
     prop1.whichcasts = args.whichcasts.lower()
     prop1.model_source = get_model_source(args.ofs)
     prop1.ofsfiletype='fields' #hardcoding - 2d always uses fields
+    prop1.config_file = args.config
 
     ''' Set up paths & assign to prop1, do date validation '''
     prop1, logger = validate_and_initialize_parameters(prop1)

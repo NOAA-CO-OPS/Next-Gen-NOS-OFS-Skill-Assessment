@@ -371,8 +371,9 @@ def get_skill(prop, logger):
 
     logger.info('--- Starting skill assessment process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     try:

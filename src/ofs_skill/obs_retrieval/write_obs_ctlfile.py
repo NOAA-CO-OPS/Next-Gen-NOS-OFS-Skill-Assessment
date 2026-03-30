@@ -615,7 +615,7 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
 
 
 def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
-                      var_list, logger):
+                      var_list, logger, config_file=None):
     """
     This function calls the Tid_numberes and Currents, NDBC, and USGS
     retrieval
@@ -629,8 +629,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
     start_dt = datetime.strptime( start_date , '%Y%m%d' )
     end_dt = datetime.strptime( end_date , '%Y%m%d' )
 
-    dir_params = utils.Utils().read_config_section( 'directories' , logger )
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    dir_params = utils.Utils(config_file).read_config_section( 'directories' , logger )
+    datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     control_files_path = os.path.join(

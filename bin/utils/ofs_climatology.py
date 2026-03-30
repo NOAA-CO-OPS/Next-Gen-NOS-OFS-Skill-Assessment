@@ -820,7 +820,14 @@ if __name__ == '__main__':
         required=False,
         help="'02hr', '06hr', '12hr', '24hr' ... ", )
 
+    parser.add_argument(
+        '-c',
+        '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
     args = parser.parse_args()
+    config_path = args.config
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.start_date_full = args.StartDate_full
@@ -838,7 +845,7 @@ if __name__ == '__main__':
 
     logger = None
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(config_path).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(os.getcwd(), log_config_file)
         # Check if log file exists
@@ -872,7 +879,7 @@ if __name__ == '__main__':
         logger.error(f'Problem with date format in get_node_ofs: {e}')
         sys.exit(-1)
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(config_path).read_config_section('directories', logger)
 
     prop1.model_path = os.path.join(
         dir_params['model_historical_dir'], prop1.ofs, dir_params['netcdf_dir'],

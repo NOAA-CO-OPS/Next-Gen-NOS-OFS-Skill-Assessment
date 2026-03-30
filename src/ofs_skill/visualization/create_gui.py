@@ -112,7 +112,7 @@ def create_gui(parser):
     # STYLING
     # Change the icon
     try:
-        dir_params = utils.Utils().read_config_section('directories', None)
+        dir_params = utils.Utils().read_config_section('directories', None)  # GUI: no prop available
         iconpath = os.path.join(dir_params['home'],
                                 'readme_images','noaa_logo.png')
         icon_image = tk.PhotoImage(file=iconpath)

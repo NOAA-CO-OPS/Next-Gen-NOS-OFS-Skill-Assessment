@@ -108,6 +108,12 @@ if __name__ == '__main__':
         help='The name for the output shapefile (e.g., output.shp)',
     )
 
+    parser.add_argument(
+        '-c',
+        '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
     args = parser.parse_args()
 
     # 2. Call the main function with parsed arguments

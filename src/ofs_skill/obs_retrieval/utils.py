@@ -54,16 +54,22 @@ class Utils:
     ... station configuration ...
     """
 
-    def __init__(self):
+    def __init__(self, config_file=None):
         """
         Initialize Utils with path to configuration file.
 
-        The config file is located relative to the package root:
-        <package_root>/conf/ofs_dps.conf
+        Args:
+            config_file: Optional path to a config file. If None,
+                defaults to conf/ofs_dps.conf relative to the package root.
         """
-        config_file = 'conf/ofs_dps.conf'
-        # Navigate from src/ofs_skill/obs_retrieval/ up to project root
-        self.config_file = (Path(__file__).parent.parent.parent.parent / config_file).resolve()
+        if config_file is not None:
+            self.config_file = Path(config_file).resolve()
+        else:
+            # Navigate from src/ofs_skill/obs_retrieval/ up to project root
+            self.config_file = (
+                Path(__file__).parent.parent.parent.parent
+                / 'conf' / 'ofs_dps.conf'
+            ).resolve()
 
     def get_config_file(self) -> Path:
         """

@@ -580,8 +580,9 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 1. Logger setup
     # ------------------------------------------------------------------
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = os.path.join(Path(prop.path), 'conf/logging.conf')
 
         if not os.path.isfile(log_config_file):
@@ -601,9 +602,9 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 2. Read config
     # ------------------------------------------------------------------
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     prop.datum_list = (
-        utils.Utils().read_config_section('datums', logger)['datum_list']
+        utils.Utils(_conf).read_config_section('datums', logger)['datum_list']
     ).split(' ')
 
     # ------------------------------------------------------------------
@@ -863,6 +864,10 @@ def main():
         action='store_true',
         help='Also produce tidal prediction and non-tidal residual CSVs',
     )
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -878,6 +883,7 @@ def main():
     prop.var_list = args.Var_Selection
     prop.min_duration_days = args.min_duration
     prop.do_predictions = args.predictions
+    prop.config_file = args.config
     prop.user_input_location = False
     prop.horizonskill = False
     prop.forecast_hr = None

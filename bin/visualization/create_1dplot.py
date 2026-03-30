@@ -326,8 +326,9 @@ def create_1dplot(prop, logger):
     This is the main function for plotting 1d paired datasets
     Specify defaults (can be overridden with command line options)
     '''
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(prop.path), log_config_file)
 
@@ -346,11 +347,11 @@ def create_1dplot(prop, logger):
 
     logger.info('--- Starting Visualization Process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Retrieve datum list from config file
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
-    conf_settings = utils.Utils().read_config_section('settings', logger)
+    conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
 
 
@@ -688,6 +689,10 @@ if __name__ == '__main__':
         help='Which variables do you want to skill assess? Options are: '
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -708,6 +713,7 @@ if __name__ == '__main__':
     prop1.horizonskill = args.Horizon_Skill
     prop1.forecast_hr = args.Forecast_Hr
     prop1.var_list = args.Var_Selection
+    prop1.config_file = args.config
     # This can only be changed if directly running get_node_ofs.py!
     prop1.user_input_location = False
 

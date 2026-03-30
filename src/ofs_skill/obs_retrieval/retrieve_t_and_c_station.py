@@ -24,7 +24,8 @@ from ofs_skill.obs_retrieval import t_and_c_properties, utils
 
 def retrieve_t_and_c_station(
     retrieve_input: object,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> Optional[pd.DataFrame]:
     """
     Retrieve time series observations from NOAA Tides and Currents station.
@@ -60,7 +61,7 @@ def retrieve_t_and_c_station(
     t_c = t_and_c_properties.TidesandCurrentsProperties()
 
     # Retrieve url from config file
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     t_c.mdapi_url = url_params['co_ops_mdapi_base_url']
     t_c.api_url = url_params['co_ops_api_base_url']
 
@@ -310,7 +311,8 @@ def get_HTTP_error(ex: HTTPError) -> str:
 
 def retrieve_tidal_predictions(
     retrieve_input: object,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> Optional[pd.DataFrame]:
     """
     Retrieve tidal predictions from CO-OPS API.
@@ -334,7 +336,7 @@ def retrieve_tidal_predictions(
     """
     t_c = t_and_c_properties.TidesandCurrentsProperties()
 
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     t_c.api_url = url_params['co_ops_api_base_url']
 
     t_c.start_dt_0 = datetime.strptime(
@@ -434,6 +436,7 @@ def retrieve_harmonic_constants(
     station: str,
     logger: Logger,
     units: str = 'metric',
+    config_file=None,
 ) -> Optional[dict]:
     """
     Retrieve accepted harmonic constants from the CO-OPS API.
@@ -473,7 +476,7 @@ def retrieve_harmonic_constants(
     """
     from ofs_skill.tidal_analysis.constituents import normalize_constituent_name
 
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     mdapi_url = url_params.get(
         'co_ops_mdapi_base_url',
         'https://api.tidesandcurrents.noaa.gov/mdapi/prod/',
@@ -577,7 +580,8 @@ def find_nearest_tidal_stations(
     lat: float,
     lon: float,
     logger: Logger,
-    max_stations: int = 10
+    max_stations: int = 10,
+    config_file=None,
 ) -> list[tuple[str, str, float]]:
     """
     Find the nearest CO-OPS stations with tidal predictions.
@@ -595,7 +599,7 @@ def find_nearest_tidal_stations(
         List of tuples (station_id, station_name, distance_km) sorted by
         distance, or empty list if none found.
     """
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     mdapi_url = url_params['co_ops_mdapi_base_url']
 
     # Get list of stations with tidal predictions

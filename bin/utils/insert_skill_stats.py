@@ -47,7 +47,7 @@ def get_skill_files(ofs,filepath,logger):
     return ofs_files
 
 # Main method
-def main(skill_stats_file_path,db_path,period,ofs,logger):
+def main(skill_stats_file_path,db_path,period,ofs,logger,config_path=None):
     # Parse metadata (OFS, product, type) from filename
     # Sample filenames
     # skill_cbofs_currents_forecast_b.csv
@@ -58,9 +58,9 @@ def main(skill_stats_file_path,db_path,period,ofs,logger):
     # skill_cbofs_water_level_nowcast.csv
     # skill_cbofs_water_temperature_forecast_b.csv
     # skill_cbofs_water_temperature_nowcast.csv
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(config_path).read_config_section('directories', logger)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(config_path).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(dir_params['home']),
                                        log_config_file)
@@ -432,6 +432,11 @@ if __name__ == '__main__':
         '-p','--period',
         required = True,
         help = 'SA period. Valid values: daily or monthly',)
+    parser.add_argument(
+        '-c',
+        '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
 
     # Parse input arguments
@@ -467,10 +472,12 @@ if __name__ == '__main__':
     if errors:
         sys.exit (-1)
     # Enter main
+    config_path = args.config
     main(
          skill_stats_file_path,
          db_path,
          period,
          ofs,
-         None
+         None,
+         config_path=config_path
          )

@@ -405,7 +405,8 @@ def list_of_urls(file_list, prop, logger):
     """
 
     # Retrieve urls from config file
-    url_params = utils.Utils().read_config_section('urls', logger)
+    _conf = getattr(prop, 'config_file', None)
+    url_params = utils.Utils(_conf).read_config_section('urls', logger)
     if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
         url_root = url_params['nodd_s3']
         url_list = []
@@ -535,7 +536,8 @@ def get_model_data(prop, logger):
     logger.info('--- Starting the program ---')
 
     #Parameter validation
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     if dir_params['home'] == '/path/to/sa_homedir/':
         logger.error('HOMEDIR NOT SET IN conf/ofs_dps.conf FILE!')
@@ -666,12 +668,17 @@ if __name__ == '__main__':
         '--Forecast_Hr',
         required=False,
         help="'02hr', '06hr', '12hr', '24hr' ... ", )
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.whichcast = args.Whichcast.lower()

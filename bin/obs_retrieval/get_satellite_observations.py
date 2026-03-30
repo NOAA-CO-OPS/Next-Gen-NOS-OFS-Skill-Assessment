@@ -932,8 +932,9 @@ def get_satellite(prop, logger):
     get_satellite
     """
 
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = (
             Path(__file__).parent.parent.parent / log_config_file).resolve()
@@ -953,8 +954,8 @@ def get_satellite(prop, logger):
 
     # logger.info("--- Starting Visulization Process ---")
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
-    url_params = utils.Utils().read_config_section('urls', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    url_params = utils.Utils(_conf).read_config_section('urls', logger)
 
     parameter_dir_validation(prop, dir_params, logger)
 
@@ -1160,11 +1161,16 @@ if __name__ == '__main__':
         required=True,
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g.'2023-01-01T12:34:00Z'",
     )
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.ofs.lower()
     prop1.path = args.path
+    prop1.config_file = args.config
     prop1.ofs_extents_path = r'' + prop1.path + 'ofs_extents' + '/'
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full

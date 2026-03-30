@@ -626,7 +626,8 @@ def parameter_validation(prop, dir_params, logger):
                        'To extract model time series for all lats/lons, try '
                        'using field files! Continuing...')
     # Check for user input file if using custom lat/lon inputs
-    filepath = (utils.Utils().read_config_section('user_xy_inputs', logger)
+    _conf = getattr(prop, 'config_file', None)
+    filepath = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
                 ['user_xy_path'])
     if os.path.isfile(filepath) is False and prop.user_input_location:
         logger.error('No user lat & lon inputs found! Please make sure '
@@ -674,8 +675,9 @@ def get_node_ofs(prop, logger):
 
     logger.info('--- Starting OFS Model process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
     # Parse variable selection input to list
     prop.var_list = parse_arguments_to_list(prop.var_list, logger)
