@@ -1,70 +1,84 @@
-'''
+"""
 Reads JSON file output from leaflet routine and visualizes as a cartopy plot.
-'''
+
+Supports all model variables (SST, SSH, SSS, SSU, SSV) and current vector
+quiver maps. Can auto-detect variable from filename or accept explicit
+variable flag.
+
+Usage:
+    # Scalar map (auto-detects variable from filename)
+    python plot_leafletJSON.py -f data/model/2d/cbofs_20260328-00z_sss_model.nowcast.json
+
+    # Current quiver map (provide both u and v files)
+    python plot_leafletJSON.py -fu data/model/2d/cbofs_20260328-00z_ssu_model.nowcast.json \
+                               -fv data/model/2d/cbofs_20260328-00z_ssv_model.nowcast.json
+"""
 import argparse
+import logging
+import os
 
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+from ofs_skill.visualization.plotting_2d import (
+    load_json_grid,
+    plot_2d_current_quiver_map,
+    plot_2d_scalar_map,
+)
 
 
-def plot_leafletJSON(fname):
-    data = pd.read_json(fname)
-
-    lats = np.array([np.array(x) for x in data['lats']])
-    lons = np.array([np.array(x) for x in data['lons']])
-    sst = np.array([np.array(x) for x in data['sst']],dtype=float)
-
-    """Plot the sea surface temperature on a Cartopy map."""
-    # Create a new figure with a specified projection (PlateCarree for global maps)
-    fig = plt.figure(figsize=(15, 8))
-    ax = plt.axes(projection=ccrs.PlateCarree())
-
-    # Add coastlines and features for better visualization
-    ax.coastlines()
-    ax.gridlines(draw_labels=True)
-    #ax.add_feature(cfeature.LAKES, linestyle=':')
-    ax.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax.add_feature(cfeature.OCEAN)
-    ax.add_feature(cfeature.STATES)
-
-    # Create a scatter plot with longitude, latitude, and sea surface temperature
-    # Use scatter for point data
-    scatter = ax.pcolor(lons, lats, sst, cmap='seismic', transform=ccrs.PlateCarree())
-
-    if 'sst' in fname:
-        label='SST (°C)'
-    elif 'ssh' in fname:
-        label='SSH (m)'
-    elif 'sss' in fname:
-        label='SSS (psu)'
-    elif 'ssu' in fname:
-        label='SSU (m/s)'
-    elif 'ssv' in fname:
-        label='SSV (m/s)'
-    else:
-        label='unknown'
-
-    plt.colorbar(scatter, orientation='vertical', label=label,pad=0.1)
-
-    # Set the title
-    plt.title(fname + '\n')
-
-    fig.savefig(str(fname+'.jpg'))
-
-    # Show the plot
-    plt.show()
+def detect_variable(fname: str) -> str:
+    """Detect variable name from JSON filename."""
+    for var in ('sst', 'ssh', 'sss', 'ssu', 'ssv'):
+        if f'_{var}_' in fname:
+            return var
+    return 'unknown'
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        prog='python plot_leafletJSON.py', usage='%(prog)s',
-        description='Make cartopy plot of leaflet JSON file.', )
+        prog='python plot_leafletJSON.py',
+        description='Make cartopy plot of leaflet JSON file.',
+    )
     parser.add_argument(
-        '-f', '--filename', required=True, help="""
-        Path to JSON file to plot.""", )
+        '-f', '--filename',
+        help='Path to JSON file to plot (scalar map).',
+    )
+    parser.add_argument(
+        '-fu', '--filename_u',
+        help='Path to SSU JSON file (for quiver map).',
+    )
+    parser.add_argument(
+        '-fv', '--filename_v',
+        help='Path to SSV JSON file (for quiver map).',
+    )
+    parser.add_argument(
+        '-v', '--variable',
+        help='Variable name override (sst, ssh, sss, ssu, ssv).',
+    )
+    parser.add_argument(
+        '-o', '--output',
+        help='Output file path (default: input filename + .png).',
+    )
 
     args = parser.parse_args()
-    plot_leafletJSON(args.filename)
+    logger = logging.getLogger('plot_leafletJSON')
+    logging.basicConfig(level=logging.INFO)
+
+    if args.filename_u and args.filename_v:
+        # Quiver map mode
+        lons, lats, ssu = load_json_grid(args.filename_u)
+        _, _, ssv = load_json_grid(args.filename_v)
+        title = os.path.basename(args.filename_u).replace('_ssu_', '_currents_')
+        output = args.output or args.filename_u.replace('.json', '_currents.png')
+        plot_2d_current_quiver_map(
+            lons, lats, ssu, ssv, title, output, logger,
+        )
+    elif args.filename:
+        # Scalar map mode
+        lons, lats, data = load_json_grid(args.filename)
+        variable = args.variable or detect_variable(args.filename)
+        title = os.path.basename(args.filename)
+        output = args.output or args.filename + '.png'
+        plot_2d_scalar_map(
+            lons, lats, data, variable, title, output, logger,
+        )
+    else:
+        parser.error('Provide either -f (scalar) or -fu and -fv (quiver).')

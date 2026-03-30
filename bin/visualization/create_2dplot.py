@@ -460,6 +460,24 @@ if __name__ == '__main__':
                 logger.error('Problem calling plotting_2d.plot_2d - ABORT')
                 logger.error('Exception: %s', e)
 
+            # Generate static offline maps if enabled
+            conf_settings = utils.Utils().read_config_section(
+                'settings', logger,
+            )
+            static_plots = conf_settings.get(
+                'static_plots', 'False',
+            ).lower() in ('true', '1', 'yes')
+            if static_plots:
+                logger.info('Generating static 2D offline maps...')
+                visual_2d_dir = os.path.join(
+                    prop1.path, 'data', 'visual', '2d',
+                )
+                plotting_2d.generate_offline_maps(
+                    prop1.data_model_2d_json_path,
+                    visual_2d_dir,
+                    prop1, logger,
+                )
+
             logger.info('Finished 2D processing for %s', prop1.whichcast)
 
     except Exception as e:
