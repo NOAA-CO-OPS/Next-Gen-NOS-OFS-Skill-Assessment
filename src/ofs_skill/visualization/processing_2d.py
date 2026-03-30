@@ -599,8 +599,7 @@ def _get_model_coords_for_var(
             return lons_c, lats_c
         return lons, lats
     else:  # roms
-        if var_name in VELOCITY_VARS:
-            return lons.ravel(), lats.ravel()
+        # u_east/v_north are on the rho grid, so mask_rho applies
         return lons[mask].ravel(), lats[mask].ravel()
 
 
@@ -628,8 +627,6 @@ def _get_model_data_for_var(
     if model_source == 'fvcom':
         return data[time_idx, :]
     else:  # roms
-        if var_name in VELOCITY_VARS:
-            return data[time_idx, :, :].ravel()
         return data[time_idx, :, :][mask].ravel()
 
 
@@ -654,8 +651,6 @@ def _prepare_avg_data(
     if model_source == 'fvcom':
         return avg_data  # Already 1D for FVCOM node data
     else:  # roms
-        if var_name in VELOCITY_VARS:
-            return avg_data[:, :].ravel()
         return avg_data[:, :][mask].ravel()
 
 
