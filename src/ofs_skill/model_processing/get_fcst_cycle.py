@@ -124,6 +124,7 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
                                 dir_found = True
                                 date = datetime.strftime(datetime.strptime(date_to_check,'%Y%m%d'),
                                                              '%Y-%m-%dT12:00:00Z')
+                                return date
                 except ClientError as e:
                     logger.error(f'Error checking folder existence: {e}')
                     return None
@@ -133,19 +134,20 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
                     paginator = s3_client.get_paginator('list_objects_v2')
                     pages = paginator.paginate(Bucket=bucket_name,
                                                Prefix=folder_path)
-                    dir_found = True
                     for page in pages:
                         if 'Contents' in page:
                             for obj in page['Contents']:
+                                print('debug pause')
                                 if 'points.cwl.nc' in obj['Key']:
+                                    dir_found = True
                                     all_filt_objects.append(obj)
                 except ClientError as e:
                     logger.error(f'Error listing S3 objects: {e}')
                     return None
-                all_filt_objects.sort(key=lambda obj: obj['LastModified'])
-                most_recent_object = all_filt_objects[-1]['Key']
-                name_parts = most_recent_object.split('.')
-                date = name_parts[1][0:4]+'-'+name_parts[1][4:6]+'-'+name_parts[1][6:8]+'T'+name_parts[2][1:-1]+':00:00Z'
+        all_filt_objects.sort(key=lambda obj: obj['LastModified'])
+        most_recent_object = all_filt_objects[-1]['Key']
+        name_parts = most_recent_object.split('.')
+        date = name_parts[1][0:4]+'-'+name_parts[1][4:6]+'-'+name_parts[1][6:8]+'T'+name_parts[2][1:-1]+':00:00Z'
 
         if not dir_found:
             logger.error(f'No STOFS data found in the last {MAX_LOOKBACK_DAYS} days')
