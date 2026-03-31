@@ -30,6 +30,7 @@ Arguments:
                         '20230808-05:05:05'
   -ws whichcast, --Whichcast
                        'Nowcast', 'Forecast_A', 'Forecast_B'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Author Name:  FC       Creation Date:  03/19/2024
 

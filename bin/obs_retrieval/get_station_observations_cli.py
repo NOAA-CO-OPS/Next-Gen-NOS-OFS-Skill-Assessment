@@ -65,6 +65,7 @@ optional arguments:
   -d DATUM, --datum DATUM
                         datum: 'MHHW', 'MHW', 'MTL', 'MSL', 'DTL', 'MLW',
                         'MLLW', 'NAVD', 'IGLD', 'LWD', 'STND'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Output:
 1) station_timeseries

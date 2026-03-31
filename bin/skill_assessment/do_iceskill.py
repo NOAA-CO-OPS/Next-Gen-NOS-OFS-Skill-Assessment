@@ -58,6 +58,9 @@ Input arguments:
         help="Use a daily average model output instead of single hour;
         True/False", )
 
+        "-c", "--config", required=False,
+        help="Path to configuration file (default: conf/ofs_dps.conf)", )
+
 Output: See the README for all output types, locations, and filenames:
     https://github.com/NOAA-CO-OPS/" \
         "NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/blob/main/" \

@@ -62,6 +62,7 @@ Arguments:
  -vs Var_Selection     water_level, currents, or both (default water_level)
  --min-duration        Minimum record length in days for HA (default 15.0)
  --predictions         Also produce tidal prediction + non-tidal residual CSVs
+ -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Output:
 Name                          Description

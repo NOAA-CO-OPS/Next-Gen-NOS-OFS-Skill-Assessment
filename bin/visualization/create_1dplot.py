@@ -46,6 +46,7 @@ Arguments:
                        'Nowcast', 'Forecast_A', 'Forecast_B'
  -so stationowner, --Station_Owner" [optional]
                        'NDBC', 'CO-OPS', 'USGS'
+ -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 Output:
 Output:
 Name                 Description

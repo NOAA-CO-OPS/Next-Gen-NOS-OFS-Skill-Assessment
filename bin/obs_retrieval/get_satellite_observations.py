@@ -33,6 +33,7 @@ optional arguments:
   -e ENDDATE_FULL, --EndDate_full ENDDATE_FULL
                         End Date_full YYYYMMDD-hh:mm:ss e.g.
                         '20230808-05:05:05'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Output:
 1) observation data
