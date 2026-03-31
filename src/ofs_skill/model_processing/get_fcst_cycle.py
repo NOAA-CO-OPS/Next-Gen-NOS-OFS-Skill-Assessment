@@ -31,7 +31,7 @@ def get_s3_bucket(ofs):
     """
     if ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
         url_root = 'nodd_s3_stofs3d'
-    elif ofs == 'stofs_2d_global':
+    elif ofs in ('stofs_2d_glo'):
         url_root = 'nodd_s3_stofs2d'
     else:
         url_root = 'nodd_s3'
@@ -64,6 +64,8 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
         prefix = 'STOFS-3D-Atl/'
     elif ofs == 'stofs_3d_pac':
         prefix = 'STOFS-3D-Pac/'
+    elif ofs == 'stofs_2d_glo':
+        prefix = ''
 
     # Sort objects with 'station' in their name by LastModified timestamp in ascending order
     # and get the last one
@@ -108,21 +110,44 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
             date_to_check = datetime.strftime(datetime.now(UTC) - \
                                   timedelta(hours=counter*24),'%Y%m%d')
             folder_path = prefix + ofs + '.' + date_to_check + '/'
-            try:
-                response = s3_client.list_objects_v2(
-                    Bucket=bucket_name,
-                    Prefix=folder_path,
-                    MaxKeys=1
-                )
-                # If 'Contents' is in the response, the folder has stuff in it
-                if 'Contents' in response:
-                    for obj in response['Contents']:
-                        if obj['Key'] != folder_path:
-                            dir_found = True
-                            date = datetime.strftime(datetime.strptime(date_to_check,'%Y%m%d'),'%Y-%m-%dT12:00:00Z')
-            except ClientError as e:
-                logger.error(f'Error checking folder existence: {e}')
-                return None
+            if ofs != 'stofs_2d_glo':
+                try:
+                    response = s3_client.list_objects_v2(
+                        Bucket=bucket_name,
+                        Prefix=folder_path,
+                        MaxKeys=1
+                    )
+                    # If 'Contents' is in the response, the folder has stuff in it
+                    if 'Contents' in response:
+                        for obj in response['Contents']:
+                            if obj['Key'] != folder_path:
+                                dir_found = True
+                                date = datetime.strftime(datetime.strptime(date_to_check,'%Y%m%d'),
+                                                             '%Y-%m-%dT12:00:00Z')
+                                return date
+                except ClientError as e:
+                    logger.error(f'Error checking folder existence: {e}')
+                    return None
+            else:
+                all_filt_objects = []
+                try:
+                    paginator = s3_client.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=bucket_name,
+                                               Prefix=folder_path)
+                    for page in pages:
+                        if 'Contents' in page:
+                            for obj in page['Contents']:
+                                if 'points.cwl.nc' in obj['Key']:
+                                    dir_found = True
+                                    all_filt_objects.append(obj)
+                except ClientError as e:
+                    logger.error(f'Error listing S3 objects: {e}')
+                    return None
+        all_filt_objects.sort(key=lambda obj: obj['LastModified'])
+        most_recent_object = all_filt_objects[-1]['Key']
+        name_parts = most_recent_object.split('.')
+        date = name_parts[1][0:4]+'-'+name_parts[1][4:6]+'-'+name_parts[1][6:8]+'T'+name_parts[2][1:-1]+':00:00Z'
+
         if not dir_found:
             logger.error(f'No STOFS data found in the last {MAX_LOOKBACK_DAYS} days')
             return None
@@ -147,7 +172,8 @@ def get_fcst_hours(ofs):
         -----
         **Forecast Cycle Hours:**
 
-        - CBOFS, DBOFS, GOMOFS, CIOFS, LEOFS, LMHOFS, LOOFS, LSOFS, TBOFS:
+        - CBOFS, DBOFS, GOMOFS, CIOFS, LEOFS, LMHOFS, LOOFS, LSOFS, TBOFS,
+        STOFS_2D_GLO:
           00Z, 06Z, 12Z, 18Z
         - CREOFS, NGOFS2, SFBOFS, SSCOFS:
           03Z, 09Z, 15Z, 21Z
@@ -162,6 +188,7 @@ def get_fcst_hours(ofs):
         - GOMOFS, WCOFS: 72 hours
         - STOFS_3D_ATL: 96 hours
         - STOFS_3D_PAC: 48 hours
+        - STOFS_2D_GLO: 180 hours
         - Others: 120 hours
 
     '''
@@ -170,7 +197,7 @@ def get_fcst_hours(ofs):
     if ofs in (
         'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs',
         'lmhofs', 'loofs', 'loofs2', 'lsofs', 'tbofs',
-        'necofs'
+        'necofs','stofs_2d_glo'
     ):
         fcstcycles = np.array([0, 6, 12, 18])
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
@@ -189,6 +216,8 @@ def get_fcst_hours(ofs):
         fcstlength = 72
     elif ofs in ('stofs_3d_atl'):
         fcstlength = 96
+    elif ofs in ('stofs_2d_glo'):
+        fcstlength = 180
     else:  # Default / catch-all
         fcstlength = 120
 
