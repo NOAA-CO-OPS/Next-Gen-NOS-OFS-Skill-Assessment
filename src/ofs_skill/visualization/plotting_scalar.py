@@ -298,9 +298,9 @@ def oned_scalar_plot(
           fallback_datums = ['MLLW', 'MHHW', 'MHW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B']
           # Read fallback datums from config file
           config = configparser.ConfigParser()
-          config_file = Path(__file__).resolve().parent.parent.parent.parent / 'conf' / 'ofs_dps.conf'
+          _conf_path = utils.Utils(_conf).get_config_file()
           try:
-                config.read(config_file)
+                config.read(_conf_path)
                 if config.has_option('datums', 'datum_list'):
                     datum_list_str = config.get('datums', 'datum_list')
                     fallback_datums = [d.strip() for d in datum_list_str.split()]

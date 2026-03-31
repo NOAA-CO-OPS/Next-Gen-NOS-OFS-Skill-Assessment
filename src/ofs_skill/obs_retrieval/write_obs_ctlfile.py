@@ -501,7 +501,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
-                      control_files_path, logger):
+                      control_files_path, logger, config_file=None):
     """Process all stations for a single variable. Writes .ctl file."""
     var_name_map = {
         'water_level': 'wl',
@@ -752,7 +752,7 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 _process_variable,
                 variable, inventory, var_to_col, start_date, end_date,
                 datum, datum_list, ofs, usgs_max_workers,
-                control_files_path, logger
+                control_files_path, logger, config_file
             ))
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:
