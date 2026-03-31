@@ -17,10 +17,12 @@ import pandas as pd
 
 from ofs_skill.model_processing import do_horizon_skill, model_properties
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
-from ofs_skill.obs_retrieval import utils
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
+from ofs_skill.obs_retrieval import utils, parse_arguments_to_list
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-from ofs_skill.skill_assessment import format_paired_one_d, make_skill_maps, metrics_paired_one_d
+from ofs_skill.skill_assessment import format_paired_one_d, metrics_paired_one_d
+from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
 
 
 def ofs_ctlfile_extract(prop, name_var, logger):
@@ -357,16 +359,21 @@ def get_skill(prop, logger):
     """
 
     if logger is None:
+        config_file = utils.Utils().get_config_file()
         log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent / log_config_file).resolve()
+        log_config_file = os.path.join(Path(prop.path), log_config_file)
 
         # Check if log file exists
         if not os.path.isfile(log_config_file):
+            sys.exit(-1)
+        # Check if config file exists
+        if not os.path.isfile(config_file):
             sys.exit(-1)
 
         # Creater logger
         logging.config.fileConfig(log_config_file)
         logger = logging.getLogger('root')
+        logger.info('Using config %s', config_file)
         logger.info('Using log config %s', log_config_file)
 
     logger.info('--- Starting skill assessment process ---')
@@ -374,6 +381,20 @@ def get_skill(prop, logger):
     dir_params = utils.Utils().read_config_section('directories', logger)
     prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
+
+    # Do forecast_a start and end date reshuffle
+
+    if 'forecast_a' in prop.whichcast:
+        if prop.forecast_hr is not None:
+            prop.start_date_full, prop.end_date_full =\
+            get_fcst_dates(prop, logger)
+            prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
+            logger.info(f'Forecast_a: start date reassigned to '
+                             f'{prop.start_date_full}')
+            logger.info(f'Forecast_a: end date reassigned to '
+                             f'{prop.end_date_full}')
+        else:
+            raise SystemExit(1)
 
     try:
         start_date = datetime.strptime(prop.start_date_full,'%Y%m%d-%H:%M:%S')
@@ -383,6 +404,11 @@ def get_skill(prop, logger):
 
     except ValueError:
         pass
+
+    # Parse incoming arguments stored in prop from string to a list
+    #prop.whichcast = parse_arguments_to_list(prop.whichcast, logger)
+    prop.stationowner = parse_arguments_to_list(prop.stationowner, logger)
+    prop.var_list = parse_arguments_to_list(prop.var_list, logger)
 
     # Start Date and End Date validation
     try:
@@ -485,6 +511,10 @@ def get_skill(prop, logger):
         dir_params['stats_dir'],
     )
     os.makedirs(prop.data_skill_1d_table_path, exist_ok=True)
+
+    prop.visuals_1d_station_path = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'], )
+    os.makedirs(prop.visuals_1d_station_path, exist_ok=True)
 
     # This outer loop is used to download all data for all variables
     # Inside this loop there is another loop that will go over each line
@@ -643,9 +673,9 @@ def get_skill(prop, logger):
 
 
                 #Make overview maps and save them
-                make_skill_maps.make_skill_maps(skill_results,
-                                                prop, name_var,
-                                                logger)
+                make_skill_maps(skill_results,
+                                prop, name_var,
+                                logger)
                 if name_var == 'wl':
                     tabledatum = prop.datum
                 else:
@@ -772,7 +802,7 @@ if __name__ == '__main__':
         '-f',
         '--Forecast_Hr',
         required=False,
-        help="'02hr', '06hr', '12hr', '24hr' ... ",
+        help="'02z', '06z', '12z', '24z' ... ",
     )
     parser.add_argument(
         '-t', '--FileType', required=True,
@@ -781,7 +811,23 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        help="'CO-OPS', 'NDBC', 'USGS',", )
+        default='co-ops,ndbc,usgs,chs',
+        help='Input station provider to use in skill assessment: '
+        "'CO-OPS', 'NDBC', 'USGS', 'CHS',", )
+    parser.add_argument(
+        '-vs',
+        '--Var_Selection',
+        required=False,
+        default='water_level,water_temperature,salinity,currents',
+        help='Which variables do you want to skill assess? Options are: '
+            'water_level, water_temperature, salinity, and currents. Choose '
+            'any combination. Default (no argument) is all variables.')
+    parser.add_argument(
+        '-hs',
+        '--Horizon_Skill',
+        action='store_true',
+        help='Use all available forecast horizons between the '
+        'start and end dates? True or False (boolean)')
 
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()
@@ -792,15 +838,9 @@ if __name__ == '__main__':
     prop1.whichcast = args.Whichcast
     prop1.datum = args.Datum.upper()
     prop1.ofsfiletype = args.FileType.lower()
-
-    ''' Make all station owners default, unless user specifies station owners '''
-    if args.Station_Owner is None:
-        prop1.stationowner = ['co-ops','ndbc','usgs']
-    elif args.FileType is not None:
-        prop1.stationowner = args.Station_Owner.lower()
-    else:
-        print('Check station owner argument! Abort.')
-        sys.exit(-1)
+    prop1.stationowner = args.Station_Owner
+    prop1.var_list = args.Var_Selection
+    prop1.horizonskill = args.Horizon_Skill
 
     prop1.forecast_hr = None
     if prop1.whichcast == 'forecast_a':

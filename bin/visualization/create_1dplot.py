@@ -579,13 +579,14 @@ def create_1dplot(prop, logger):
     # Before starting, let's check if all necessary model files are
     # available. If not, program will exit. Or, if exception, program will
     # continue onwards but not before shouting a warning at you :)
-    try:
-        check_model_files(prop,logger)
-        # if fails call nodd_otf
-    except Exception as e_x:
-        logger.error('Error caught in check_model_files! %s', e_x)
-        logger.warning('Could not verify if all necessary model files '
-                    'are present! Check final time series for accuracy.')
+    if prop.filecheck:
+        try:
+            check_model_files(prop,logger)
+            # if fails call nodd_otf
+        except Exception as e_x:
+            logger.error('Error caught in check_model_files! %s', e_x)
+            logger.warning('Could not verify if all necessary model files '
+                        'are present! Check final time series for accuracy.')
 
     for variable in prop.var_list:
         if variable == 'water_level':
@@ -695,6 +696,14 @@ if __name__ == '__main__':
         help='Which variables do you want to skill assess? Options are: '
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
+    parser.add_argument(
+        '-df',
+        '--Disable_Model_File_Check',
+        action='store_false',
+        help='Disables the function that checks for availability of model '
+        'output files and exits if they are not present. Disable the checker '
+        'in the special case where custom .prd and .obs files are user-provided '
+        'but there are no corresponding model output NetCdfs.')
 
     args = parser.parse_args()
 
@@ -715,6 +724,7 @@ if __name__ == '__main__':
     prop1.horizonskill = args.Horizon_Skill
     prop1.forecast_hr = args.Forecast_Hr
     prop1.var_list = args.Var_Selection
+    prop1.filecheck = args.Disable_Model_File_Check
     # This can only be changed if directly running get_node_ofs.py!
     prop1.user_input_location = False
 

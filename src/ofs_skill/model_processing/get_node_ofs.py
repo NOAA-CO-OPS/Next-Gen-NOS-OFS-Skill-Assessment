@@ -259,7 +259,7 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
             model_obs[invalid_mask] = np.nan
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
-            # We raise en exception here for STOFS-2D-Global because it does 
+            # We raise en exception here for STOFS-2D-Global because it does
             # not have temp/sal data, and logic elsewhere should steer users
             # away from calling this function with STOFS-2D-Global.
             raise ValueError('Temperature and salinity data are not available for STOFS-2D-Global.')
@@ -422,7 +422,7 @@ def format_currents(prop, model, ofs_ctlfile, i):
             mfp.model_ang[invalid_mask] = np.nan
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
-            # We raise en exception here for STOFS-2D-Global because it does 
+            # We raise en exception here for STOFS-2D-Global because it does
             # not have current data, and logic elsewhere should steer users
             # away from calling this function with STOFS-2D-Global.
             raise ValueError('Current data are not available for STOFS-2D-Global.')
@@ -674,7 +674,7 @@ def parameter_validation(prop, dir_params, logger):
                            'Removing other variables from list.')
             prop.var_list = ['water_level']
             # I think we can alter its state here, but maybe there's a reason not to?
-            
+
 
 def get_node_ofs(prop, logger):
     """
