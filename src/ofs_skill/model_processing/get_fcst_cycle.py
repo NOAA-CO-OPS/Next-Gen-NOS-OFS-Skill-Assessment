@@ -137,7 +137,6 @@ def get_most_recent_file_date(bucket_name, ofs, logger):
                     for page in pages:
                         if 'Contents' in page:
                             for obj in page['Contents']:
-                                print('debug pause')
                                 if 'points.cwl.nc' in obj['Key']:
                                     dir_found = True
                                     all_filt_objects.append(obj)
