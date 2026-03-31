@@ -588,8 +588,8 @@ def make_OM_view_ice(prop, logger):
     logger.info('--- Starting O&M ice dashboard processing ---')
 
     # Parameter validation & paths
-    config_path = getattr(prop, 'config_file', None)
-    dir_params = utils.Utils(config_path).read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
     argu_list = (
         prop.path,
@@ -760,7 +760,6 @@ if __name__ == '__main__':
     parser.add_argument(
         '-c',
         '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()

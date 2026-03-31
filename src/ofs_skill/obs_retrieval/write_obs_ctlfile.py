@@ -51,7 +51,8 @@ _USGS_MAX_WORKERS_NO_KEY = 2
 
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
-                           datum, datum_list, ofs, logger):
+                           datum, datum_list, ofs, logger,
+                           config_file=None):
     """Process a single CO-OPS station. Returns CTL entry string or None."""
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
@@ -62,7 +63,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
         retrieve_input.datum = datum
         timeseries = \
             retrieve_t_and_c_station(
-                retrieve_input,logger)
+                retrieve_input, logger,
+                config_file=config_file)
         if variable == 'water_level':
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
@@ -92,7 +94,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             all_datums [data]
                         timeseries = \
                             retrieve_t_and_c_station(
-                                retrieve_input, logger)
+                                retrieve_input, logger,
+                                config_file=config_file)
                         if ((isinstance(timeseries, pd.DataFrame) is \
                             True) and
                             (all_datums[data] in accepted_datums)):
@@ -533,7 +536,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                     _process_coops_station,
                     row['ID'], row['Name'], row['X'], row['Y'],
                     start_date, end_date, variable, name_var,
-                    datum, datum_list, ofs, logger
+                    datum, datum_list, ofs, logger,
+                    config_file=config_file
                 ))
             for future in futures:
                 result = future.result()
@@ -681,7 +685,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 'This might take a couple of minutes'
                 )
             ofs_inventory_stations(
-                ofs , start_date , end_date , path, stationowner, logger
+                ofs , start_date , end_date , path, stationowner, logger,
+                config_file=config_file
                 )
             dtypes = {
                 'ID': 'object',

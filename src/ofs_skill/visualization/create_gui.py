@@ -112,7 +112,8 @@ def create_gui(parser):
     # STYLING
     # Change the icon
     try:
-        dir_params = utils.Utils().read_config_section('directories', None)  # GUI: no prop available
+        # GUI: no prop available
+        dir_params = utils.Utils().read_config_section('directories', None)
         iconpath = os.path.join(dir_params['home'],
                                 'readme_images','noaa_logo.png')
         icon_image = tk.PhotoImage(file=iconpath)
@@ -160,6 +161,7 @@ def create_gui(parser):
     args_values.Horizon_Skill = parser.get_default('Horizon_Skill')
     args_values.Forecast_Hr = parser.get_default('Forecast_Hr')
     args_values.Var_Selection = parser.get_default('Var_Selection')
+    args_values.config = None
 
     # Set row initial value
     row = -1

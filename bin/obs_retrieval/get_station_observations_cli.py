@@ -150,7 +150,6 @@ if __name__ == '__main__':
             'any combination. Default (no argument) is all variables.')
     parser.add_argument(
         '-c', '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()

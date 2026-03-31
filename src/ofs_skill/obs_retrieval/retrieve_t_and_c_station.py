@@ -649,7 +649,8 @@ def find_nearest_tidal_stations(
 def find_nearest_tidal_station(
     lat: float,
     lon: float,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> tuple[Optional[str], Optional[str], Optional[float]]:
     """
     Find the single nearest CO-OPS station with tidal predictions.
@@ -658,12 +659,14 @@ def find_nearest_tidal_station(
         lat: Latitude of target location
         lon: Longitude of target location
         logger: Logger instance
+        config_file: Optional path to config file
 
     Returns:
         Tuple of (station_id, station_name, distance_km) or
         (None, None, None) if not found.
     """
-    stations = find_nearest_tidal_stations(lat, lon, logger, max_stations=1)
+    stations = find_nearest_tidal_stations(lat, lon, logger, max_stations=1,
+                                           config_file=config_file)
     if stations:
         station_id, station_name, distance = stations[0]
         logger.info(

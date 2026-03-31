@@ -396,7 +396,7 @@ if __name__ == '__main__':
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument('-ws', '--whichcasts', required=True,
         help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
-    parser.add_argument('-c', '--config', required=False,
+    parser.add_argument('-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()

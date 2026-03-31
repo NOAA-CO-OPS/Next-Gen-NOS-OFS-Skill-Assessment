@@ -281,6 +281,7 @@ def oned_scalar_plot(
       try:
           import os
 
+          _conf = getattr(prop, 'config_file', None)
           retrieve_input = RetrieveProperties()
           obs_station_id = str(station_id[0])
           station_source = str(station_id[2]) if len(station_id) > 2 else 'CO-OPS'
@@ -320,7 +321,8 @@ def oned_scalar_plot(
               for datum in datums_to_try:
                   retrieve_input.datum = datum
                   data = retrieve_tidal_predictions(
-                      retrieve_input, logger)
+                      retrieve_input, logger,
+                      config_file=_conf)
                   if data is False:
                       # Station doesn't support predictions
                       return None, None
@@ -354,7 +356,8 @@ def oned_scalar_plot(
               logger.info('Finding nearby tidal stations for %s station %s...',
                          station_source, obs_station_id)
               nearby_stations = find_nearest_tidal_stations(
-                  lat, lon, logger, max_stations=10)
+                  lat, lon, logger, max_stations=10,
+                  config_file=_conf)
 
               for candidate_id, candidate_name, candidate_dist in nearby_stations:
                   # Skip if same as observation station (already tried for CO-OPS)

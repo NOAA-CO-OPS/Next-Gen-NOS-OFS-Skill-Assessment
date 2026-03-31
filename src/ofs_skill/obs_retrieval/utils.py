@@ -64,6 +64,10 @@ class Utils:
         """
         if config_file is not None:
             self.config_file = Path(config_file).resolve()
+            if not self.config_file.is_file():
+                raise FileNotFoundError(
+                    f'Configuration file not found: {self.config_file}'
+                )
         else:
             # Navigate from src/ofs_skill/obs_retrieval/ up to project root
             self.config_file = (

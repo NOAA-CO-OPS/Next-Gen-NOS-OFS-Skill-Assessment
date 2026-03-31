@@ -127,7 +127,6 @@ if __name__ == '__main__':
         help="'CO-OPS','NDBC','USGS',", )
     parser.add_argument(
         '-c', '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
 

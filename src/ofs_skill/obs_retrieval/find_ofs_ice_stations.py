@@ -84,6 +84,7 @@ def find_ofs_ice_stations(
             ofs_inventory_stations(
                 ofs, start_date, end_date, path, ['co-ops', 'ndbc', 'usgs', 'chs'],
                 logger,
+                config_file=_conf,
             )
             inventory = pd.read_csv(
                 r'' + f'{control_files_path}/inventory_all_{ofs}.csv',

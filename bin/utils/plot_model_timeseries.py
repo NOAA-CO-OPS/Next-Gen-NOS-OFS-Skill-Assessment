@@ -54,15 +54,15 @@ def get_variable_names(name_var):
 
     return plot_name, save_name
 
-def main(logger, config_path=None):
+def main(logger, _conf=None):
     '''This function plot time series from .prd files'''
 
     # Directories from conf file
-    dir_params = utils.Utils(config_path).read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     home_path = dir_params['home']
     # Logger
     if logger is None:
-        config_file = utils.Utils(config_path).get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(home_path), log_config_file)
 
@@ -283,9 +283,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '-c',
         '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
-    main(None, config_path=args.config)
+    main(None, _conf=args.config)

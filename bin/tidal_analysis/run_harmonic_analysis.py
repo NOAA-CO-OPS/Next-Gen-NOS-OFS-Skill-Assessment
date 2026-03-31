@@ -354,7 +354,8 @@ def _run_ha_for_station(
         obs_time, obs_eq = to_equal_interval(time, obs_values, logger=logger)
 
         # Try to get CO-OPS accepted harmonic constants as reference
-        harcon = retrieve_harmonic_constants(station_id, logger)
+        harcon = retrieve_harmonic_constants(station_id, logger,
+                                                config_file=_conf)
 
         if harcon is not None:
             logger.info(
@@ -866,7 +867,6 @@ def main():
     )
     parser.add_argument(
         '-c', '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()

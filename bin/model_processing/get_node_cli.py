@@ -85,7 +85,6 @@ if __name__ == '__main__':
         'True or False (boolean)')
     parser.add_argument(
         '-c', '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
 

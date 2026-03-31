@@ -340,7 +340,8 @@ def get_station_observations(prop,logger):
                 )
                 write_obs_ctlfile(
                     start_date, end_date, datum, path, ofs,
-                    stationowner, var_list, logger
+                    stationowner, var_list, logger,
+                    config_file=_conf
                 )
                 read_station_ctl_file = (
                     station_ctl_file_extract(
@@ -390,7 +391,8 @@ def get_station_observations(prop,logger):
                         retrieve_input.datum = datum
 
                         timeseries = retrieve_t_and_c_station(
-                            retrieve_input, logger)
+                            retrieve_input, logger,
+                            config_file=_conf)
 
                         if timeseries is None:
                             logger.info(
@@ -451,6 +453,7 @@ def get_station_observations(prop,logger):
                                             retrieve_t_and_c_station(
                                             retrieve_input,
                                             logger,
+                                            config_file=_conf,
                                         )
                                         if (timeseries is not None and
                                             all_datums[dat] in accepted_datums):

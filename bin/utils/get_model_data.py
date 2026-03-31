@@ -670,7 +670,6 @@ if __name__ == '__main__':
         help="'02hr', '06hr', '12hr', '24hr' ... ", )
     parser.add_argument(
         '-c', '--config',
-        required=False,
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
