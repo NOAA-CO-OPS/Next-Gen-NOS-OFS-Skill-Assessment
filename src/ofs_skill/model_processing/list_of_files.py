@@ -160,6 +160,7 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str, logger
     end_d = datetime.strptime(end_date, '%Y%m%d%H').date()
     # For WCOFS nowcast, we need to look an extra day ahead for nowcast, and an
     # extra day behind for forecast_b
+
     if ofs == 'wcofs':
         if whichcast == 'nowcast':
             first_date = start_d
@@ -168,10 +169,6 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str, logger
             first_date = start_d - timedelta(days=1)
             last_date = end_d
         else:
-            # !!!!!!!!!!!!!!!!
-            # THIS BIT NEEDS ATTENTION!
-            # !!!!!!!!!!!!!!!!
-            logger.warning('Date ranges not defined for WCOFS forecast_a: setting first = start_date and last = end_date.')
             first_date = start_d
             last_date = end_d
     # For STOFS-3D, we need to look an extra day ahead for nowcast, and an
@@ -192,6 +189,7 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str, logger
         else:
             first_date = start_d
             last_date = end_d
+
     else:  # No looking behind or ahead
         first_date = start_d
         last_date = end_d

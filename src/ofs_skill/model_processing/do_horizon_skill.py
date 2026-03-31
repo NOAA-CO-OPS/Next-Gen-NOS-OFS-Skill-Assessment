@@ -95,7 +95,7 @@ def make_horizon_series(prop, logger):
                 timedelta(hours=fcstlength)
             ), '%Y-%m-%dT%H:%M:%SZ',
         )
-        prop11.forecast_hr = filename.split('.')[1][1:3]+'hr'
+        prop11.forecast_hr = filename.split('.')[1][1:3]+'z'
         try:
             logger.info(
                 'Running get_node for %s...',
@@ -229,6 +229,7 @@ def merge_obs_series_scalar(prop, logger):
                             prop.ofs,
                             name_var,
                         )
+                        continue
                 # Open CSV file with model time series
                 filename = (
                     f'{prop.ofs}_{read_ofs_ctl_file[4][i]}_'
