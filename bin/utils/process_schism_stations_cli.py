@@ -379,8 +379,8 @@ def process_schism_stations(prop, logger):
 
     logger.info('--- Start loading SCHISM station output text files ---')
     # Directory parameters
-    config_path = getattr(prop, 'config_file', None)
-    dir_params = utils.Utils(config_path).read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Parameter validation
     parameter_validation(prop, dir_params, logger)
 

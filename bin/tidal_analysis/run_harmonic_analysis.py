@@ -167,6 +167,7 @@ def run_harmonic_analysis_station_loop(
         Logger instance.
     """
     variable, name_var, list_of_headings = var_info
+    _conf = getattr(prop, 'config_file', None)
 
     logger.info(
         'Starting harmonic analysis station loop for %s, variable %s',
@@ -274,7 +275,7 @@ def run_harmonic_analysis_station_loop(
                 _run_ha_for_station(
                     paired_data, prop, station_id, node_id, latitude,
                     variable, name_var, min_duration_days, do_predictions,
-                    cast, logger
+                    cast, logger, config_file=_conf,
                 )
                 stations_processed += 1
             except Exception as ex:
@@ -298,7 +299,8 @@ def run_harmonic_analysis_station_loop(
 
 def _run_ha_for_station(
     paired_data, prop, station_id, node_id, latitude,
-    variable, name_var, min_duration_days, do_predictions, cast, logger
+    variable, name_var, min_duration_days, do_predictions, cast, logger,
+    config_file=None,
 ):
     """
     Run harmonic analysis for a single station and write outputs.
@@ -355,7 +357,7 @@ def _run_ha_for_station(
 
         # Try to get CO-OPS accepted harmonic constants as reference
         harcon = retrieve_harmonic_constants(station_id, logger,
-                                                config_file=_conf)
+                                                config_file=config_file)
 
         if harcon is not None:
             logger.info(
