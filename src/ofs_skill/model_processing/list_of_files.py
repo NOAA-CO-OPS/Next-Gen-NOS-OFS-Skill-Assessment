@@ -153,6 +153,9 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> lis
         elif whichcast != 'nowcast' and ofs != 'wcofs':
             offset = 2
             ddays = -1  # Look behind one day with offset
+        elif whichcast == 'forecast_a' and ofs == 'wcofs':
+            offset = 1
+            ddays = 0
         elif whichcast == 'nowcast':
             offset = 2
             ddays = 0  # Look ahead one day with offset
