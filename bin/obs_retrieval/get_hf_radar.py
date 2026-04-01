@@ -1,33 +1,7 @@
-from datetime import datetime, timedelta
-from pathlib import Path
-import argparse
-import os
-import re
-import numpy as np
-import rasterio
-from rasterio.transform import from_origin
-import xarray as xr
-import pandas as pd
-import geopandas as gpd
-import shapely
-import shapely.geometry
-import shapely.wkt
-from shapely.geometry import Polygon, Point
-
-
-NRT_DELAY = timedelta(hours=1)
-
-
 """
--*- coding: utf-8 -*-
-
-Documentation for Scripts get_hf_radar.py
-
 Script Name: get_hf_radar.py
 
 Author: RA
-
-
 
 This script checks for available HF radar data for a user-provided OFS and
 generates mag/dir ASCII files to be used with the frontend. HF radar sources
@@ -50,112 +24,93 @@ future HF radar or OFS additions.
             {ofs_name}_hfradar_dir_YYYYMMDD_HH00.prj
             {ofs_name}_hfradar_mag_YYYYMMDD_HH00.asc
             {ofs_name}_hfradar_mag_YYYYMMDD_HH00.prj
+
+HF Radar sources and times available per source (as of March 11, 2026):
+    USEGC (US East Coast and Gulf of America)
+    USWC (US West Coast)
+    GLNA (Great Lakes North America)
+    GAK (Gulf of Alaska)
+
+HF Radar sources and corresponding OFSes:
+    USEGC -> CBOFS, DBOFS, GOMOFS, NGOFS2, NYOFS, TBOFS
+    USWC -> SFBOFS, SSCOFS, WCOFS
+    GLNA -> LMHOFS
+    GAK -> CIOFS
+
+Example daily average call:
+    python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
+        -c ./data/observations/ -b ./ofs_extents/sfbofs.shp
+
+Example hourly call:
+    python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
+        -c ./data/observations/ -b ./ofs_extents/sfbofs.shp \\
+        -m hourly -s 2026030900 -e 2026031023
 """
+from __future__ import annotations
+
+import argparse
+import logging
+import logging.config
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import rasterio
+import xarray as xr
+from rasterio.transform import from_origin
+from shapely.geometry import Point, Polygon
+
+from ofs_skill.obs_retrieval import utils
+
+NRT_DELAY = timedelta(hours=1)
+THREDDS_BASE_URL = 'https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar'
+NODATA = -9999
+
+logger = logging.getLogger(__name__)
 
 
-"""
-Example daily average call looks like this:
+# -- Intersection detection logic --
 
-python ./bin/obs_retrieval/get_hf_radar.py 20260310 ./data/observations/ ./ofs_extents/sfbofs.shp sfbofs
-"""
-
-
-"""
-Example hourly call looks like this:
-
-python ./bin/obs_retrieval/get_hf_radar.py 20260310 ./data/observations/ ./ofs_extents/sfbofs.shp sfbofs --mode hourly --start 2026030900 --end 2026031023
-"""
-
-
-"""
-HF Radar sources and times available per source (as of March 11, 2026)
-
-USEGC (US East Coast and Gulf of America) - Dec 1, 2025 2100 to Mar 11, 2026 1200
-USWC (US West Coast) - Dec 8, 2025 1800 to Mar 11, 2026 1000
-GLNA (Great Lakes North America) - Dec 9, 2025 0200 to Feb 26, 2026 0000
-GAK (Gulf of Alaska) - Dec 9, 2025 0200 to Dec 14, 2025 0700
-"""
-
-
-"""
-HF Radar sources and corresponding OFSes
-
-USEGC -> CBOFS, DBOFS, GOMOFS, NGOFS2, NYOFS, TBOFS
-USWC -> SFBOFS, SSCOFS, WCOFS
-GLNA -> LMHOFS
-GAK -> CIOFS
-
-(There may be some instances where there is technically overlap but there is not data actually available, like GAK and WCOFS, or USEGC and the other GL OFSes. The empty dataset will be ignored.)
-"""
-
-
-'''
-Intersection detection logic
-'''
 def polygons_intersect_2d(poly1, poly2):
+    """Check whether two 2D polygons intersect using Shapely."""
     p1 = Polygon(poly1)
     p2 = Polygon(poly2)
     return p1.intersects(p2)
 
 
 def ensure_clockwise(poly):
+    """Return polygon vertices in clockwise winding order."""
     ring = Polygon(poly)
     if not ring.exterior.is_ccw:
         return poly
     return poly[::-1]
 
 
-def spherical_point_in_poly(p, poly_xyz, tol=1e-4):
-    angle_sum = 0
-    for i in range(len(poly_xyz)):
-        a = poly_xyz[i]
-        b = poly_xyz[(i + 1) % len(poly_xyz)]
-        va = normalize(a - p)
-        vb = normalize(b - p)
-        cross = np.cross(va, vb)
-        sin_theta = np.linalg.norm(cross)
-        cos_theta = np.dot(va, vb)
-        angle = np.arctan2(sin_theta, cos_theta)
-        orientation = np.sign(np.dot(p, cross))
-        angle_sum += orientation * angle
-    return abs(abs(angle_sum) - 2 * np.pi) < tol
+def parse_wkt_polygon(wkt_str):
+    """Parse a WKT POLYGON string into a list of (lon, lat) tuples."""
+    pattern = r'POLYGON\s*\(\(\s*(.+?)\s*\)\)'
+    match = re.search(pattern, wkt_str)
+    if not match:
+        raise ValueError('Invalid WKT POLYGON format.')
+    coord_pairs = match.group(1).split(',')
+    polygon = []
+    for pair in coord_pairs:
+        lon, lat = map(float, pair.strip().split())
+        polygon.append((lon, lat))
 
+    if polygon[0] != polygon[-1]:
+        polygon.append(polygon[0])
 
-def is_point_on_arc(p, a, b, tol=1e-10):
-    angle_ab = np.arccos(np.clip(np.dot(a, b), -1, 1))
-    angle_ap = np.arccos(np.clip(np.dot(a, p), -1, 1))
-    angle_pb = np.arccos(np.clip(np.dot(p, b), -1, 1))
-    return abs((angle_ap + angle_pb) - angle_ab) < tol
-
-
-def normalize(v, eps=1e-12):
-    norm = np.linalg.norm(v)
-    return v if norm < eps else v / norm
-
-
-def segments_intersect_gc(a1, a2, b1, b2, tol=1e-10):
-    n1 = normalize(np.cross(a1, a2))
-    n2 = normalize(np.cross(b1, b2))
-    cross = np.cross(n1, n2)
-    if np.linalg.norm(cross) < tol:
-        return False
-    intersect_pts = [normalize(cross), normalize(-cross)]
-    for p in intersect_pts:
-        if is_point_on_arc(p, a1, a2) and is_point_on_arc(p, b1, b2):
-            return True
-    return False
-
-
-def latlon_to_xyz(lat_deg, lon_deg):
-    lat = np.radians(lat_deg)
-    lon = np.radians(lon_deg)
-    x = np.cos(lat) * np.cos(lon)
-    y = np.cos(lat) * np.sin(lon)
-    z = np.sin(lat)
-    return np.array([x, y, z])
+    return polygon
 
 
 def get_geospatial_bounds(nc_file):
+    """Extract geospatial bounds from a NetCDF dataset as a WKT polygon string."""
     try:
         if isinstance(nc_file, str):
             nc_file = xr.open_dataset(nc_file)
@@ -177,10 +132,14 @@ def get_geospatial_bounds(nc_file):
                 if 'lat' in nc_file.coords and 'lon' in nc_file.coords:
                     lat_vals = nc_file['lat'].values
                     lon_vals = nc_file['lon'].values
-
                 elif 'latitude' in nc_file.coords and 'longitude' in nc_file.coords:
                     lat_vals = nc_file['latitude'].values
                     lon_vals = nc_file['longitude'].values
+                else:
+                    raise ValueError(
+                        'Cannot determine geospatial bounds: '
+                        'no recognized coordinate variables found.'
+                    )
 
                 lat_min = float(lat_vals.min())
                 lat_max = float(lat_vals.max())
@@ -188,70 +147,38 @@ def get_geospatial_bounds(nc_file):
                 lon_max = float(lon_vals.max())
 
         wkt_poly = (
-            f"POLYGON (({lon_min} {lat_min}, {lon_min} {lat_max}, "
-            f"{lon_max} {lat_max}, {lon_max} {lat_min}, {lon_min} {lat_min}))"
+            f'POLYGON (({lon_min} {lat_min}, {lon_min} {lat_max}, '
+            f'{lon_max} {lat_max}, {lon_max} {lat_min}, {lon_min} {lat_min}))'
         )
         return wkt_poly
 
     except Exception as e:
-        print(f"Error reading bounds: {e}")
+        logger.error('Error reading bounds: %s', e)
         return None
 
 
-def polygons_intersect_spherical(poly1_latlon, poly2_latlon):
-    poly1 = [latlon_to_xyz(lat, lon) for lon, lat in poly1_latlon]
-    poly2 = [latlon_to_xyz(lat, lon) for lon, lat in poly2_latlon]
-
-    for i in range(len(poly1)):
-        a1 = poly1[i]
-        a2 = poly1[(i + 1) % len(poly1)]
-        for j in range(len(poly2)):
-            b1 = poly2[j]
-            b2 = poly2[(j + 1) % len(poly2)]
-            if segments_intersect_gc(a1, a2, b1, b2):
-                return True
-
-    if any(spherical_point_in_poly(p, poly2) for p in poly1) or \
-       any(spherical_point_in_poly(p, poly1) for p in poly2):
-        return True
-
-    return False
-
-
-def parse_wkt_polygon(wkt_str):
-    pattern = r'POLYGON\s*\(\(\s*(.+?)\s*\)\)'
-    match = re.search(pattern, wkt_str)
-    if not match:
-        raise ValueError("Invalid WKT POLYGON format.")
-    coord_pairs = match.group(1).split(',')
-    polygon = []
-    for pair in coord_pairs:
-        lon, lat = map(float, pair.strip().split())
-        polygon.append((lon, lat))
-
-    if polygon[0] != polygon[-1]:
-        polygon.append(polygon[0])
-
-    return polygon
-
-
-'''
-Ensure timestamp is formatted
-'''
 def parse_utc_timestamp(timestr):
+    """Parse a UTC timestamp string in YYYYMMDDHH format to a datetime object."""
     try:
-        return datetime.strptime(timestr, "%Y%m%d%H")
+        return datetime.strptime(timestr, '%Y%m%d%H')
     except Exception as e:
-        print(e)
+        logger.error("Error parsing timestamp '%s': %s", timestr, e)
+        return None
 
 
-'''
-Write data in ASCII format
-'''
 def export_ascii(data_da, outfile):
+    """Write a 2D xarray DataArray to an ESRI ASCII Grid (.asc) file.
+
+    Parameters
+    ----------
+    data_da : xr.DataArray
+        2D data array with 'lat' and 'lon' coordinates.
+    outfile : Path or str
+        Output file path for the .asc file.
+    """
     data = data_da.values.copy()
 
-    data = np.where(np.isnan(data), -9999, data)
+    data = np.where(np.isnan(data), NODATA, data)
 
     data = data.astype(np.float32)
 
@@ -287,40 +214,51 @@ def export_ascii(data_da, outfile):
         width=data.shape[1],
         count=1,
         dtype=rasterio.float32,
-        crs="EPSG:4326",
+        crs='EPSG:4326',
         transform=transform,
-        nodata=-9999
+        nodata=NODATA
     ) as dst:
         dst.write(data, 1)
 
 
-'''
-Mask by OFS shapefile boundary 
-'''
 def clip_by_ofs(ds, gdf):
-    lat_name = "lat" if "lat" in ds.coords else "latitude"
-    lon_name = "lon" if "lon" in ds.coords else "longitude"
-    
-    if lon_name == "lon":
-        lon = ds["lon"].values
-        lat = ds["lat"].values
+    """Mask a dataset to the OFS shapefile boundary using geopandas spatial join.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with lat/lon coordinates.
+    gdf : gpd.GeoDataFrame
+        GeoDataFrame representing the OFS boundary.
+
+    Returns
+    -------
+    xr.DataArray
+        Boolean mask where True indicates points within the OFS boundary.
+    """
+    lat_name = 'lat' if 'lat' in ds.coords else 'latitude'
+    lon_name = 'lon' if 'lon' in ds.coords else 'longitude'
+
+    if lon_name == 'lon':
+        lon = ds['lon'].values
+        lat = ds['lat'].values
     else:
-        lon = ds["longitude"].values
-        lat = ds["latitude"].values
+        lon = ds['longitude'].values
+        lat = ds['latitude'].values
 
     lon2d, lat2d = np.meshgrid(lon, lat)
-   
+
     points = gpd.GeoDataFrame(
         geometry=[Point(x, y) for x, y in zip(lon2d.flatten(), lat2d.flatten())],
-        crs="EPSG:4326"
+        crs='EPSG:4326'
     )
-    
-    points_in = gpd.sjoin(points, gdf, predicate="within", how="inner")
-    
+
+    points_in = gpd.sjoin(points, gdf, predicate='within', how='inner')
+
     mask = np.zeros(lon2d.size, dtype=bool)
     mask[points_in.index] = True
     mask = mask.reshape(lon2d.shape)
-    
+
     mask_da = xr.DataArray(
         mask,
         coords=[ds[lat_name], ds[lon_name]],
@@ -331,58 +269,47 @@ def clip_by_ofs(ds, gdf):
 
 
 def wrap_lon(lon):
+    """Normalize longitude to the range [-180, 180)."""
     return ((lon + 180) % 360) - 180
 
 
-'''
-Check which HF radar sources intersect or are contained within an OFS boundary
-'''
 def check_for_overlap(
-    date_obj, 
-    data_dir, 
-    gdf, 
-    ofs, 
-    mode, 
-    start_time=None, 
+    date_obj,
+    data_dir,
+    gdf,
+    ofs,
+    mode,
+    start_time=None,
     end_time=None
 ):
+    """Check which HF radar sources intersect with an OFS boundary and process them.
+
+    HF radar source abbreviations:
+        usegc: US East Coast and Gulf of America
+        uswc:  US West Coast
+        glna:  Great Lakes North America
+        ushi:  US Hawaii
+        gak:   Gulf of Alaska
+        prvi:  Puerto Rico/Virgin Islands
+
+    Parameters
+    ----------
+    date_obj : datetime
+        Target date for data collection.
+    data_dir : Path
+        Output directory for ASCII files.
+    gdf : gpd.GeoDataFrame
+        OFS boundary geometry.
+    ofs : str
+        OFS name (e.g. 'sfbofs').
+    mode : str
+        'daily' or 'hourly'.
+    start_time : datetime, optional
+        Start time for hourly mode.
+    end_time : datetime, optional
+        End time for hourly mode.
     """
-    usegc: US East Coast and Gulf of America
-    uswc: US West Coast
-    glna: Great Lakes North America
-    ushiL US Hawaii
-    akns: Alaska North Slope
-    gak: Gulf of Alaska
-    prvi: Puerto Rico/Virgin Islands
-    """
-
-
-    # add this to imports
-    from ofs_skill.obs_retrieval import utils
-
-    # then add this to beginning of check_for_overlap
-    if logger is None:
-        config_file = utils.Utils().get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(Path(prop.path), log_config_file)
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-
-    # Creater logger
-    logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger('root')
-    logger.info('Using config %s', config_file)
-    logger.info('Using log config %s', log_config_file)
-
-    
-    #akns never seems to have data
-    #hf_datasets = ["usegc", "uswc", "glna", "ushi", "akns", "gak", "prvi"]
-    hf_datasets = ["usegc", "uswc", "glna", "ushi", "gak", "prvi"]
+    hf_datasets = ['usegc', 'uswc', 'glna', 'ushi', 'gak', 'prvi']
 
     lon_min, lat_min, lon_max, lat_max = gdf.total_bounds
     study_area = [
@@ -393,21 +320,21 @@ def check_for_overlap(
         (lon_min, lat_min),
     ]
     study_area = ensure_clockwise(study_area)
-    logger.info("Made study area")
-    
+    logger.info('Made study area')
+
     matching_files = {}
 
-    logger.info("Starting check for overlap")
-    for hfd in hf_datasets:
-        url = f"https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar_{hfd}_6km"
+    logger.info('Starting check for overlap')
+    for hf_source in hf_datasets:
+        url = f'{THREDDS_BASE_URL}_{hf_source}_6km'
 
         try:
-            ds = xr.open_dataset(url)
+            ds = xr.open_dataset(url, decode_cf=True, mask_and_scale=True)
         except Exception as e:
-            print(e)
+            logger.error('Failed to open %s: %s', url, e)
             continue
 
-        logger.info("Checking for and normalizing formatting")
+        logger.info('Checking for and normalizing formatting')
         geospatial_bounds = get_geospatial_bounds(ds)
 
         if not geospatial_bounds:
@@ -418,64 +345,74 @@ def check_for_overlap(
         file_polygon = ensure_clockwise(file_polygon)
 
         if polygons_intersect_2d(study_area, file_polygon):
-            try:
-                ds = xr.open_dataset(
-                    url,
-                    decode_cf=True,
-                    mask_and_scale=True
-                )
-
-                matching_files[url] = ds
-                logger.info("Added HF radar data with overlap of study area to list")
-
-            except Exception as e:
-                print(e)
+            matching_files[hf_source] = ds
+            logger.info("Added HF radar source '%s' with overlap of study area", hf_source)
 
     process_files(matching_files, date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
 
 
-'''
-Set up time extent and process based on daily average or hourly
-'''
 def process_files(
-    matching_files, 
-    date_obj, 
+    matching_files,
+    date_obj,
     data_dir,
-    gdf, 
-    ofs, 
-    mode, 
-    start_time=None, 
+    gdf,
+    ofs,
+    mode,
+    start_time=None,
     end_time=None
 ):
+    """Set up time extent and process HF radar data for daily average or hourly output.
 
-    if mode == "daily":
-        today = datetime.utcnow().date()
+    Parameters
+    ----------
+    matching_files : dict
+        Mapping of HF radar source name to opened xarray Dataset.
+    date_obj : datetime
+        Target date.
+    data_dir : Path
+        Output directory.
+    gdf : gpd.GeoDataFrame
+        OFS boundary geometry.
+    ofs : str
+        OFS name.
+    mode : str
+        'daily' or 'hourly'.
+    start_time : datetime, optional
+        Start time for hourly mode.
+    end_time : datetime, optional
+        End time for hourly mode.
+    """
+    if mode == 'daily':
+        today = datetime.now(timezone.utc).date()
 
         if date_obj.date() == today:
-            et = (datetime.utcnow() - NRT_DELAY).replace(minute=0, second=0, microsecond=0)
-            st = et - timedelta(hours=24)
-
+            end_dt = (datetime.now(timezone.utc) - NRT_DELAY).replace(
+                minute=0, second=0, microsecond=0
+            )
+            start_dt = end_dt - timedelta(hours=24)
         else:
-            st = datetime.combine(date_obj.date(), datetime.min.time())
-            et = st + timedelta(hours=24)
+            start_dt = datetime.combine(date_obj.date(), datetime.min.time())
+            end_dt = start_dt + timedelta(hours=24)
 
-    elif mode == "hourly":
-        if start_time is not None and end_time is not None:
-            et = end_time
-            st = start_time
+    elif mode == 'hourly':
+        if start_time is None or end_time is None:
+            logger.error('Hourly mode requires both --start and --end times.')
+            return
+        start_dt = start_time
+        end_dt = end_time
 
-    logger.info("Got start time and end time")
-    
-    for url, ds in matching_files.items():
-        dtp = ds.sel(time=slice(st, et))
+    logger.info('Got start time and end time')
 
-        u_var = "u" if "u" in dtp.variables else "ssu"
-        v_var = "v" if "v" in dtp.variables else "ssv"
+    for _, ds in matching_files.items():
+        ds_period = ds.sel(time=slice(start_dt, end_dt))
 
-        dtp_u = dtp[u_var].astype("float64")
-        dtp_v = dtp[v_var].astype("float64")
+        u_var = 'u' if 'u' in ds_period.variables else 'ssu'
+        v_var = 'v' if 'v' in ds_period.variables else 'ssv'
 
-        mask_dtp = clip_by_ofs(dtp, gdf)
+        dtp_u = ds_period[u_var].astype('float64')
+        dtp_v = ds_period[v_var].astype('float64')
+
+        mask_dtp = clip_by_ofs(ds_period, gdf)
 
         u_data = dtp_u.where(mask_dtp)
         v_data = dtp_v.where(mask_dtp)
@@ -483,19 +420,19 @@ def process_files(
         if np.isfinite(u_data).sum() == 0:
             continue
 
-        logger.info("Clipped u/v data to study area")
+        logger.info('Clipped u/v data to study area')
 
-        if mode == "daily":
-            u_avg = u_data.mean(dim="time", skipna=True)
-            v_avg = v_data.mean(dim="time", skipna=True)
+        if mode == 'daily':
+            u_avg = u_data.mean(dim='time', skipna=True, min_count=13)
+            v_avg = v_data.mean(dim='time', skipna=True, min_count=13)
 
             u_avg = u_avg.where(np.isfinite(u_avg))
             v_avg = v_avg.where(np.isfinite(v_avg))
 
-            u_avg = u_avg.astype("float64")
-            v_avg = v_avg.astype("float64")
+            u_avg = u_avg.astype('float64')
+            v_avg = v_avg.astype('float64')
 
-            logger.info("Created u and v averages for daily average option")
+            logger.info('Created u and v averages for daily average option')
 
             mag = np.sqrt(u_avg**2 + v_avg**2)
             dir_rad = np.arctan2(u_avg, v_avg)
@@ -506,16 +443,16 @@ def process_files(
             mag_outfile = data_dir / f"{ofs}_hfradar_mag_{date_obj.strftime('%Y%m%d')}.asc"
             dir_outfile = data_dir / f"{ofs}_hfradar_dir_{date_obj.strftime('%Y%m%d')}.asc"
 
-            logger.info("Translated u/v into mag/dir data")
-            
+            logger.info('Translated u/v into mag/dir data')
+
             export_ascii(mag, mag_outfile)
             export_ascii(direction, dir_outfile)
 
-            logger.info("Finished writing daily average mag/dir file")
+            logger.info('Finished writing daily average mag/dir file')
 
-        elif mode == "hourly":
-            logger.info("Starting hourly u/v -> mag/dir file creation")
-            
+        elif mode == 'hourly':
+            logger.info('Starting hourly u/v -> mag/dir file creation')
+
             for t in range(len(u_data.time)):
                 u_hour = u_data.isel(time=t)
                 v_hour = v_data.isel(time=t)
@@ -524,71 +461,95 @@ def process_files(
                 dir_rad = np.arctan2(u_hour, v_hour)
                 direction = (np.degrees(dir_rad) + 360) % 360
 
-                timestamp = pd.to_datetime(u_hour.time.values).strftime("%Y%m%d_%H%M")
-                mag_outfile = data_dir / f"{ofs}_hfradar_mag_{timestamp}.asc"
-                dir_outfile = data_dir / f"{ofs}_hfradar_dir_{timestamp}.asc"
+                timestamp = pd.to_datetime(u_hour.time.values).strftime('%Y%m%d_%H%M')
+                mag_outfile = data_dir / f'{ofs}_hfradar_mag_{timestamp}.asc'
+                dir_outfile = data_dir / f'{ofs}_hfradar_dir_{timestamp}.asc'
 
                 export_ascii(mag, mag_outfile)
                 export_ascii(direction, dir_outfile)
 
-                logger.info("Finished writing hourly mag/dir files")
+                logger.info('Finished writing hourly mag/dir files')
 
-    logger.info("Finished get_hf_radar.py!")
+    logger.info('Finished get_hf_radar.py!')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        prog="get_hf_radar.py",
-        usage="%(prog)s",
+        prog='get_hf_radar.py',
+        usage='%(prog)s',
         description="Create ASCII output for a given OFS's HF radar data"
     )
 
     parser.add_argument(
-        "-d", "--date",
-        help="Date for daily data collection"
+        '-d', '--date',
+        required=True,
+        help='Date for daily data collection (YYYYMMDD)'
     )
 
     parser.add_argument(
-        "-c", "--catalogue",
-        help="File directory to write the output files to"
+        '-c', '--catalogue',
+        required=True,
+        help='File directory to write the output files to'
     )
 
     parser.add_argument(
-        "-b", "--bounds",
-        help="Bounds (shapefile)"
+        '-b', '--bounds',
+        help='Bounds (shapefile path)'
     )
 
     parser.add_argument(
-        "-o", "--ofs",
+        '-o', '--ofs',
         required=False,
-        help="OFS of interest"
+        help='OFS of interest (used to derive shapefile path if -b not given)'
     )
 
     parser.add_argument(
-        "-m", "--mode",
-        choices=["daily", "hourly"],
-        default="daily",
-        help="Choose daily or hourly period"
+        '-m', '--mode',
+        choices=['daily', 'hourly'],
+        default='daily',
+        help='Choose daily or hourly period'
     )
 
     parser.add_argument(
-        "-s", "--start",
-        help="Start time for hourly period in format YYYYMMDDHH (UTC)"
+        '-s', '--start',
+        help='Start time for hourly period in format YYYYMMDDHH (UTC)'
     )
 
     parser.add_argument(
-        "-e", "--end",
-        help="End time for hourly period in format YYYYMMDDHH (UTC)"
+        '-e', '--end',
+        help='End time for hourly period in format YYYYMMDDHH (UTC)'
     )
-
 
     args = parser.parse_args()
 
-    date_obj = datetime.strptime(args.date, "%Y%m%d")
+    # Validate that -b or -o is provided
+    if args.bounds is None and args.ofs is None:
+        parser.error('Either -b/--bounds or -o/--ofs must be provided.')
+
+    # Validate hourly mode requires start and end
+    if args.mode == 'hourly' and (args.start is None or args.end is None):
+        parser.error('Hourly mode requires both -s/--start and -e/--end.')
+
+    # Set up logging
+    config_file = utils.Utils().get_config_file()
+    log_config_file = os.path.join(os.getcwd(), 'conf', 'logging.conf')
+
+    if not os.path.isfile(log_config_file):
+        print(f'Log config file not found: {log_config_file}', file=sys.stderr)
+        sys.exit(-1)
+    if not os.path.isfile(config_file):
+        print(f'Config file not found: {config_file}', file=sys.stderr)
+        sys.exit(-1)
+
+    logging.config.fileConfig(log_config_file)
+    logger = logging.getLogger(__name__)
+    logger.info('Using config %s', config_file)
+    logger.info('Using log config %s', log_config_file)
+
+    date_obj = datetime.strptime(args.date, '%Y%m%d')
 
     data_dir = Path(args.catalogue)
-
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     mode = args.mode
 
@@ -601,19 +562,18 @@ if __name__ == '__main__':
     if args.end:
         end_time = parse_utc_timestamp(args.end)
 
+    # Determine OFS name and shapefile path
     if args.bounds is not None:
         ofs = Path(args.bounds).stem
-
-    elif args.ofs is not None:
+        shapefile_path = Path(args.bounds)
+    else:
         ofs = args.ofs
+        shapefile_path = Path(f'./ofs_extents/{ofs}.shp')
 
-    if args.bounds is not None and os.path.exists(Path(args.bounds)):
-        gdf = gpd.read_file(Path(args.bounds))
-        bounds = gdf.total_bounds
-        lon_min, lat_min, lon_max, lat_max = bounds
+    if not shapefile_path.exists():
+        logger.error('Shapefile not found: %s', shapefile_path)
+        sys.exit(-1)
 
-        if mode == "daily":
-            check_for_overlap(date_obj, data_dir, gdf, ofs, mode)
+    gdf = gpd.read_file(shapefile_path)
 
-        elif mode == "hourly":
-            check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
+    check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
