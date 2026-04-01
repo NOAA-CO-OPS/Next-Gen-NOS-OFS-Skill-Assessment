@@ -172,6 +172,25 @@ conda activate ofs_dps_env
 pip install -e .
 ```
 
+**Configure USGS API key (conda):** To raise the USGS API rate limit (see [Step 2a](#step-2a-configure-usgs-api-key) under Option 1), set the key in the `ofs_dps_env` environment:
+
+*bash:*
+```bash
+conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps_env
+conda deactivate
+conda activate ofs_dps_env
+echo $API_USGS_PAT
+```
+
+*Windows (Anaconda PowerShell):*
+```powershell
+conda activate ofs_dps_env
+conda env config vars set API_USGS_PAT=<your-api-key>
+conda deactivate
+conda activate ofs_dps_env
+echo $env:API_USGS_PAT
+```
+
 For detailed conda setup instructions for beginners, see [Section 3.2](#32-create-an-environment-with-miniconda).
 
 ### Package Organization
