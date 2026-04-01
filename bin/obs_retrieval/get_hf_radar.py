@@ -71,7 +71,7 @@ NRT_DELAY = timedelta(hours=1)
 THREDDS_BASE_URL = 'https://dods.ndbc.noaa.gov/thredds/dodsC/hfradar'
 NODATA = -9999
 
-logger = logging.getLogger(__name__)
+logger = None
 
 
 # -- Intersection detection logic --
@@ -423,11 +423,14 @@ def process_files(
         logger.info('Clipped u/v data to study area')
 
         if mode == 'daily':
-            u_avg = u_data.mean(dim='time', skipna=True, min_count=13)
-            v_avg = v_data.mean(dim='time', skipna=True, min_count=13)
+            # Require at least 13 of 25 hourly observations for a valid
+            # daily average (tidal filtering needs sufficient coverage).
+            valid_count = u_data.count(dim='time')
+            u_avg = u_data.mean(dim='time', skipna=True)
+            v_avg = v_data.mean(dim='time', skipna=True)
 
-            u_avg = u_avg.where(np.isfinite(u_avg))
-            v_avg = v_avg.where(np.isfinite(v_avg))
+            u_avg = u_avg.where(valid_count >= 13)
+            v_avg = v_avg.where(valid_count >= 13)
 
             u_avg = u_avg.astype('float64')
             v_avg = v_avg.astype('float64')
@@ -542,7 +545,7 @@ if __name__ == '__main__':
         sys.exit(-1)
 
     logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger('root')
     logger.info('Using config %s', config_file)
     logger.info('Using log config %s', log_config_file)
 
