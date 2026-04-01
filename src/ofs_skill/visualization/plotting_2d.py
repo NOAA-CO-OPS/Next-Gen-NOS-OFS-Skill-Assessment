@@ -513,7 +513,7 @@ def plot_2d(prop1,logger):
         #Pair satellite and model files/dates,
         #if not paired already from the previous step
         #
-        if list(set(sat_dates).difference(mod_dates)):
+        if set(sat_dates) != set(mod_dates):
             #Oops there must be missing sat or mod data, let's correct it
             # Get satellite indices & dates that intersect model dates
             sat_ind,sat_dates = get_intersection(sat_dates,mod_dates)
@@ -522,7 +522,7 @@ def plot_2d(prop1,logger):
             mod_ind,mod_dates = get_intersection(mod_dates,sat_dates)
             mod_files = [mod_files[i] for i in mod_ind]
             # Check pairing again to make sure
-            if list(set(sat_dates).difference(mod_dates)):
+            if set(sat_dates) != set(mod_dates):
                 logger.error('Cannot pair satellite and model data! Abort!')
                 sys.exit(-1)
 
@@ -562,7 +562,7 @@ def plot_2d(prop1,logger):
                             round((((k+1)/(len(sat_dates)))*100),2))
                 try:
                     stats1d = metrics_two_d.return_one_d(z_sat[k,:,:],z_mod[k,:,:],logger)
-                except:
+                except Exception:
                     stats1d=None
                 stats1d_all.append(stats1d)
                 diff = z_mod[k,:,:] - z_sat[k,:,:]
@@ -604,7 +604,7 @@ def plot_2d(prop1,logger):
             #Write 2D skill csv
             try:
                 write_2dskill_csv(prop1,stats1d_all,sat_dates,logger)
-            except:
+            except Exception:
                 logger.error('Problem writting 2D skill csv.')
         else:
             logger.error('Only %s %s satellite times available, skipping statistics.',

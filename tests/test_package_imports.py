@@ -15,7 +15,8 @@ class TestPackageStructure:
         """Test that the top-level package can be imported."""
         import ofs_skill
         assert hasattr(ofs_skill, '__version__')
-        assert ofs_skill.__version__ == '1.5.0'
+        parts = ofs_skill.__version__.split('.')
+        assert len(parts) == 3, f'Version should be semver: {ofs_skill.__version__}'
 
     def test_model_properties_import(self):
         """Test that ModelProperties can be imported from top level."""
@@ -57,8 +58,8 @@ class TestModelProcessingImports:
 
     def test_forecast_hours(self):
         """Test get_forecast_hours function."""
-        from ofs_skill.model_processing.get_forecast_hours import get_forecast_hours
-        fcstlength, fcstcycles = get_forecast_hours('cbofs')
+        from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
+        fcstlength, fcstcycles = get_fcst_hours('cbofs')
         assert fcstlength == 48
         assert len(fcstcycles) == 4
 

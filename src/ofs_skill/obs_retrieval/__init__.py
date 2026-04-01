@@ -47,12 +47,17 @@ from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.obs_retrieval.t_and_c_properties import TidesandCurrentsProperties
 from ofs_skill.obs_retrieval.usgs_properties import USGSProperties
-from ofs_skill.obs_retrieval.utils import Utils, parse_arguments_to_list
+from ofs_skill.obs_retrieval.utils import Utils, load_api_keys, parse_arguments_to_list
 from ofs_skill.obs_retrieval.write_obs_ctlfile import write_obs_ctlfile
+
+# Load API keys from config file into environment variables.
+# Existing env vars (conda, CI) take precedence.
+load_api_keys()
 
 __all__ = [
     # Utilities
     'Utils',
+    'load_api_keys',
     'parse_arguments_to_list',
     'station_ctl_file_extract',
     'scalar',

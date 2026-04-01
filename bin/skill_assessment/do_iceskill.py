@@ -27,7 +27,7 @@ Estimated Execution Time: depends on date range; typically <20 minutes
 
 Scripts/Programs Called:
 1) get_icecover_observations.py -- retrieves GLSEA netcdfs
-2) get_icecover_fvcom/schism.py -- retrieves model netcdfs, and concatenates them
+2) get_icecover_model.py -- retrieves model netcdfs, and concatenates them
 3) find_ofs_ice_stations.py -- gets inventory of observation stations in an
     OFS, then finds model nodes & GLSEA cells that correspond to them, and
     finally extracts time series of model & GLSEA ice concentration.
@@ -86,7 +86,7 @@ from mpl_toolkits.basemap import Basemap
 from numpy import isnan
 from sklearn.metrics import confusion_matrix
 
-from bin.model_processing import get_icecover_fvcom, get_icecover_schism
+from bin.model_processing import get_icecover_model
 from bin.obs_retrieval import get_icecover_observations
 from bin.visualization import create_1dplot_ice
 from ofs_skill.model_processing import (
@@ -94,6 +94,7 @@ from ofs_skill.model_processing import (
     model_source,
 )
 from ofs_skill.obs_retrieval import find_ofs_ice_stations, utils
+from ofs_skill.skill_assessment import nos_metrics
 from ofs_skill.visualization import make_ice_boxplots, make_ice_map
 
 
@@ -176,7 +177,7 @@ def ice_climatology(prop, time_all_dt, ice_clim):
         dateindex.append(tempindex[0])
 
     dfsubset = df.iloc[dateindex]
-    icecover_hist = dfsubset[prop.ofs].to_numpy()
+    icecover_hist = dfsubset[prop.ofs.removesuffix('2')].to_numpy()
 
     # Now do 2D
     filename = os.path.join(
@@ -224,16 +225,12 @@ def pair_ice(
         if prop.ice_dt == 'daily':
             time_all.append(my_obs_date)
             time_all_dt.append(
-                datetime.strptime(
-                    str(my_obs_date), '%Y-%m-%d %H:%M:%S',
-                ).date(),
-            )
-            icecover_o_pair.append(
-                np.array(icecover_o[j][:][:]),
-            )
-            icecover_m_pair.append(
-                np.array(icecover_m[j][:]),
-            )
+                datetime.strptime(str(my_obs_date), '%Y-%m-%d %H:%M:%S').date())
+            icecover_o_pair.append(np.array(icecover_o[j][:][:]))
+            try:
+                icecover_m_pair.append(np.array(icecover_m[j][:]))
+            except IndexError:
+                logger.error('Model and GLSEA ice arrays are different sizes!')
         if prop.ice_dt == 'hourly':
             for i in range(0, len(time_m)):
                 my_mod_date = pd.to_datetime(time_m[i])
@@ -244,21 +241,10 @@ def pair_ice(
                 ):
                     time_all.append(my_mod_date)
                     time_all_dt.append(
-                        datetime.strptime(
-                            str(my_mod_date),
-                            '%Y-%m-%d %H:%M:%S',
-                        ).date(),
-                    )
-                    icecover_o_pair.append(
-                        np.array(
-                            icecover_o[j][:][:],
-                        ),
-                    )
-                    icecover_m_pair.append(
-                        np.array(
-                            icecover_m[i][:],
-                        ),
-                    )
+                        datetime.strptime(str(my_mod_date),
+                            '%Y-%m-%d %H:%M:%S').date())
+                    icecover_o_pair.append(np.array(icecover_o[j][:][:]))
+                    icecover_m_pair.append(np.array(icecover_m[i][:]))
 
     icecover_o_pair = np.stack(icecover_o_pair)
     icecover_m_pair = np.stack(icecover_m_pair)
@@ -378,7 +364,7 @@ def do_iceskill(prop, logger):
         sys.exit(-1)
 
     # Check OFS -- if not Great Lakes, then quit
-    ofscheck = ['leofs', 'loofs', 'lmhofs', 'lsofs']
+    ofscheck = ['leofs', 'loofs', 'lmhofs', 'lsofs', 'loofs2']
     if prop.ofs not in ofscheck:
         logger.error(
             "Ice skill can't be run for %s. Input a Great Lakes OFS.",
@@ -411,17 +397,7 @@ def do_iceskill(prop, logger):
     # Daily model average argument verification
     if prop.dailyavg is None:
         prop.dailyavg = False
-    elif prop.dailyavg is not None:
-        # Use a dictionary for lookup
-        truthy_strings = {'true': True, 'yes': True, '1': True, 'True': True}
-        falsy_strings = {'false': False,
-                         'no': False, '0': False, 'False': False}
-        if prop.dailyavg in truthy_strings:
-            prop.dailyavg = truthy_strings[prop.dailyavg]
-        elif prop.dailyavg in falsy_strings:
-            prop.dailyavg = falsy_strings[prop.dailyavg]
-        else:
-            prop.dailyavg = False
+
 
     # Directory tree set-up
     # stats csv files
@@ -474,13 +450,9 @@ def do_iceskill(prop, logger):
         dir_params['model_icesave_dir'],
     )
     os.makedirs(prop.data_model_ice_path, exist_ok=True)
-    # Example (local) FVCOM ice data
+    # Example (local) ice data
     prop.model_path = os.path.join(
         dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir'],
-    )
-    # Example (local) SCHISM ice data
-    prop.model_path_schism = os.path.join(
-        dir_params['model_historical_dir'], prop.ofs,
     )
 
     # Parse whichcasts argument
@@ -562,18 +534,13 @@ def do_iceskill(prop, logger):
         )
         logger.info('Grabbed ice cover observations')
         # Concatenate existing model output
-        if prop.model_source == 'fvcom':
-            icecover_m, lon_m, lat_m, time_m = get_icecover_fvcom.\
-            get_icecover_fvcom(prop, logger)
-        elif prop.model_source == 'schism':
-            icecover_m, lon_m, lat_m, time_m = get_icecover_schism.\
-                get_icecover_schism(prop, logger)
+        icecover_m, lon_m, lat_m, time_m = get_icecover_model.\
+        get_icecover_model(prop, logger)
         logger.info('Grabbed ice cover model output')
     # -------------------------------------------------------------------------
 
         # -- Read lat, lon and ice cover from GLSEA netCDF file (observations)
         lon_o = np.asarray(obsice.variables['lon'][:])
-        lon_o = lon_o + 360
         lat_o = np.asarray(obsice.variables['lat'][:])
         icecover_o = np.asarray(obsice.variables['ice_concentration'][:, :, :])
         time_o = np.asarray(obsice.variables['time'][:])
@@ -585,7 +552,21 @@ def do_iceskill(prop, logger):
         lat_o = np.transpose(lat_o)
         logger.info('GLSEA parsing complete')
 
-        # Pair model output to observations, get master time arrays
+        # First check time arrays for size compatibility
+        set_o = set(time_o)
+        set_m = set(time_m)
+        # Find dates in set_o but not in set_m
+        difference_o_minus_m = set_o - set_m
+        # Convert the result back to a list
+        result_o = list(difference_o_minus_m)
+        # Find dates in set_m but not in set_o
+        difference_m_minus_o = set_m - set_o
+        result_m = list(difference_m_minus_o)
+        if len(result_m) > 0 or len(result_o) > 0:
+            logger.error('Model & GLSEA dates are mismatched! Please '
+                         'delete the "data" directory and try again!')
+
+        # Now, pair model output to observations, get master time arrays
         icecover_o, icecover_m, time_all, time_all_dt, icecover_hist, \
             icecover_hist_2d = pair_ice(
                 time_m,
@@ -594,8 +575,7 @@ def do_iceskill(prop, logger):
                 icecover_o,
                 prop,
                 logger,
-                ice_clim,
-            )
+                ice_clim)
         logger.info('Done with data pairing')
 
         # Get OFS station inventory, find model & obs lat & lon nearest to
@@ -668,7 +648,7 @@ def do_iceskill(prop, logger):
 
             # ---------INTERPOLATION-----------------
             # Create a map
-            map = Basemap(
+            ice_map = Basemap(
                 projection='merc',
                 resolution='i', area_thresh=1.0,
                 llcrnrlon=lon_o.min()-brdr,
@@ -678,9 +658,9 @@ def do_iceskill(prop, logger):
             )
 
             # Project GLSEA lon&lat onto xo&yo
-            xo, yo = map(lon_o, lat_o)
+            xo, yo = ice_map(lon_o, lat_o)
             # Project model lon&lat onto xm&ym
-            xm, ym = map(lon_m, lat_m)
+            xm, ym = ice_map(lon_m, lat_m)
             # Interpolate model data to GLSEA grid
             icecover_m_interp = interp.griddata(
                 (xm, ym), np.array(icecover_m[i, :]*100), (xo, yo),
@@ -799,13 +779,7 @@ def do_iceskill(prop, logger):
                     ~isnan(icecover_o_mask),
             ) >= 2:
                 ice_1d_stats['rmse_all'].append(
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                icecover_m_mask-icecover_o_mask
-                            )**2,
-                        ),
-                    ),
+                    nos_metrics.rmse(icecover_m_mask, icecover_o_mask),
                 )
             else:
                 ice_1d_stats['rmse_all'].append(np.nan)
@@ -815,13 +789,7 @@ def do_iceskill(prop, logger):
                     ~isnan(icecover_o_mask2),
             ) >= 2:
                 ice_1d_stats['rmse_either'].append(
-                    np.sqrt(
-                        np.nanmean(
-                            (
-                                icecover_m_mask2-icecover_o_mask2
-                            )**2,
-                        ),
-                    ),
+                    nos_metrics.rmse(icecover_m_mask2, icecover_o_mask2),
                 )
             else:
                 ice_1d_stats['rmse_either'].append(np.nan)
@@ -996,10 +964,10 @@ def do_iceskill(prop, logger):
                     )
                     ice_2d_stats['obs_allmean'] = np.array(
                         np.nanmean(obs_all, axis=0),
-                    )+ice_2d_masks['openwater_mask']
+                    )+ice_2d_masks['noiceobs_mask']
                     ice_2d_stats['mod_allmean'] = np.array(
                         np.nanmean(mod_all, axis=0),
-                    )+ice_2d_masks['openwater_mask']
+                    )+ice_2d_masks['noicemod_mask']
                     # Do RMSE
                     ice_2d_stats['rmse_2d'] = np.array(
                         np.sqrt(
@@ -1256,29 +1224,45 @@ if __name__ == '__main__':
     # Parse (optional and required) command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-o', '--ofs', required=True, help="""Choose from the list on the
+        '-o',
+        '--ofs',
+        required=True,
+        help="""Choose from the list in the
         ofs_extents/ folder, you can also create your own shapefile,
         add it at the ofs_extents/ folder and call it here""", )
     parser.add_argument(
-        '-p', '--path', required=True,
-        help='Inventory File path where ofs_extents/ folder is located', )
+        '-p',
+        '--path',
+        required=True,
+        help='Inventory File path where ofs_extents folder is located', )
     parser.add_argument(
-        '-s', '--StartDate_full', required=True,
+        '-s',
+        '--StartDate_full',
+        required=True,
         help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g.'2023-01-01T12:34:00Z'",
     )
     parser.add_argument(
-        '-e', '--EndDate_full', required=True,
+        '-e',
+        '--EndDate_full',
+        required=True,
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'",
     )
     parser.add_argument(
-        '-ws', '--Whichcasts', required=True,
-        help="whichcasts: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
+        '-ws',
+        '--Whichcasts',
+        required=True,
+        help="whichcasts: 'nowcast', 'forecast_b', 'hindcast'", )
     parser.add_argument(
-        '-da', '--DailyAverage', required=False,
+        '-da',
+        '--DailyAverage',
+        action='store_true',
         help='Use a daily average model output instead of single hour; True '
         'or False (False is default)', )
     parser.add_argument(
-        '-ts', '--TimeStep', required=False,
+        '-ts',
+        '--TimeStep',
+        required=False,
+        default='daily',
         help='Set assessment time step: hourly or daily (daily is default)', )
     args = parser.parse_args()
 
@@ -1288,28 +1272,8 @@ if __name__ == '__main__':
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.whichcasts = args.Whichcasts
+    prop1.ice_dt = args.TimeStep
+    prop1.dailyavg = args.DailyAverage
     prop1.model_source = model_source.model_source(prop1.ofs)
-
-    # Set time step
-    if args.TimeStep is None:
-        #print('No time step input -- defaulting to daily')
-        prop1.ice_dt = 'daily'
-    else:
-        prop1.ice_dt = args.TimeStep
-
-    # Set daily average argument
-    if args.DailyAverage is None:
-        #print('No daily average input -- defaulting to False')
-        prop1.dailyavg = False
-    else:
-        prop1.dailyavg = args.DailyAverage
-
-    # Do forecast_a to assess a single forecast cycle
-    if 'forecast_a' in prop1.whichcasts:
-        if args.Forecast_Hr is None:
-            print('No forecast cycle input -- defaulting to 00Z')
-            prop1.forecast_hr = '00hr'
-        elif args.FileType is not None:
-            prop1.forecast_hr = args.Forecast_Hr
 
     do_iceskill(prop1, None)

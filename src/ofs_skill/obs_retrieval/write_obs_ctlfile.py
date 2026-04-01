@@ -40,9 +40,11 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
     retrieve_t_and_c_station,
 )
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
+from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 
 _COOPS_MAX_WORKERS = 6
 _NDBC_MAX_WORKERS = 6
+_CHS_MAX_WORKERS = 1
 _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
 
@@ -430,6 +432,69 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
             )
     return None
 
+def _process_chs_station(id_number, name, x_value, y_value,
+                          start_date, end_date, variable, name_var,
+                          datum, ofs, logger):
+    """Process a single CHS station. Returns CTL entry string or None."""
+    try:
+        data_station = retrieve_chs_station(
+            start_date,
+            end_date,
+            id_number,
+            variable,
+            logger
+            )
+
+        if data_station is None:
+            return None
+
+        logger.info(
+            'CHS %s data found for '
+            'station %s.', variable, str(id_number)
+            )
+        if 'l' not in ofs[0]:
+            if (str(
+                    data_station['Datum'][1]
+                    ).upper() == datum):
+                zdiff = 0
+            else:
+                ldatum = datum.lower()
+                dummyval = 10
+                _,_,z = vdatum.convert(
+                    data_station['Datum'][1].lower(),
+                    ldatum,
+                    y_value,
+                    x_value,
+                    dummyval, #use dummy value
+                    online=True,
+                    epoch=None)
+                if math.isinf(z):
+                    zdiff = 'RANGE'
+                else:
+                    zdiff = round(z-dummyval,2) # datum offset
+        else:
+            if datum == 'IGLD':
+                if ofs == 'leofs':
+                    zdiff = 173.5
+                elif ofs == 'lmhofs':
+                    zdiff = 176.0
+                elif ofs == 'lsofs':
+                    zdiff = 183.2
+                elif ofs == 'loofs' or ofs == 'loofs2':
+                    zdiff = 74.2
+            elif datum == 'LWD':
+                zdiff = 0 # No correction needed
+            else:
+                zdiff = 'UNKNOWN'
+        return (
+            f'{str( id_number )} '
+            f'{str( id_number )}_{name_var}_'
+            f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
+            f'{x_value:.3f} '
+            f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
+            )
+    except:
+        pass
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
@@ -502,6 +567,23 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
             for _, row in ndbc_stations.iterrows():
                 futures.append(executor.submit(
                     _process_ndbc_station,
+                    row['ID'], row['Name'], row['X'], row['Y'],
+                    start_date, end_date, variable, name_var,
+                    datum, ofs, logger
+                ))
+            for future in futures:
+                result = future.result()
+                if result is not None:
+                    ctl_file.append(result)
+    # --- CHS stations (parallel) ---
+    chs_stations = stations_with_var.loc[
+        stations_with_var['Source'] == 'CHS']
+    if not chs_stations.empty:
+        futures = []
+        with ThreadPoolExecutor(max_workers=_CHS_MAX_WORKERS) as executor:
+            for _, row in chs_stations.iterrows():
+                futures.append(executor.submit(
+                    _process_chs_station,
                     row['ID'], row['Name'], row['X'], row['Y'],
                     start_date, end_date, variable, name_var,
                     datum, ofs, logger
@@ -640,6 +722,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
 
     if datum.lower() == 'igld85':
         datum = 'IGLD'
+    if datum.lower() == 'navd88':
+        datum = 'NAVD'
 
     # Map variable names to their availability column
     var_to_col = {

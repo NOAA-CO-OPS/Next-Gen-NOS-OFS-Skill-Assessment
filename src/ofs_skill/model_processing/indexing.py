@@ -3,7 +3,7 @@ Spatial Indexing Functions
 
 Functions for matching observation stations to model nodes and depth levels.
 Calculates spatial distances and finds nearest neighbors for different model types
-(FVCOM, ROMS, SCHISM).
+(FVCOM, ROMS, SCHISM, ADCIRC).
 """
 
 import logging
@@ -26,7 +26,7 @@ def index_nearest_node(
 
     Calculates the distance between observation stations and all model nodes,
     returning the index of the nearest node for each station. Supports different
-    model frameworks (FVCOM, ROMS, SCHISM).
+    model frameworks (FVCOM, ROMS, SCHISM, ADCIRC).
 
     Parameters
     ----------
@@ -38,8 +38,9 @@ def index_nearest_node(
         - FVCOM: 'lonc', 'latc', 'lon', 'lat'
         - ROMS: 'lon_rho', 'lat_rho', 'mask_rho'
         - SCHISM: 'lon', 'lat'
+        - ADCIRC: 'lon', 'lat'
     model_source : str
-        Model type: 'fvcom', 'roms', or 'schism'
+        Model type: 'fvcom', 'roms', 'schism', or 'adcirc'
     name_var : str
         Variable name: 'wl', 'temp', 'salt', or 'cu'
     logger : logging.Logger
@@ -330,6 +331,10 @@ def index_nearest_node(
                nearest_idx = int(nearby_nodes[np.nanargmin(dist)][0])
                index_min_dist.append(nearest_idx)
             logger.info('Nearest element found: station %s of %s', obs_p + 1, len(ctl_file_extract))
+
+    elif model_source == 'adcirc':
+        raise NotImplementedError('ADCIRC indexing not yet implemented.')
+    
     else:
         raise ValueError(f'Unknown model source: {model_source}')
 
@@ -363,7 +368,7 @@ def index_nearest_depth(
     station_ctl_file_extract : array-like
         Station information including depths
     model_source : str
-        Model type: 'fvcom', 'roms', or 'schism'
+        Model type: 'fvcom', 'roms', 'adcirc', or 'schism'
     name_var : str
         Variable name
     logger : logging.Logger
@@ -382,211 +387,290 @@ def index_nearest_depth(
     For 'stations' file type, returns empty lists.
     Model depths are typically negative (below surface).
     """
-    if prop.ofsfiletype != 'fields':
-        return [], []
 
-    index_min_depth = []
-    depth_value = []
-    length = len(index_min_dist)
+    if prop.ofsfiletype == 'fields':
+        index_min_depth = []
+        depth_value = []
+        length = len(index_min_dist)
 
-    if model_source == 'fvcom':
-        zc_np = np.array(model_netcdf['zc'])  # Element center depths
-        z_np = np.array(model_netcdf['z'])    # Node depths
-    elif model_source == 'roms':
-        lon_rho_np = np.array(model_netcdf['lon_rho'])
-        s_rho_np = np.array(model_netcdf['s_rho'])
-        h_np = np.array(model_netcdf['h'])
-
-        # Squeeze out singleton dimensions for grid arrays
-        lon_rho_np = np.squeeze(lon_rho_np)
-        h_np = np.squeeze(h_np)
-        s_rho_np = np.squeeze(s_rho_np)
-
-        # For ROMS, h (bathymetry) is time-independent but may have a time dimension
-        # If h is 3D (time, eta_rho, xi_rho), extract the first time slice
-        if h_np.ndim == 3:
-            logger.info(
-                f'h array has 3 dimensions {h_np.shape}, extracting 2D grid '
-                f'from first time slice: h[0, :, :] -> {h_np[0, :, :].shape}'
-            )
-            h_np = h_np[0, :, :]
-
-        # Similarly for lon_rho and lat_rho if they have time dimension
-        if lon_rho_np.ndim == 3:
-            logger.info(
-                f'lon_rho has 3 dimensions {lon_rho_np.shape}, extracting 2D grid '
-                f'from first time slice'
-            )
-            lon_rho_np = lon_rho_np[0, :, :]
-
-        # s_rho is 1D (vertical levels), ensure it stays that way
-        if s_rho_np.ndim > 1:
-            logger.warning(
-                f's_rho has {s_rho_np.ndim} dimensions {s_rho_np.shape}, '
-                f'extracting 1D array'
-            )
-            s_rho_np = s_rho_np.flatten() if s_rho_np.size == s_rho_np.shape[-1] else s_rho_np[0, :]
-
-        # Log shapes for debugging
-        logger.debug(
-            f'ROMS depth indexing - Array shapes after processing: '
-            f'lon_rho {lon_rho_np.shape}, h {h_np.shape}, s_rho {s_rho_np.shape}'
-        )
-
-        # Ensure h_np and lon_rho_np have the same 2D shape
-        if h_np.ndim == 2 and lon_rho_np.ndim == 2:
-            if h_np.shape != lon_rho_np.shape:
-                logger.error(
-                    f'Critical shape mismatch: h_np {h_np.shape} != '
-                    f'lon_rho_np {lon_rho_np.shape}. '
-                    f'Attempting to transpose h_np to match.'
-                )
-                # Try transposing h_np to match lon_rho_np
-                if h_np.shape == lon_rho_np.shape[::-1]:
-                    logger.info('Transposing h_np to match lon_rho_np shape')
-                    h_np = h_np.T
-                else:
-                    logger.error(
-                        f'Cannot reconcile shapes: h_np {h_np.shape}, '
-                        f'lon_rho_np {lon_rho_np.shape}'
-                    )
-                    raise ValueError(
-                        f'Incompatible grid array shapes: h_np {h_np.shape} '
-                        f'vs lon_rho_np {lon_rho_np.shape}'
-                    )
-
-    for idx in range(0, length):
         if model_source == 'fvcom':
-            if name_var == 'cu':
-                ele = index_min_dist[idx]
-                model_depths = zc_np[:, ele]
-            else:
-                node = index_min_dist[idx]
-                model_depths = z_np[:, node]
+            zc_np = np.array(model_netcdf['zc'])  # Element center depths
+            z_np = np.array(model_netcdf['z'])    # Node depths
+        elif model_source == 'roms':
+            lon_rho_np = np.array(model_netcdf['lon_rho'])
+            s_rho_np = np.array(model_netcdf['s_rho'])
+            h_np = np.array(model_netcdf['h'])
 
-            # Get station depth
-            if hasattr(prop, 'user_input_location') and prop.user_input_location:
-                station_depth = station_ctl_file_extract
-            else:
+            # Squeeze out singleton dimensions for grid arrays
+            lon_rho_np = np.squeeze(lon_rho_np)
+            h_np = np.squeeze(h_np)
+            s_rho_np = np.squeeze(s_rho_np)
+
+            # For ROMS, h (bathymetry) is time-independent but may have a time dimension
+            # If h is 3D (time, eta_rho, xi_rho), extract the first time slice
+            if h_np.ndim == 3:
+                logger.info(
+                    f'h array has 3 dimensions {h_np.shape}, extracting 2D grid '
+                    f'from first time slice: h[0, :, :] -> {h_np[0, :, :].shape}'
+                )
+                h_np = h_np[0, :, :]
+
+            # Similarly for lon_rho and lat_rho if they have time dimension
+            if lon_rho_np.ndim == 3:
+                logger.info(
+                    f'lon_rho has 3 dimensions {lon_rho_np.shape}, extracting 2D grid '
+                    f'from first time slice'
+                )
+                lon_rho_np = lon_rho_np[0, :, :]
+
+            # s_rho is 1D (vertical levels), ensure it stays that way
+            if s_rho_np.ndim > 1:
+                logger.warning(
+                    f's_rho has {s_rho_np.ndim} dimensions {s_rho_np.shape}, '
+                    f'extracting 1D array'
+                )
+                s_rho_np = s_rho_np.flatten() if s_rho_np.size == s_rho_np.shape[-1] else s_rho_np[0, :]
+
+            # Log shapes for debugging
+            logger.debug(
+                f'ROMS depth indexing - Array shapes after processing: '
+                f'lon_rho {lon_rho_np.shape}, h {h_np.shape}, s_rho {s_rho_np.shape}'
+            )
+
+            # Ensure h_np and lon_rho_np have the same 2D shape
+            if h_np.ndim == 2 and lon_rho_np.ndim == 2:
+                if h_np.shape != lon_rho_np.shape:
+                    logger.error(
+                        f'Critical shape mismatch: h_np {h_np.shape} != '
+                        f'lon_rho_np {lon_rho_np.shape}. '
+                        f'Attempting to transpose h_np to match.'
+                    )
+                    # Try transposing h_np to match lon_rho_np
+                    if h_np.shape == lon_rho_np.shape[::-1]:
+                        logger.info('Transposing h_np to match lon_rho_np shape')
+                        h_np = h_np.T
+                    else:
+                        logger.error(
+                            f'Cannot reconcile shapes: h_np {h_np.shape}, '
+                            f'lon_rho_np {lon_rho_np.shape}'
+                        )
+                        raise ValueError(
+                            f'Incompatible grid array shapes: h_np {h_np.shape} '
+                            f'vs lon_rho_np {lon_rho_np.shape}'
+                        )
+
+        for idx in range(0, length):
+            if model_source == 'fvcom':
+                if name_var == 'cu':
+                    ele = index_min_dist[idx]
+                    model_depths = zc_np[:, ele]
+                else:
+                    node = index_min_dist[idx]
+                    model_depths = z_np[node,:]
+
+                # Get station depth
+                if hasattr(prop, 'user_input_location') and prop.user_input_location:
+                    station_depth = station_ctl_file_extract
+                else:
+                    station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+
+                # Find nearest depth level
+                # Model depths are negative, station depths are positive
+                dist = [abs(float(station_depth) + depth) for depth in model_depths]
+                index_min_depth_node = dist.index(min(dist))
+                depth_value.append(model_depths[index_min_depth_node])
+                index_min_depth.append(index_min_depth_node)
+
+                logger.info(
+                    f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
+                )
+
+            elif model_source == 'roms':
+                # Check if this station had a valid nearest node
+                if np.isnan(index_min_dist[idx]):
+                    index_min_depth.append(np.nan)
+                    depth_value.append(np.nan)
+                    logger.warning(
+                        f'No valid node for station {idx + 1}, skipping depth calculation'
+                    )
+                    continue
+
+                try:
+                    # Ensure h_np is 2D before unraveling
+                    if h_np.ndim != 2:
+                        logger.error(
+                            f'h_np has {h_np.ndim} dimensions (shape {h_np.shape}), '
+                            f'expected 2D for unraveling indices'
+                        )
+                        index_min_depth.append(np.nan)
+                        depth_value.append(np.nan)
+                        continue
+
+                    # Unravel using lon_rho shape (same as used in index_nearest_node)
+                    # to ensure consistency
+                    if lon_rho_np.ndim == 2:
+                        unravel_shape = lon_rho_np.shape
+                    else:
+                        # Fallback to h_np shape if lon_rho_np isn't 2D
+                        unravel_shape = h_np.shape
+
+                    i_index, j_index = np.unravel_index(
+                        int(index_min_dist[idx]), unravel_shape
+                    )
+
+                    # Validate indices are within bounds
+                    if i_index >= h_np.shape[0] or j_index >= h_np.shape[1]:
+                        logger.warning(
+                            f'Unraveled indices [{i_index}, {j_index}] exceed h_np shape '
+                            f'{h_np.shape} for station {idx + 1}'
+                        )
+                        index_min_depth.append(np.nan)
+                        depth_value.append(np.nan)
+                        continue
+
+                except (TypeError, ValueError) as e:
+                    logger.warning(
+                        f'Cannot unravel index {index_min_dist[idx]} for station {idx + 1}: {e}'
+                    )
+                    index_min_depth.append(np.nan)
+                    depth_value.append(np.nan)
+                    continue
+
+                # Calculate depth levels for this location
+                model_depths = np.asarray(s_rho_np) * h_np[i_index, j_index]
                 station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
 
-            # Find nearest depth level
-            # Model depths are negative, station depths are positive
-            dist = [abs(float(station_depth) + depth) for depth in model_depths]
-            index_min_depth_node = dist.index(min(dist))
-            depth_value.append(model_depths[index_min_depth_node])
-            index_min_depth.append(index_min_depth_node)
+                # Find nearest depth level
+                dist = [abs(float(station_depth) + depth) for depth in model_depths]
+                index_min_depth_node = dist.index(min(dist))
+                depth_value.append(model_depths[index_min_depth_node])
+                index_min_depth.append(index_min_depth_node)
 
-            logger.info(
-                f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
-            )
-
-        elif model_source == 'roms':
-            # Check if this station had a valid nearest node
-            if np.isnan(index_min_dist[idx]):
-                index_min_depth.append(np.nan)
-                depth_value.append(np.nan)
-                logger.warning(
-                    f'No valid node for station {idx + 1}, skipping depth calculation'
+                logger.info(
+                    f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
                 )
-                continue
 
-            try:
-                # Ensure h_np is 2D before unraveling
-                if h_np.ndim != 2:
-                    logger.error(
-                        f'h_np has {h_np.ndim} dimensions (shape {h_np.shape}), '
-                        f'expected 2D for unraveling indices'
-                    )
-                    index_min_depth.append(np.nan)
-                    depth_value.append(np.nan)
-                    continue
-
-                # Unravel using lon_rho shape (same as used in index_nearest_node)
-                # to ensure consistency
-                if lon_rho_np.ndim == 2:
-                    unravel_shape = lon_rho_np.shape
+            elif model_source == 'schism':
+                if name_var == 'wl':
+                    index_min_depth.append(0)
                 else:
-                    # Fallback to h_np shape if lon_rho_np isn't 2D
-                    unravel_shape = h_np.shape
+                    # we assume layers are consistance at all the time steps,
+                    # therefore, we use depth layes at time 0
+                    #z_coords_1d = model_netcdf['zCoordinates'].load()
+                    z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).load()  # to handle memory error
+                    node = index_min_dist[idx]
 
-                i_index, j_index = np.unravel_index(
-                    int(index_min_dist[idx]), unravel_shape
-                )
+                    if np.isnan(node) or np.isnan(float(np.array(station_ctl_file_extract)[:, 3][idx])):
+                       logger.warning(f'No nearby depth found for node {idx + 1}')
+                       index_min_dist.append(-1)
+                       depth_value.append(-1)
+                       continue
 
-                # Validate indices are within bounds
-                if i_index >= h_np.shape[0] or j_index >= h_np.shape[1]:
-                    logger.warning(
-                        f'Unraveled indices [{i_index}, {j_index}] exceed h_np shape '
-                        f'{h_np.shape} for station {idx + 1}'
-                    )
+                    #model_depths = z_coords_1d[0,node,:]
+                    model_depths = z_coords_1d[node,:].values
+                    station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                    dist = []
+                    # this is positive here because model depths (depth) are negative
+                    # values and obs depths (station_depth) are positive
+                    for depth in model_depths:
+
+                        if  not np.isnan(depth):
+                            dist.append(float(station_depth) + depth)
+                        else:
+                            dist.append(np.nan)
+                    dist = [np.abs(i) for i in dist]
+                    index_min_depth_node = dist.index(np.nanmin(dist))
+                    index_min_depth.append(index_min_depth_node)
+                    depth_value.append(model_depths[
+                    index_min_depth_node])
+                logger.info(
+                  'Nearest depth found: node %s of %s', idx + 1,
+                  len(index_min_dist))
+            elif model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    if name_var == 'wl':
+                        index_min_depth.append(0)
+                        depth_value.append(0.0)
+                        logger.info(
+                            'Nearest depth found: node %s of %s', 
+                            idx + 1, len(index_min_dist)
+                        )
+                    else:
+                        # We raise en exception here for STOFS-2D-Global non-water level variables 
+                        # because it does not have depth-wise data, and logic elsewhere should steer users
+                        # away from calling this function with STOFS-2D-Global and other variables.
+                        raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
+                else:
+                    raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
+                
+    elif prop.ofsfiletype == 'stations':
+        if 'stofs' in prop.ofs:
+            return [], []
+        index_min_depth = []
+        depth_value = []
+        length = len(index_min_dist)
+        if model_source == 'fvcom':
+            z_np = np.array(model_netcdf['z'])
+        elif model_source == 'roms':
+            s_rho_np = np.array(model_netcdf['s_rho'])
+            h_np = np.array(model_netcdf['h'])
+        elif model_source == 'schism' and prop.ofs == 'loofs2':
+            z_np = np.array(model_netcdf['zcoords'])
+
+        for idx in range(0, length):
+            if ~np.isnan(index_min_dist[idx]):
+                node = index_min_dist[idx]
+                if model_source=='fvcom':
+                    model_depths = np.asarray(z_np[:,node,0])
+                elif model_source=='roms':
+                    model_depths = np.asarray(s_rho_np*h_np[0,node])
+                elif model_source == 'schism' and prop.ofs == 'loofs2':
+                    model_depths = np.asarray(z_np[0,node,:])
+                elif model_source == 'adcirc':
+                    if prop.ofs == 'stofs_2d_glo':
+                        if name_var == 'wl':
+                            index_min_depth.append(0)
+                            depth_value.append(0.0)
+                            logger.info(
+                                'Nearest depth found: node %s of %s',
+                                idx + 1, len(index_min_dist)
+                            )
+                            continue
+                        else:
+                            # We raise en exception here for STOFS-2D-Global non-water level variables 
+                            # because it does not have depth-wise data, and logic elsewhere should steer users
+                            # away from calling this function with STOFS-2D-Global and other variables.
+                            raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
+                    else:
+                        raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
+
+                if np.isnan(model_depths).all():
                     index_min_depth.append(np.nan)
                     depth_value.append(np.nan)
                     continue
-
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    f'Cannot unravel index {index_min_dist[idx]} for station {idx + 1}: {e}'
-                )
-                index_min_depth.append(np.nan)
-                depth_value.append(np.nan)
-                continue
-
-            # Calculate depth levels for this location
-            model_depths = np.asarray(s_rho_np) * h_np[i_index, j_index]
-            station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
-
-            # Find nearest depth level
-            dist = [abs(float(station_depth) + depth) for depth in model_depths]
-            index_min_depth_node = dist.index(min(dist))
-            depth_value.append(model_depths[index_min_depth_node])
-            index_min_depth.append(index_min_depth_node)
-
-            logger.info(
-                f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
-            )
-
-        elif model_source == 'schism':
-            if name_var == 'wl':
-                index_min_depth.append(0)
-            else:
-                # we assume layers are consistance at all the time steps,
-                # therefore, we use depth layes at time 0
-                #z_coords_1d = model_netcdf['zCoordinates'].load()
-                z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).load()  # to handle memory error
-                node = index_min_dist[idx]
-
-                if np.isnan(node) or np.isnan(float(np.array(station_ctl_file_extract)[:, 3][idx])):
-                   logger.warning(f'No nearby depth found for node {idx + 1}')
-                   index_min_dist.append(-1)
-                   depth_value.append(-1)
-                   continue
-
-                #model_depths = z_coords_1d[0,node,:]
-                model_depths = z_coords_1d[node,:].values
                 station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
                 dist = []
                 # this is positive here because model depths (depth) are negative
                 # values and obs depths (station_depth) are positive
                 for depth in model_depths:
+                    dist.append(float(station_depth) + depth)
 
-                    if  not np.isnan(depth):
-                        dist.append(float(station_depth) + depth)
-                    else:
-                        dist.append(np.nan)
-                dist = [np.abs(i) for i in dist]
+                dist = [abs(i) for i in dist]
                 index_min_depth_node = dist.index(np.nanmin(dist))
-                index_min_depth.append(index_min_depth_node)
                 depth_value.append(model_depths[
-                index_min_depth_node])
-            logger.info(
-              'Nearest depth found: node %s of %s', idx + 1,
-              len(index_min_dist))
-
-    return index_min_depth, depth_value
+                    index_min_depth_node])
+                index_min_depth.append(index_min_depth_node)
+                logger.info(
+                    'Nearest depth found: node %s of %s', idx + 1,
+                    len(index_min_dist))
+            else:
+                index_min_depth.append(np.nan)
+                depth_value.append(np.nan)
+    return index_min_depth, np.abs(depth_value)
 
 
 def index_nearest_station(
+    prop: Any,
     ctl_file_extract: list[list[str]],
     model_netcdf: dict[str, Any],
     model_source: str,
@@ -602,6 +686,8 @@ def index_nearest_station(
 
     Parameters
     ----------
+    prop : Any
+        Program properties/configuration object
     ctl_file_extract : List[List[str]]
         Observation station locations
     model_netcdf : Dict[str, Any]
@@ -612,6 +698,8 @@ def index_nearest_station(
         Variable name
     logger : logging.Logger
         Logger instance
+    id_extract : List[List[str]]
+        Observation station IDs
 
     Returns
     -------
@@ -627,7 +715,25 @@ def index_nearest_station(
     index_min_dist = []
     min_dist = []
 
-    if model_source == 'fvcom':
+    if 'stofs' in prop.ofs:
+        length = len(ctl_file_extract)
+
+        station_names_str = model_netcdf['station_name'][0].astype(str).values
+
+        for obs_p in range(length):
+            match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
+            station_mask_contains = match_indices != -1
+            indices = np.where(station_mask_contains)[0]
+
+            if indices.size > 0:
+                index = indices[0]
+                index_min_dist.append(index)
+                logger.info('Nearest station found: station %s of %s', obs_p + 1, length)
+            else:
+                index_min_dist.append(np.nan)
+                logger.info('Nearest station NOT found: station %s of %s', obs_p + 1, length)
+
+    elif model_source == 'fvcom' or model_source == 'schism':
         length = len(ctl_file_extract)
         lon_np = np.array(model_netcdf['lon'])[1]
         lat_np = np.array(model_netcdf['lat'])[1]
@@ -658,7 +764,7 @@ def index_nearest_station(
                     dist.append(dvalue)
 
                 if np.nanmin(dist) <= max_dist:
-                    index_min_dist.append(int(nearby_nodes[dist.index(min(dist))]))
+                    index_min_dist.append(int(nearby_nodes[dist.index(min(dist)), 0]))
                     min_dist.append(np.nanmin(dist))
                     logger.info(
                         f'Nearest station found: station {obs_p + 1} of {len(ctl_file_extract)}'
@@ -680,24 +786,27 @@ def index_nearest_station(
         lon_rho_np = np.array(model_netcdf['lon_rho'])
         lat_rho_np = np.array(model_netcdf['lat_rho'])
 
+        lat_flat = lat_rho_np.ravel()
+        lon_flat = lon_rho_np.ravel()
+
         for obs_p in range(len(ctl_file_extract)):
-            dist = np.empty(len(model_netcdf['lon_rho']))
+            dist = np.empty(lat_flat.shape)
             dist[:] = np.nan
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
             nearby_nodes = np.argwhere(
-                (lon_rho_np < obs_lon + 0.1) &
-                (lon_rho_np > obs_lon - 0.1) &
-                (lat_rho_np < obs_lat + 0.1) &
-                (lat_rho_np > obs_lat - 0.1)
+                (lon_flat < obs_lon + 0.1) &
+                (lon_flat > obs_lon - 0.1) &
+                (lat_flat < obs_lat + 0.1) &
+                (lat_flat > obs_lat - 0.1)
             )
 
             if nearby_nodes.size > 0:
-                for i_index in nearby_nodes:
+                for i_index in nearby_nodes[:, 0]:
                     distance = calculate_station_distance(
-                        lat_rho_np[i_index],
-                        lon_rho_np[i_index],
+                        float(lat_flat[i_index]),
+                        float(lon_flat[i_index]),
                         obs_lat,
                         obs_lon
                     )
@@ -721,22 +830,6 @@ def index_nearest_station(
                 logger.info(
                     f'Nearest station NOT found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
-    elif model_source == 'schism':
-        length = len(ctl_file_extract)
 
-        station_names_str = model_netcdf['station_name'][0].astype(str).values
-
-        for obs_p in range(length):
-            match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
-            station_mask_contains = match_indices != -1
-            indices = np.where(station_mask_contains)[0]
-
-            if indices.size > 0:
-                index = indices[0]
-                index_min_dist.append(index)
-                logger.info(f'Nearest station found: station {obs_p + 1} of {length}')
-            else:
-                index_min_dist.append(np.nan)
-                logger.info(f'Nearest station NOT found: station {obs_p + 1} of {length}')
 
     return index_min_dist

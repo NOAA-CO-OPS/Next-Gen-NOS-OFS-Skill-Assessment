@@ -433,7 +433,7 @@ def get_skill(prop, logger):
 
     # prop.whichcast validation
     if (prop.whichcast is not None) and (
-        prop.whichcast not in ['nowcast', 'forecast_a', 'forecast_b']
+        prop.whichcast not in ['nowcast', 'forecast_a', 'forecast_b', 'hindcast']
     ):
         error_message = f'Please check prop.whichcast - ' \
                         f'{prop.whichcast}. Abort!'

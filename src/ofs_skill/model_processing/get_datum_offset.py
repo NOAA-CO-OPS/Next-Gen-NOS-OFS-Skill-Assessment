@@ -290,6 +290,8 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
     - Bucket: noaa-nos-ofs-pds
     - Key format: OFS_Grid_Datum/{ofs}_vdatums.nc
     - Returns error code -9990 if file cannot be opened
+    - Returns error code -9995 for STOFS-2D-Global, which 
+      uses coastalmodeling_vdatum instead of a vdatum file on S3.
 
     Examples
     --------
@@ -299,17 +301,23 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
     ... else:
     ...     print(f"Variables: {list(vdatums.data_vars)}")
     """
-    s3 = s3fs.S3FileSystem(anon=True)
-    bucket_name = 'noaa-nos-ofs-pds'
-    key = f'OFS_Grid_Datum/{prop.ofs}_vdatums.nc'
-    url = f's3://{bucket_name}/{key}'
-    try:
-        vdatums = xr.open_dataset(s3.open(url, 'rb'))
-        return vdatums
-    except Exception as e_x:
-        logger.error('Error opening vdatums on the fly!')
-        logger.error(f'Error: {e_x}')
-        return -9990
+    if prop.ofs in ('stofs_2d_glo'):
+        # We shouldn't actually ever need to use this value, but just in case, return a 
+        # code that indicates no file to read for STOFS-2D-Global.
+        logger.info('STOFS-2D-Global uses coastalmodeling_vdatum conversion instead of a vdatum file on S3.')
+        return -9995
+    else:
+        s3 = s3fs.S3FileSystem(anon=True)
+        bucket_name = 'noaa-nos-ofs-pds'
+        key = f'OFS_Grid_Datum/{prop.ofs}_vdatums.nc'
+        url = f's3://{bucket_name}/{key}'
+        try:
+            vdatums = xr.open_dataset(s3.open(url, 'rb'))
+            return vdatums
+        except Exception as e_x:
+            logger.error('Error opening vdatums on the fly!')
+            logger.error(f'Error: {e_x}')
+            return -9990
 
 
 def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
@@ -331,7 +339,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         - ofsfiletype : str
             'stations' or 'fields'
         - model_source : str
-            'fvcom', 'roms', or 'schism'
+            'fvcom', 'roms', 'schism', or 'adcirc'
         - path : str
             Base path for auxiliary files (WCOFS MSL conversion)
     node : int
@@ -353,6 +361,9 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         - -9992: Error extracting offset for fields file
         - -9993: Error extracting offset for stations file
         - -9994: WCOFS MSL conversion file not found
+        - -9995: STOFS-2D-Global, as expected, has no file to return.
+                 This should never actually be returned in get_datum_offset, 
+                 but is here just in case.
         - -9999: Offset out of reasonable range
 
     Notes
@@ -363,9 +374,14 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         * If datum='LWD', returns 0 (no conversion needed)
         * Otherwise converts via '{datum}toLWD' field
         * Sign is inverted except for LEOFS
-    - STOFS models:
+    - STOFS-3D models:
         * Native datum is XGEOID20B
         * If datum='XGEOID20B', returns 0
+    - STOFS-2D-Global:
+        * Native datum is LMSL
+        * If datum='MSL', returns 0 (no conversion needed).
+        * No conversion file available; coastalmodeling_vdatum 
+          tool is used instead.
     - SSCOFS:
         * Model-0 is 0.23m below XGEOID20B
         * Converts via XGEOID20B as intermediate
@@ -384,7 +400,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     # If doing GLOFS and using the LWD datum, no correction is necessary.
     if prop.datum.lower() == 'lwd':
         return 0
-    # If doing STOFS and using the xgeoid20b datum, no correction is necessary.
+    # If doing STOFS-3D and using the xgeoid20b datum, no correction is necessary.
     if (prop.ofs in  ['stofs_3d_atl', 'stofs_3d_pac'] and prop.ofsfiletype == 'fields' and
         prop.datum.lower() == 'xgeoid20b'):
         return 0
@@ -394,17 +410,21 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     if (prop.ofs == 'stofs_3d_pac' and prop.ofsfiletype == 'stations' and
         prop.datum.lower() == 'msl'):
         return 0
+    # If doing STOFS-2D-Global and using MSL, no conversion.
+    if prop.ofs == 'stofs_2d_glo' and prop.datum.lower() == 'msl':
+        return 0
 
     # If not STOFS, read the correct vdatum file from NODD S3 on-the-fly
-    if 'stofs' not in prop.ofs:
+    # if prop.ofs not in ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac', 'loofs2'): # would be safer?
+    if 'stofs' not in prop.ofs and 'loofs2' not in prop.ofs:
         vdatums = read_vdatum_from_bucket(prop, logger)
         if isinstance(vdatums, int):
             return vdatums
     else:
-        logger.info('Doing datum conversion for STOFS!')
+        logger.info('Doing datum conversion for %s!', prop.ofs)
 
     # Set water levels to user-specified datum
-    if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs']:
+    if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
         # Deal with SSCOFS separately
         if prop.ofs == 'sscofs':
             # First get from model-0 to xgeoid -- the ofs-wide offset is
@@ -437,7 +457,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 logger.error('Wrong netcdf datum variable name!')
                 logger.error(f'Error: {e_x}')
                 return -9991
-    else:
+    elif prop.ofs != 'loofs2':
         try:
             datum_field = vdatums[f'{prop.datum.lower()}tolwd']
         except Exception as e_x:
@@ -484,7 +504,6 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         epoch=None
                                         )
                 elif prop.ofs == 'stofs_3d_pac':
-
                     _,_,z = vdatum.convert(
                                         nativedatum,
                                         prop.datum.lower(),
@@ -495,8 +514,22 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         epoch=None
                                         )
 
+                elif prop.ofs == 'loofs2':
+                    if prop.datum == 'IGLD85':
+                        # 74.2 m is the IGLD85 LWD offset for Lake Ontario
+                        # (LWD is 74.2 m below IGLD85 datum zero)
+                        z = dummyval - 74.2
+                    else:
+                        _,_,z = vdatum.convert(
+                                            nativedatum,
+                                            prop.datum.lower(),
+                                            model['lat'][0,node],
+                                            model['lon'][0,node],
+                                            dummyval, #use dummy value
+                                            online=True,
+                                            epoch=None
+                                            )
                 else:
-
                     _,_,z = vdatum.convert(
                                         nativedatum,
                                         prop.datum.lower(),
@@ -506,8 +539,31 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         online=True,
                                         epoch=None
                                         )
-
                 datum_offset = round(z-dummyval,2)
+
+            elif prop.model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    nativedatum = 'lmsl'
+                    dummyval = 10.0
+                    _,_,z = vdatum.convert(
+                                        nativedatum,
+                                        prop.datum.lower(),
+                                        model['y'][0,node],
+                                        model['x'][0,node],
+                                        dummyval,
+                                        online=True,
+                                        epoch=None
+                                        )
+                    if np.isinf(z):
+                        logger.error('VDatum conversion returned inf for an ADCIRC station. This is probably because the station location is outside of the coastalmodeling_vdatum tool coverage area. Check if coordinates are correct. Returning -9992.')
+                        return -9992
+                    # Note the sign convention here, so that we can subtract the 
+                    # datum_offset from the model water levels to get to the target datum,
+                    # as is consistent with other models.
+                    datum_offset = round(dummyval - z, 2)
+                else:
+                    raise NotImplementedError('ADCIRC datum offset not defined for models other than STOFS-2D-Global.')
+
         except Exception as e_x:
             logger.error('Error getting datum offset from datum field for '
                          'stations files and %s: %s', prop.model_source, e_x)
@@ -537,6 +593,29 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                     epoch=None
                                     )
                 datum_offset = round(z-dummyval,2)
+            if prop.model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    nativedatum = 'lmsl'
+                    dummyval = 10
+                    _,_,z = vdatum.convert(
+                        nativedatum,
+                        prop.datum.lower(),
+                        model['y'][0,node],
+                        model['x'][0,node],
+                        dummyval,
+                        online=True,
+                        epoch=None
+                    )
+                    if np.isinf(z):
+                        logger.error('VDatum conversion returned inf for an ADCIRC node. This is probably because the node location is outside of the coastalmodeling_vdatum tool coverage area. Check if the coordinates are correct. Returning -9993.')
+                        return -9993\
+                    # Note the sign convention here, so that we can subtract 
+                    # the datum_offset from the model water levels to get to the target datum,
+                    # as is consistent with other models.
+                    datum_offset = round(dummyval - z, 2)
+                else:
+                    raise NotImplementedError('ADCIRC datum offset not defined for models other than STOFS-2D-Global.')
+
         except Exception as e_x:
             logger.error('Error getting datum offset from datum field for '
                          'fields files and %s: %s', prop.model_source, e_x)

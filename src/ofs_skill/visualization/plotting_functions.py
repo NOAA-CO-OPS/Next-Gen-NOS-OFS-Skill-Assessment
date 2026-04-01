@@ -34,6 +34,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from ofs_skill.skill_assessment import nos_metrics
+
 if TYPE_CHECKING:
     from logging import Logger
 
@@ -186,9 +188,10 @@ def get_error_range(
     """
     Retrieve target error ranges for a given variable.
 
-    Reads error range configuration from CSV file or creates default
-    values if file doesn't exist. Returns X1 (primary target) and
-    X2 (secondary target) error thresholds.
+    Thin wrapper around ``nos_metrics.get_error_threshold`` that preserves
+    the legacy ``(name_var, prop, logger)`` call signature used by all
+    plotting modules.  If the CSV file does not exist, a default one is
+    written so that downstream callers find it on subsequent runs.
 
     Args:
         name_var: Variable name ('salt', 'temp', 'wl', 'cu', 'ice_conc')
@@ -216,29 +219,22 @@ def get_error_range(
         - Creates error_ranges.csv in conf/ if missing
         - File location: {prop.path}/conf/error_ranges.csv
     """
-    filename = 'error_ranges.csv'
-    filepath = os.path.join(prop.path, 'conf', filename)
-    try:
-        # Dataframe of error range file
-        df = pd.read_csv(filepath)
-        subs = df[df['name_var'] == name_var]
-        # Get error ranges for variable
-        X1 = pd.to_numeric(subs['X1']).values[0]
-        X2 = pd.to_numeric(subs['X2']).values[0]
-    except (KeyError, FileNotFoundError, IndexError):
-        # Make file using default values
+    config_path = os.path.join(prop.path, 'conf', 'error_ranges.csv')
+
+    # Delegate to the canonical implementation
+    X1, X2 = nos_metrics.get_error_threshold(name_var, config_path)
+
+    # Preserve legacy behaviour: write a default CSV when no file exists
+    if not os.path.isfile(config_path):
         errordata = [
             ['salt', 3.5, 0.5],
             ['temp', 3, 0.5],
             ['wl', 0.15, 0.5],
             ['cu', 0.26, 0.5],
-            ['ice_conc', 10, 0.5]
+            ['ice_conc', 10, 0.5],
         ]
         df = pd.DataFrame(errordata, columns=['name_var', 'X1', 'X2'])
-        subs = df[df['name_var'] == name_var]
-        df.to_csv(filepath, index=False)
-        X1 = pd.to_numeric(subs['X1']).values[0]
-        X2 = pd.to_numeric(subs['X2']).values[0]
+        df.to_csv(config_path, index=False)
 
     return X1, X2
 

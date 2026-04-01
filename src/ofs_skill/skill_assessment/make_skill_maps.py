@@ -19,55 +19,6 @@ import plotly
 import plotly.express as px
 
 
-def get_error_range(
-    name_var: str,
-    prop: Any,
-    logger: Logger,
-) -> tuple[float, float]:
-    """
-    Get error range thresholds for a given variable.
-
-    Reads error ranges from configuration file or uses default values if file
-    doesn't exist.
-
-    Parameters
-    ----------
-    name_var : str
-        Variable name ('wl', 'temp', 'salt', or 'cu')
-    prop : Any
-        Properties object containing path attribute
-    logger : Logger
-        Logger instance for logging messages
-
-    Returns
-    -------
-    tuple[float, float]
-        Tuple of (X1, X2) error range thresholds
-    """
-    filename = 'error_ranges.csv'
-    filepath = os.path.join(prop.path, 'conf', filename)
-    if os.path.isfile(filepath) is True:
-        # Dataframe of error range file!
-        df = pd.read_csv(filepath)
-        subs = df[df['name_var'] == name_var]
-
-    else:
-        # Make file using default values
-        errordata = [['salt', 3.5, 0.5], ['temp', 3, 0.5], ['wl', 0.15, 0.5],
-                     ['cu', 0.26, 0.5]]
-        df = pd.DataFrame(errordata, columns=['name_var', 'X1', 'X2'])
-        subs = df[df['name_var'] == name_var]
-        df.to_csv(filepath, sep='\t')
-
-    # Get error ranges for variable
-    X1 = pd.to_numeric(subs['X1'])
-    X2 = pd.to_numeric(subs['X2'])
-    X1 = float(X1)
-    X2 = float(X2)
-
-    return X1, X2
-
-
 def make_skill_maps(
     output: dict[str, list],
     prop: Any,

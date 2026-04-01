@@ -54,6 +54,7 @@ dependencies = [
     "cartopy>=0.23.0",
     "regionmask>=0.12.1",
     "global-land-mask>=1.0.0",
+    "utide>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -70,13 +71,14 @@ dev = [
     "flake8>=3.9.0",
     "mypy>=0.910",
     "ipython>=7.26.0",
-    "jupyter>=1.0.0",
     "pyinterp>=2024.11.0",
+    "pre-commit>=3.0.0",
 ]
 
 [project.scripts]
 create-1dplot = "bin.visualization.create_1dplot:main"
 create-2dplot = "bin.visualization.create_2dplot:main"
+run-harmonic-analysis = "bin.tidal_analysis.run_harmonic_analysis:main"
 
 [project.urls]
 Homepage = "https://github.com/NOAA-CO-OPS/NOS_Shared_Cyberinfrastructure_and_Skill_Assessment"

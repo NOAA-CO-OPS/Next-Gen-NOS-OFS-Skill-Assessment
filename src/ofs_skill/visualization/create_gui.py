@@ -186,8 +186,8 @@ def create_gui(parser):
     row += 1
     ofs_entry = tk.StringVar()
     choices = ('Select an OFS...','cbofs', 'dbofs', 'gomofs', 'tbofs', 'ciofs',
-               'wcofs', 'ngofs2', 'ngofs', 'leofs', 'lmhofs', 'loofs', 'lsofs',
-               'sfbofs', 'sscofs','stofs_3d_atl', 'stofs_3d_pac',
+               'wcofs', 'ngofs2', 'ngofs', 'leofs', 'lmhofs', 'loofs', 'loofs2',
+               'lsofs', 'sfbofs', 'sscofs','stofs_3d_atl', 'stofs_3d_pac',
                'loofs-nextgen')
     ofs_entry.set('Select an OFS...')
     tk.Label(root,
@@ -242,8 +242,10 @@ def create_gui(parser):
     row += 1
     var_now = tk.StringVar()
     var_fore = tk.StringVar()
+    var_hind = tk.StringVar()
     var_now.set('nowcast')
     var_fore.set('forecast_b')
+    var_hind.set('hindcast')
     tk.Label(root,
              text='Whichcasts (choose one or more)',
              bg=themecolor,
@@ -256,6 +258,11 @@ def create_gui(parser):
                                     padx=padx, pady=pady)
     ttk.Checkbutton(root, text='Forecast', variable=var_fore, onvalue=
                    'forecast_b', offvalue=0).grid(row=row, column=2,
+                                                  sticky='w', padx=padx,
+                                                  pady=pady)
+    row += 1
+    ttk.Checkbutton(root, text='Hindcast (LOOFS2 only)', variable=var_hind, onvalue=
+                   'hindcast', offvalue=0).grid(row=row, column=1,
                                                   sticky='w', padx=padx,
                                                   pady=pady)
     # Datums, -d
