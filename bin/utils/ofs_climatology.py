@@ -706,6 +706,11 @@ def stations_plot(logger, files_to_plot, ofs, path_save):
 
 def ofs_climatology(prop1, logger, path_save, datagroup):
 
+    # Validate model source.
+    if prop1.model_source.lower() == 'adcirc':
+        logger.error('ADCIRC models not supported for climatology calculation.')
+        raise NotImplementedError('Climatology calculation not implemented for ADCIRC models.')
+
     dates = []
     if str(datagroup) == 'all' or str(datagroup) == 'none':
         month_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]

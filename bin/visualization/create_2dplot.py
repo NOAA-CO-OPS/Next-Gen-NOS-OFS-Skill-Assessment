@@ -93,6 +93,11 @@ def validate_and_initialize_parameters(prop):
     # Load directory parameters
     dir_params = utils.Utils().read_config_section('directories', logger)
 
+    # Model source/OFS validation
+    if prop.model_source.lower() == 'adcirc':
+        logger.error('ADCIRC is not currently supported for 2D visualizations.')
+        raise NotImplementedError('ADCIRC is not currently supported for 2D visualizations.')
+
     # Date validation
     try:
         start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
