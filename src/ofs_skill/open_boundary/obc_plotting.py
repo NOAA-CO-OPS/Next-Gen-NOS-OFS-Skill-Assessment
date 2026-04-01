@@ -1,0 +1,379 @@
+"""
+Created on Wed Apr  1 11:09:54 2026
+
+@author: PWL
+"""
+
+import os
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+from plotly.subplots import make_subplots
+
+from ofs_skill.open_boundary.obc_processing import make_x_labels, transform_to_z
+
+
+def plot_roms_obc(prop,ds,logger):
+    '''
+    '''
+    for variable in ['zeta','temp','salt']:
+        boundaries = []
+        # Search for variable boundaries in dataset
+        for var_name in ds.data_vars:
+            if variable in var_name:
+                boundaries.append(var_name)
+
+def plot_fvcom_obc(prop,ds,logger):
+    '''
+    '''
+    logger.info('Starting FVCOM plots...')
+    # Convert time to datetime object. Units of time are:
+    # days since 1858-11-17 00:00:00
+    time_dt = []
+    time_0 = datetime.strptime('1858-11-17','%Y-%m-%d')
+    for t in np.array(ds['time']):
+        delta = timedelta(days=float(t))
+        time_dt.append(time_0 + delta)
+
+    # First do temp & salt
+    logger.info('Plotting FVCOM temp & salt transects')
+    nrows = 1
+    ncols = 1
+    for name_var in ['temp','salinity']:
+        if name_var == 'temp':
+            cbar_title = 'Water Temperature<br>(\u00b0C)'
+            plot_title_name = 'temperature'
+        else:
+            cbar_title = 'Salinity (<i>PSU<i>)'
+            plot_title_name = 'salinity'
+
+        # Figure out dataset variable name
+        try:
+            var=str([item for item in list(ds.keys()) if name_var in item][0])
+        except Exception as e_x:
+            logger.error('Cannot find variable in xarray dataset. Error: %s',
+                         e_x)
+            continue
+
+        # Make x-axis labels
+        x_labels = make_x_labels(ds,logger)
+        # Transform sigma layers to z-coordinates & interpolate transect
+        z, y_labels, x_labels = transform_to_z(ds,var,x_labels,logger)
+
+        # Some OFS repeat themselves -- set boundaries
+        # if prop.ofs == 'ngofs2':
+        #     z = z[:,:,:171]
+        #     x_labels = x_labels[:171]
+
+        # Figures
+        fig = make_subplots(rows=nrows, cols=ncols)
+        # Make df from z for plotly express animations
+        plot_title = prop.ofs.upper() + ' open boundary ' + plot_title_name + ', ' +\
+            prop.start_date_full.split('T')[0] + ' ' + \
+            prop.model_cycle + 'Z' + ' cycle'
+        fig = px.imshow(z,
+                animation_frame=0,
+                aspect=0.33,
+                x=x_labels,
+                y=y_labels,
+                labels=dict(x='Distance along transect (km)', y='Depth (m)',
+                            color=cbar_title),
+                range_color=[np.nanpercentile(z, 2),
+                             np.nanpercentile(z, 98)],
+                color_continuous_scale='Turbo',
+                title=plot_title
+                )
+        for i,step in enumerate(fig.layout.sliders[0].steps):
+            step.label = datetime.strftime(time_dt[i],'%m/%d/%Y %H:%M:%S')
+        fig.update_layout(
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            title_font=dict(
+                family='Open Sans',
+                size=20,
+                color='black'
+            )
+        )
+        # Update the x-axis title font
+        fig.update_xaxes(
+            title_font=dict(
+                family='Open Sans',
+                size=16,
+                color='black'
+            ),
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            gridcolor='lightgray',
+            mirror=True,
+            zeroline=True,
+            zerolinecolor='lightgray',
+            zerolinewidth=1
+        )
+        # Update the y-axis title font
+        fig.update_yaxes(
+            title_font=dict(
+                family='Open Sans',
+                size=16,
+                color='black'
+            ),
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            gridcolor='lightgray',
+            mirror=True,
+            zeroline=True,
+            zerolinecolor='black',
+            zerolinewidth=1
+        )
+        fig.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 50
+        filename = prop.ofs + '_' + name_var + '_OBC.html'
+        savepath = os.path.join(prop.visuals_1d_station_path, filename)
+        fig.write_html(savepath, auto_play=False)
+
+    # Now do water level
+    logger.info('Plotting FVCOM water level transect')
+    z = np.asarray(ds['elevation'])
+    nodes = np.asarray(ds['obc_nodes'])
+    # Make x-axis labels
+    x_labels = make_x_labels(ds,logger)
+    # Build big dataframe
+    df = None
+    for t in range(len(time_dt)):
+        temp_ = pd.DataFrame(
+            {
+            'Time': time_dt[t],
+            'Distance along boundary (km)': x_labels,
+            'Water level (m)': z[t,:],
+            'Node': nodes
+            }
+        )
+        df = pd.concat([df, temp_], ignore_index=True)
+        df['Time'] = df['Time'].dt.round('1s')
+        df['Node'] = df['Node'].astype('string')
+
+    # Some OFS repeat themselves -- set boundaries
+    # if prop.ofs == 'ngofs2':
+    #     z = z[:,:,:171]
+    #     x_labels = x_labels[:171]
+
+    # Figures
+    nrows = 1
+    ncols = 1
+    fig = make_subplots(rows=nrows, cols=ncols)
+    # Make df from z for plotly express animations
+    plot_title = prop.ofs.upper() + ' open boundary water levels, ' +\
+        prop.start_date_full.split('T')[0] + ' ' + \
+            prop.model_cycle + 'Z' + ' cycle'
+    fig = px.scatter(
+        df,
+        x='Distance along boundary (km)',
+        y='Water level (m)',
+        color='Node',
+        color_discrete_sequence=px.colors.qualitative.Dark24,
+        animation_frame='Time',
+        hover_data={
+            'Distance along boundary (km)': True,
+            'Water level (m)': True,
+            'Node': True,
+            },
+        title=plot_title,
+        range_y=[np.nanmin(df['Water level (m)']),
+                 np.nanmax(df['Water level (m)'])]
+        )
+    fig.update_layout(
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        title_font=dict(
+            family='Open Sans',
+            size=20,
+            color='black'
+        )
+    )
+    # Update the x-axis title font
+    fig.update_xaxes(
+        title_font=dict(
+            family='Open Sans',
+            size=16,
+            color='black'
+        ),
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        gridcolor='lightgray',
+        mirror=True,
+        zeroline=True,
+        zerolinecolor='lightgray',
+        zerolinewidth=1
+    )
+    # Update the y-axis title font
+    fig.update_yaxes(
+        title_font=dict(
+            family='Open Sans',
+            size=16,
+            color='black'
+        ),
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        gridcolor='lightgray',
+        mirror=True,
+        zeroline=True,
+        zerolinecolor='black',
+        zerolinewidth=1
+    )
+    filename = prop.ofs + '_' + 'water_level' + '_OBC.html'
+    savepath = os.path.join(prop.visuals_1d_station_path, filename)
+    fig.write_html(savepath, auto_play=False)
+
+    # Now make time series plot with dropdown menu
+    logger.info('Plotting FVCOM water level node-by-node time series')
+    df = None
+    for n in range(len(nodes)):
+        temp = pd.DataFrame(
+            {
+            'Time': time_dt,
+            'Water level (m)': z[:,n],
+            'Node': nodes[n]
+            }
+        )
+        df = pd.concat([df, temp], ignore_index=True)
+        df['Time'] = df['Time'].dt.round('1s')
+    fig = make_subplots(rows=nrows, cols=ncols)
+    plot_title = prop.ofs.upper() + ' open boundary water levels, ' +\
+        prop.start_date_full.split('T')[0] + ' ' + \
+            prop.model_cycle + 'Z' + ' cycle'
+    fig = px.line(
+        df,
+        x='Time',
+        y='Water level (m)',
+        color='Node',
+        title=plot_title,
+        )
+    # create dropdown buttons
+    buttons = []
+    # Add a button to show all series
+    buttons.append(dict(
+        label='All nodes',
+        method='update',
+        args=[{'visible': [True] * len(nodes)},
+              {'title': (f'Water level for all {prop.ofs.upper()} OBC nodes, '
+                         f"{prop.start_date_full.split('T')[0]} "
+                         f'{prop.model_cycle}Z')}]
+        )
+    )
+    for i, node in enumerate(nodes):
+        # make a list of booleans to control trace visibility
+        visibility_list = [False] * len(nodes)
+        visibility_list[i] = True
+        button = dict(
+            label='Node ' + str(node),
+            method='update',
+            args=[{'visible': visibility_list},
+                  {'title': (f'Water level for {prop.ofs.upper()} OBC node {node}, '
+                             f"{prop.start_date_full.split('T')[0]} "
+                             f'{prop.model_cycle}Z')}]
+        )
+        buttons.append(button)
+
+    # update layout to include the dropdown menu
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                buttons=buttons,
+                active=0,
+                direction='down',
+                pad={'r': 0, 't': 0},
+                showactive=True,
+                x=0,
+                xanchor='left',
+                y=1.1,
+                yanchor='top'
+            ),
+        ],
+        margin={'t': 125, 'b': 50, 'l': 50, 'r': 50},
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        title_font=dict(
+            family='Open Sans',
+            size=20,
+            color='black'
+        )
+    )
+    # Update the x-axis title font
+    fig.update_xaxes(
+        title_font=dict(
+            family='Open Sans',
+            size=16,
+            color='black'
+        ),
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        gridcolor='lightgray',
+        mirror=True,
+        zeroline=True,
+        zerolinecolor='lightgray',
+        zerolinewidth=1
+    )
+    # Update the y-axis title font
+    fig.update_yaxes(
+        title_font=dict(
+            family='Open Sans',
+            size=16,
+            color='black'
+        ),
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        gridcolor='lightgray',
+        mirror=True,
+        zeroline=True,
+        zerolinecolor='black',
+        zerolinewidth=1
+    )
+    filename = prop.ofs + '_' + 'water_level' + '_OBC_node_series.html'
+    savepath = os.path.join(prop.visuals_1d_station_path, filename)
+    fig.write_html(savepath)
+
+    # Map of OBC nodes
+    logger.info('Mapping FVCOM OBC nodes')
+    df = None
+    df = pd.DataFrame(
+        {
+        'X': np.asarray(ds['lon']),
+        'Y': np.asarray(ds['lat']),
+        'Node': nodes
+        }
+    )
+    df['Node'] = df['Node'].astype('string')
+    plot_title = prop.ofs.upper() + ' open boundary nodes'
+    pio.renderers.default = 'browser'
+    fig = px.scatter_mapbox(df, lat='Y', lon='X',
+                     color='Node',  # which column to use to set the color of markers
+                     color_discrete_sequence=px.colors.qualitative.Dark24,
+                     mapbox_style='carto-positron',
+                     hover_data={'X': ':.2f',
+                                 'Y': ':.2f',
+                                 'Node': ':.0f',
+                                 },
+                     zoom=8,
+                     title=plot_title,
+                     height=700,
+                     width=1000,
+                     )
+    # update layout to include the dropdown menu
+    fig.update_layout(
+        title_font=dict(
+            family='Open Sans',
+            size=20,
+            color='black'
+        )
+    )
+    filename = prop.ofs + '_OBC_node_map.html'
+    savepath = os.path.join(prop.visuals_1d_station_path, filename)
+    fig.write_html(savepath,config={'scrollZoom': True})
+    logger.info('Done with FVCOM plotting!')
