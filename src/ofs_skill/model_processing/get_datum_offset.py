@@ -43,6 +43,7 @@ import xarray as xr
 from coastalmodeling_vdatum import vdatum
 
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 
 
 def is_number(n: Any) -> bool:
@@ -290,7 +291,7 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
     - Bucket: noaa-nos-ofs-pds
     - Key format: OFS_Grid_Datum/{ofs}_vdatums.nc
     - Returns error code -9990 if file cannot be opened
-    - Returns error code -9995 for STOFS-2D-Global, which 
+    - Returns error code -9995 for STOFS-2D-Global, which
       uses coastalmodeling_vdatum instead of a vdatum file on S3.
 
     Examples
@@ -302,7 +303,7 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
     ...     print(f"Variables: {list(vdatums.data_vars)}")
     """
     if prop.ofs in ('stofs_2d_glo'):
-        # We shouldn't actually ever need to use this value, but just in case, return a 
+        # We shouldn't actually ever need to use this value, but just in case, return a
         # code that indicates no file to read for STOFS-2D-Global.
         logger.info('STOFS-2D-Global uses coastalmodeling_vdatum conversion instead of a vdatum file on S3.')
         return -9995
@@ -314,6 +315,19 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
         try:
             vdatums = xr.open_dataset(s3.open(url, 'rb'))
             return vdatums
+        except FileNotFoundError:
+            logger.error('vdatum file not found on the S3 bucket, trying '
+                         'backup path...')
+            try:
+                dir_params = utils.Utils().read_config_section('directories',
+                                                               logger)
+                vdatum_backup_path = os.path.join(dir_params['local_vdatum'])
+                vdatums = xr.open_dataset(vdatum_backup_path)
+                logger.info('Found local vdatum file!')
+                return vdatums
+            except FileNotFoundError:
+                logger.error('vdatum file not found locally, either.')
+                return -9990
         except Exception as e_x:
             logger.error('Error opening vdatums on the fly!')
             logger.error(f'Error: {e_x}')
@@ -362,7 +376,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         - -9993: Error extracting offset for stations file
         - -9994: WCOFS MSL conversion file not found
         - -9995: STOFS-2D-Global, as expected, has no file to return.
-                 This should never actually be returned in get_datum_offset, 
+                 This should never actually be returned in get_datum_offset,
                  but is here just in case.
         - -9999: Offset out of reasonable range
 
@@ -380,7 +394,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     - STOFS-2D-Global:
         * Native datum is LMSL
         * If datum='MSL', returns 0 (no conversion needed).
-        * No conversion file available; coastalmodeling_vdatum 
+        * No conversion file available; coastalmodeling_vdatum
           tool is used instead.
     - SSCOFS:
         * Model-0 is 0.23m below XGEOID20B
@@ -557,7 +571,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC station. This is probably because the station location is outside of the coastalmodeling_vdatum tool coverage area. Check if coordinates are correct. Returning -9992.')
                         return -9992
-                    # Note the sign convention here, so that we can subtract the 
+                    # Note the sign convention here, so that we can subtract the
                     # datum_offset from the model water levels to get to the target datum,
                     # as is consistent with other models.
                     datum_offset = round(dummyval - z, 2)
@@ -609,7 +623,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC node. This is probably because the node location is outside of the coastalmodeling_vdatum tool coverage area. Check if the coordinates are correct. Returning -9993.')
                         return -9993\
-                    # Note the sign convention here, so that we can subtract 
+                    # Note the sign convention here, so that we can subtract
                     # the datum_offset from the model water levels to get to the target datum,
                     # as is consistent with other models.
                     datum_offset = round(dummyval - z, 2)
