@@ -79,6 +79,7 @@ import logging.config
 import os
 import sys
 import traceback
+import urllib.error
 import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -361,6 +362,7 @@ def run_harmonic_analysis_station_loop(
                 'datum': prop.datum,
                 'ofsfiletype': prop.ofsfiletype,
                 'tidal_analysis_path': prop.tidal_analysis_path,
+                'prediction_format': getattr(prop, 'prediction_format', 'consolidated'),
             }
 
             work_items.append({
@@ -472,6 +474,12 @@ def _run_ha_for_station(
         Minimum record length for HA.
     do_predictions : bool
         Whether to write prediction and residual CSVs.
+    amp_threshold : float
+        Amplitude difference threshold (metres) for exceedance flagging.
+    phase_threshold : float
+        Phase difference threshold (degrees) for exceedance flagging.
+    vector_diff_threshold : float
+        Vector difference threshold (metres) for exceedance flagging.
     cast : str
         Whichcast name.
     logger : logging.Logger
@@ -585,13 +593,9 @@ def _run_ha_for_station(
                 residual = compute_nontidal_residual(
                     model_eq, prediction, logger=logger,
                 )
-                # TODO: add observed water levels column when obs data is threaded through
-                _write_prediction_residual_csv(
-                    model_time, prediction, residual,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_prediction_and_residual.csv'
-                    ),
+                _write_prediction_output(
+                    model_time, prediction, residual, out_prefix,
+                    prop.tidal_analysis_path, prop.prediction_format,
                     metadata, logger,
                 )
 
@@ -692,13 +696,9 @@ def _run_ha_for_station(
                 residual = compute_nontidal_residual(
                     model_eq, prediction, logger=logger,
                 )
-                # TODO: add observed water levels column when obs data is threaded through
-                _write_prediction_residual_csv(
-                    model_time, prediction, residual,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_prediction_and_residual.csv'
-                    ),
+                _write_prediction_output(
+                    model_time, prediction, residual, out_prefix,
+                    prop.tidal_analysis_path, prop.prediction_format,
                     metadata, logger,
                 )
             else:
@@ -707,6 +707,28 @@ def _run_ha_for_station(
                     'Skipping prediction/residual output.',
                     station_id,
                 )
+
+
+def _write_timeseries_csv(time, values, filepath, column_name, metadata, logger):
+    """Write a single time series (prediction or residual) to CSV."""
+    df = pd.DataFrame({
+        'DateTime': time,
+        column_name: values,
+    })
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    header_lines = []
+    if metadata:
+        for key, value in metadata.items():
+            header_lines.append(f'# {key}: {value}')
+
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        for line in header_lines:
+            f.write(line + '\n')
+        df.to_csv(f, index=False)
+
+    logger.info('Time series written to %s.', path)
 
 
 def _write_prediction_residual_csv(time, prediction, residual, filepath, metadata, logger):
@@ -732,6 +754,49 @@ def _write_prediction_residual_csv(time, prediction, residual, filepath, metadat
     logger.info('Prediction and residual written to %s.', path)
 
 
+def _write_prediction_output(
+    time, prediction, residual, out_prefix, tidal_analysis_path,
+    prediction_format, metadata, logger,
+):
+    """
+    Write prediction/residual output in the requested format.
+
+    Parameters
+    ----------
+    prediction_format : str
+        ``"consolidated"`` writes a single ``_prediction_and_residual.csv``.
+        ``"fortran"`` writes separate ``_tidal_prediction.csv`` and
+        ``_nontidal_residual.csv`` files matching the legacy Fortran layout.
+    """
+    if prediction_format == 'fortran':
+        _write_timeseries_csv(
+            time, prediction,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_tidal_prediction.csv'
+            ),
+            'Tidal_Prediction', metadata, logger,
+        )
+        _write_timeseries_csv(
+            time, residual,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_nontidal_residual.csv'
+            ),
+            'Nontidal_Residual', metadata, logger,
+        )
+    else:
+        # TODO: add observed water levels column when obs data is threaded through
+        _write_prediction_residual_csv(
+            time, prediction, residual,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_prediction_and_residual.csv'
+            ),
+            metadata, logger,
+        )
+
+
 def _verify_predictions_vs_coops(
     station_id, prop, model_time, prediction, summary_stats, logger
 ):
@@ -743,7 +808,6 @@ def _verify_predictions_vs_coops(
     predictions.
     """
     try:
-        # Build a lightweight input object for retrieve_tidal_predictions
         pred_input = SimpleNamespace(
             station=station_id,
             start_date=datetime.strptime(
@@ -764,13 +828,22 @@ def _verify_predictions_vs_coops(
             )
             return
 
-        # Align by DateTime (both should be 6-min interval)
+        # Align by DateTime using tolerance-based merge (handles grids
+        # that are offset by up to 3 minutes)
         model_df = pd.DataFrame({
             'DateTime': model_time,
             'Model_Pred': prediction,
-        })
+        }).sort_values('DateTime')
         official['DateTime'] = pd.to_datetime(official['DateTime'])
-        merged = pd.merge(model_df, official, on='DateTime', how='inner')
+        official = official.sort_values('DateTime')
+
+        merged = pd.merge_asof(
+            model_df, official,
+            on='DateTime',
+            tolerance=pd.Timedelta('3min'),
+            direction='nearest',
+        )
+        merged = merged.dropna(subset=['Model_Pred', 'TIDE'])
 
         if len(merged) == 0:
             logger.warning(
@@ -786,7 +859,7 @@ def _verify_predictions_vs_coops(
         )
         summary_stats['Prediction_RMSE_vs_COOPS'] = verification['rmse']
 
-    except Exception as ex:
+    except (urllib.error.URLError, ValueError, KeyError, OSError) as ex:
         logger.warning(
             'Station %s: prediction verification failed: %s. Skipping.',
             station_id, ex,
@@ -809,6 +882,14 @@ def run_harmonic_analysis(prop, logger):
     logging.Logger
         The logger used throughout the run.
     """
+    # ------------------------------------------------------------------
+    # 0. Defaults for attrs that are only set by the CLI
+    # ------------------------------------------------------------------
+    prop.prediction_format = getattr(prop, 'prediction_format', 'consolidated')
+    prop.amp_threshold = getattr(prop, 'amp_threshold', DEFAULT_AMP_THRESHOLD_M)
+    prop.phase_threshold = getattr(prop, 'phase_threshold', DEFAULT_PHASE_THRESHOLD_DEG)
+    prop.vector_diff_threshold = getattr(prop, 'vector_diff_threshold', DEFAULT_VECTOR_DIFF_THRESHOLD_M)
+
     # ------------------------------------------------------------------
     # 1. Logger setup
     # ------------------------------------------------------------------
@@ -1117,6 +1198,15 @@ def main():
         help='Also produce tidal prediction and non-tidal residual CSVs',
     )
     parser.add_argument(
+        '--prediction-format',
+        choices=['consolidated', 'fortran'],
+        default='consolidated',
+        help="Output format for prediction CSVs: 'consolidated' writes a "
+             "single _prediction_and_residual.csv (default); 'fortran' writes "
+             'separate _tidal_prediction.csv and _nontidal_residual.csv files '
+             'matching the legacy Fortran layout',
+    )
+    parser.add_argument(
         '--amp-threshold',
         type=float,
         default=None,
@@ -1152,6 +1242,7 @@ def main():
     prop.var_list = args.Var_Selection
     prop.min_duration_days = args.min_duration
     prop.do_predictions = args.predictions
+    prop.prediction_format = args.prediction_format
     prop.amp_threshold = (
         args.amp_threshold if args.amp_threshold is not None
         else DEFAULT_AMP_THRESHOLD_M
@@ -1164,6 +1255,15 @@ def main():
         args.vector_diff_threshold if args.vector_diff_threshold is not None
         else DEFAULT_VECTOR_DIFF_THRESHOLD_M
     )
+    # Validate thresholds
+    for name, val in [
+        ('--amp-threshold', prop.amp_threshold),
+        ('--phase-threshold', prop.phase_threshold),
+        ('--vector-diff-threshold', prop.vector_diff_threshold),
+    ]:
+        if val <= 0:
+            parser.error(f'{name} must be positive (got {val})')
+
     prop.user_input_location = False
     prop.horizonskill = False
     prop.forecast_hr = None

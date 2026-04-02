@@ -405,11 +405,11 @@ In the `working directory`, there is a sub-directory called 'conf'. In 'conf', t
 
 ### 3.3.1 ofs_dps.conf
 
-First, copy the example template to create your local config file:
-
-```bash
+The repository ships a template configuration file at `conf/ofs_dps.conf.example`. Before running the skill assessment for the first time, copy it to create your local configuration:
+```
 cp conf/ofs_dps.conf.example conf/ofs_dps.conf
 ```
+The local `conf/ofs_dps.conf` is git-ignored so that your machine-specific paths are never committed.
 
 'ofs_dps.conf' establishes the directory names and structure that the skill assessment uses to read inputs and write outputs, and sets several key options. By editing the conf file, you can:
 1) set your `working directory` (🚨required);

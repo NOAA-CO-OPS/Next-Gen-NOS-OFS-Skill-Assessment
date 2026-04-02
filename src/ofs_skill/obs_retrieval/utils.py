@@ -61,24 +61,22 @@ class Utils:
         The config file is located relative to the package root:
         <package_root>/conf/ofs_dps.conf
 
-        Falls back to conf/ofs_dps.conf.example if the local config
-        file does not exist, with a warning.
+        Falls back to conf/ofs_dps.conf.example if the local conf is missing.
         """
         project_root = Path(__file__).parent.parent.parent.parent
         config_file = (project_root / 'conf' / 'ofs_dps.conf').resolve()
-        if not config_file.is_file():
-            example = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
-            if example.is_file():
-                import warnings
-                warnings.warn(
-                    f'conf/ofs_dps.conf not found — falling back to '
-                    f'conf/ofs_dps.conf.example. Copy the example file '
-                    f'and set your local paths:\n'
-                    f'  cp {example} {config_file}',
-                    stacklevel=2,
-                )
-                config_file = example
-        self.config_file = config_file
+        example_file = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
+        if config_file.exists():
+            self.config_file = config_file
+        elif example_file.exists():
+            logging.getLogger(__name__).warning(
+                'conf/ofs_dps.conf not found — falling back to '
+                'conf/ofs_dps.conf.example. Copy it to conf/ofs_dps.conf '
+                'and set home= to your working directory.'
+            )
+            self.config_file = example_file
+        else:
+            self.config_file = config_file  # will error later
 
     def get_config_file(self) -> Path:
         """

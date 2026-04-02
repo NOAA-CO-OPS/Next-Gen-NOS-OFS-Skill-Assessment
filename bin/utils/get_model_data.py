@@ -617,49 +617,6 @@ def download_data(prop, list_of_urls1, dir_list, logger):
     # Download remaining files in parallel
     parallel_config = get_parallel_config(logger)
     max_workers = parallel_config['model_download_workers']
-    
-    for mod_dat in list_of_urls_main:
-        try:
-            logger.info(f'Downloading model data: {mod_dat}')
-            if prop.ofs not in (
-                'stofs_3d_atl', 'stofs_3d_pac',
-                'stofs_2d_glo',
-            ):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/')):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/'),
-                    )
-            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/').replace(
-                    'STOFS-3D-Atl/',
-                    'stofs_3d_atl/',
-                )):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/').replace(
-                            'STOFS-3D-Atl/',
-                            'stofs_3d_atl/',
-                        ),
-                    )
-            elif prop.ofs in ('stofs_2d_glo'):
-                if not os.path.isfile(
-                    (savepath + mod_dat.split('.com')[-1]).replace('//', '/')
-                ):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), 
-                        (savepath + mod_dat.split('.com')[-1]).replace('//', '/'),
-                    )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {

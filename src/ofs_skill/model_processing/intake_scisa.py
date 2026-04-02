@@ -49,6 +49,7 @@ from typing import Any
 import intake
 import numpy as np
 import xarray as xr
+
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
 
 
@@ -388,7 +389,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'engine': engine,
                         'preprocess': preprocess_fn,
                         'concat_dim': time_name,
-
+                        'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
                     **s3_storage_opts,
@@ -402,11 +403,11 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 chunk_spec = {time_name: 1}
             else:
                 chunk_spec = 'auto'
-            # Note it might be possible to add 
+            # Note it might be possible to add
             #     'data_vars': 'minimal'
-            # to the xarray_kwargs to avoid expanding spatial/mesh variables 
+            # to the xarray_kwargs to avoid expanding spatial/mesh variables
             # in the time dimension, which can result in very large arrays.
-            # But this messes up the indexing.py process, so we will leave 
+            # But this messes up the indexing.py process, so we will leave
             # it out for now.
             source = intake.open_netcdf(
                 urlpath=urlpaths,
@@ -415,6 +416,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'engine': engine,
                     'preprocess': preprocess_fn,
                     'concat_dim': time_name,
+                    'decode_times': True,
                     'drop_variables': drop_variables,
                     'chunks': chunk_spec,
                 },
@@ -431,7 +433,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         )
 
     # If ADCIRC, we need to subset times to the appropriate whichcast.
-    # Note that this needs to be done before removal of duplicate times.    
+    # Note that this needs to be done before removal of duplicate times.
     if prop.model_source == 'adcirc':
         ds = fix_adcirc_dataset(prop, ds, urlpaths, logger)
 
@@ -719,8 +721,8 @@ def calc_sigma(h: np.ndarray, sigma: xr.DataArray) -> tuple[np.ndarray, np.ndarr
 
 
 def fix_adcirc_dataset(
-    prop: Any, 
-    data_set: xr.Dataset, 
+    prop: Any,
+    data_set: xr.Dataset,
     urlpaths: Any,
     logger: Logger
 ) -> xr.Dataset:
@@ -757,26 +759,26 @@ def fix_adcirc_dataset(
     data, contatenated together. So when multiple files are loaded with
     intake, the time coordinate goes something like
         t_start_0 ... t_end_0, t_start_1 ... t_end_1, ...
-    where t_start_1 can be earlier than t_end_0. 
-    I.e., this can be a non-monotonic series. 
-    
+    where t_start_1 can be earlier than t_end_0.
+    I.e., this can be a non-monotonic series.
+
     We need to drop the timesteps that are not part of the requested whichcast.
     We illustrate how to do this with a single STOFS-2D-Global run initialized
     at 12:00 UTC on March 1st.
     Nowcast: 06:00 UTC -> 12:00 UTC, both on March 1st
-    Forecast_b: 12:00 UTC -> 18:: UTC, both on March 1st 
+    Forecast_b: 12:00 UTC -> 18:: UTC, both on March 1st
     Forecast_a: 12:00 UTC -> 00:00 UTC on March 9th.
 
-    Technical note: we cannot use time for subsetting, because we have a 
-    non-monotonic coordinate with repeated labels. Therefore we have to 
-    calculate everything with positional indexing (numpy style). This 
-    requires some strong assumptions about structure, and we raise an 
+    Technical note: we cannot use time for subsetting, because we have a
+    non-monotonic coordinate with repeated labels. Therefore we have to
+    calculate everything with positional indexing (numpy style). This
+    requires some strong assumptions about structure, and we raise an
     exception if these assumptions are off.
     """
     if prop.model_source != 'adcirc':
         raise ValueError('Function fix_adcirc_dataset should only be used with ADCIRC data!')
-    
-    # We use the run length and number of cycles per day for timestep 
+
+    # We use the run length and number of cycles per day for timestep
     # indexing, so get them from the appropriate function.
     fcst_a_hours, fcstcycles = get_fcst_hours(prop.ofs)
 
@@ -806,7 +808,7 @@ def fix_adcirc_dataset(
     n_t_nowcast = int(nowcast_hours) * timesteps_per_hour
     n_t_total = n_t_nowcast + n_t_fcst_a
 
-    # Calculate the number of runs in the dataset, and check 
+    # Calculate the number of runs in the dataset, and check
     # that it matches the number of items in urlpaths.
     N_runs = len(data_set.time) / n_t_total
     if int(N_runs) != N_runs:
@@ -818,12 +820,12 @@ def fix_adcirc_dataset(
                        f'Number of constituent files in ADCIRC dataset ({len(urlpaths)})'
                        'not equal to the number calculated from the number of timesteps '
                        f'({len(data_set.time)} / {n_t_total}). Continuing with the calculated number.')
-    
-    # Set up a variable that will be equal to 1 for the timesteps 
+
+    # Set up a variable that will be equal to 1 for the timesteps
     # we want to keep.
     keep_t_s = np.zeros(len(data_set.time))
 
-    # Loop over each run and convert values from 0 to 1 for the 
+    # Loop over each run and convert values from 0 to 1 for the
     # timesteps we want to keep.
     if prop.whichcast == 'nowcast':
         for i_run in range(int(N_runs)):
@@ -865,7 +867,7 @@ def fix_adcirc_dataset(
                        'This may cause issues with downstream processing. Continuing...')
     #
     return data_set
-            
+
 
 def get_station_dim(engine: str, urlpaths: list[str],
                     drop_variables: list[str], logger: Logger) -> tuple[bool, int]:
@@ -1012,6 +1014,7 @@ def remove_extra_stations(engine: str,
             xarray_kwargs={
                 'engine': 'h5netcdf',
                 'drop_variables': drop_variables,
+                'decode_times': True,
                 'chunks': 'auto',
             },
         )

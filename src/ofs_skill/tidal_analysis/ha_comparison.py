@@ -131,3 +131,81 @@ def compare_harmonic_constants(
         )
 
     return df
+
+
+def compute_prediction_verification(
+    model_prediction: np.ndarray,
+    official_prediction: np.ndarray,
+    logger: logging.Logger | None = None,
+) -> dict[str, float]:
+    """
+    Compare model-derived tidal predictions against official CO-OPS predictions.
+
+    Parameters
+    ----------
+    model_prediction : np.ndarray
+        Model-derived tidal prediction time series.
+    official_prediction : np.ndarray
+        Official CO-OPS tidal prediction time series (same times).
+    logger : logging.Logger, optional
+        Logger instance.
+
+    Returns
+    -------
+    dict
+        Keys: ``rmse``, ``mean_diff``, ``max_abs_diff``, ``correlation``.
+
+    Raises
+    ------
+    ValueError
+        If input arrays have different lengths.
+    """
+    _log = logger or logging.getLogger(__name__)
+
+    model_prediction = np.asarray(model_prediction, dtype=float)
+    official_prediction = np.asarray(official_prediction, dtype=float)
+
+    if len(model_prediction) != len(official_prediction):
+        raise ValueError(
+            f'Arrays must have the same length. Got '
+            f'{len(model_prediction)} and {len(official_prediction)}.'
+        )
+
+    # Use only mutually finite values
+    valid = np.isfinite(model_prediction) & np.isfinite(official_prediction)
+    n_valid = int(np.sum(valid))
+
+    if n_valid == 0:
+        _log.warning('No valid overlapping points for prediction verification.')
+        return {
+            'rmse': np.nan,
+            'mean_diff': np.nan,
+            'max_abs_diff': np.nan,
+            'correlation': np.nan,
+        }
+
+    m = model_prediction[valid]
+    o = official_prediction[valid]
+
+    diff = m - o
+    rmse = float(np.sqrt(np.mean(diff ** 2)))
+    mean_diff = float(np.mean(diff))
+    max_abs_diff = float(np.max(np.abs(diff)))
+
+    if np.std(m) > 0 and np.std(o) > 0:
+        correlation = float(np.corrcoef(m, o)[0, 1])
+    else:
+        correlation = np.nan
+
+    _log.info(
+        'Prediction verification: RMSE=%.4f, mean_diff=%.4f, '
+        'max_abs_diff=%.4f, corr=%.4f (%d points).',
+        rmse, mean_diff, max_abs_diff, correlation, n_valid,
+    )
+
+    return {
+        'rmse': rmse,
+        'mean_diff': mean_diff,
+        'max_abs_diff': max_abs_diff,
+        'correlation': correlation,
+    }
