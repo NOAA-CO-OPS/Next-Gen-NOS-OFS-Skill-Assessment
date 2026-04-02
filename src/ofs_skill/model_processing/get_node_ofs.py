@@ -257,6 +257,12 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i):
                                                       int(ofs_ctlfile[2][i])])
             invalid_mask = (model_obs <= -999) | (model_obs >= 999)
             model_obs[invalid_mask] = np.nan
+    elif prop.model_source == 'adcirc':
+        if prop.ofs == 'stofs_2d_glo':
+            # We raise en exception here for STOFS-2D-Global because it does 
+            # not have temp/sal data, and logic elsewhere should steer users
+            # away from calling this function with STOFS-2D-Global.
+            raise ValueError('Temperature and salinity data are not available for STOFS-2D-Global.')
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -414,6 +420,12 @@ def format_currents(prop, model, ofs_ctlfile, i):
             invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
             mfp.model_obs[invalid_mask] = np.nan
             mfp.model_ang[invalid_mask] = np.nan
+    elif prop.model_source == 'adcirc':
+        if prop.ofs == 'stofs_2d_glo':
+            # We raise en exception here for STOFS-2D-Global because it does 
+            # not have current data, and logic elsewhere should steer users
+            # away from calling this function with STOFS-2D-Global.
+            raise ValueError('Current data are not available for STOFS-2D-Global.')
 
     mfp.data_model = pd.DataFrame(
         {'DateTime': mfp.model_time,
@@ -456,6 +468,7 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
     id_number = ofs_ctlfile[4][i]
     datum_offset = get_datum_offset_func(
         prop, int(ofs_ctlfile[1][i]), model, id_number, logger)
+    logger.info(f'Datum offset for station {id_number} (node {ofs_ctlfile[1][i]}): {datum_offset}')
 
     if prop.model_source=='fvcom':
         if prop.ofsfiletype == 'fields':
@@ -506,6 +519,11 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
             if datum_offset > -999 and datum_offset < 999:
                 sign = 1 if 'stofs' in prop.ofs else -1
                 model_obs = model_obs + sign * datum_offset
+    elif prop.model_source =='adcirc':
+        model_time = np.array(model['time'])
+        model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i])])
+        if datum_offset > -999 and datum_offset < 999:
+            model_obs = model_obs - datum_offset
 
     data_model = pd.DataFrame(
         {'DateTime': model_time,
@@ -618,6 +636,9 @@ def parameter_validation(prop, dir_params, logger):
         logger.error('Uh-oh, please select a valid model output file type! '
                      'You chose %s. The options are "stations" or "fields".',
                      prop.ofsfiletype)
+    if (prop.ofs == 'stofs_2d_glo') and (prop.ofsfiletype == 'fields'):
+        logger.error('STOFS-2D-Global is only available as station output files. Please select "stations" for file type. Exiting...')
+        raise NotImplementedError('STOFS-2D-Global fields file processing is not currently implemented.')
     # Warn if using custom lat/lon inputs and stations files
     if prop.ofsfiletype == 'stations' and prop.user_input_location:
         logger.warning('You are using custom lat/lon coordinates for model time '
@@ -647,6 +668,13 @@ def parameter_validation(prop, dir_params, logger):
                      'Please use %s. Exiting...', list_diff,
                      correct_var_list)
         sys.exit()
+    if prop.ofs == 'stofs_2d_glo':
+        if set(prop.var_list) != set(['water_level']):
+            logger.warning('"water_level" is the only available variable for STOFS-2D-Global: '
+                           'Removing other variables from list.')
+            prop.var_list = ['water_level']
+            # I think we can alter its state here, but maybe there's a reason not to?
+            
 
 def get_node_ofs(prop, logger):
     """
@@ -713,7 +741,7 @@ def get_node_ofs(prop, logger):
             '%Y%m%d') + '23'
     except Exception as e:
         logger.error(f'Problem with date format in get_node_ofs: {e}')
-        sys.exit(-1)
+        raise SystemExit(1)
 
     # Lazy load the model data
     dir_list = list_of_dir(prop, logger)
@@ -721,6 +749,10 @@ def get_node_ofs(prop, logger):
     logging.info('About to start intake_scisa from get_node ...')
     model = intake_model(list_files, prop, logger)
     logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
+
+    if not model:
+        logger.error('No model files or URLs to load in intake! Exiting...')
+        raise SystemExit(1)
 
     # Write filenames to CSV
     try:
