@@ -613,7 +613,8 @@ def get_model_data(prop, logger):
     dir_params = utils.Utils().read_config_section('directories', logger)
 
     if dir_params['home'] == '/path/to/sa_homedir/':
-        logger.error('HOMEDIR NOT SET IN conf/ofs_dps.conf FILE!')
+        logger.error('HOMEDIR NOT SET! Copy conf/ofs_dps.conf.example to '
+                     'conf/ofs_dps.conf and set home= to your working directory.')
         logger.error(
             'Program will sleep for 10 seconds to allow user to kill it '
             '(ctl-c).',)
