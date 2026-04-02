@@ -587,7 +587,7 @@ class TestCLIValidation:
         result = self._run(['--help'])
         assert result.returncode == 0
         assert '-d' in result.stdout
-        assert '-c' in result.stdout
+        assert '-C' in result.stdout
 
     def test_missing_required_args(self):
         result = self._run([])
@@ -596,12 +596,12 @@ class TestCLIValidation:
 
     def test_hourly_without_start_end(self):
         result = self._run([
-            '-d', '20260315', '-c', '/tmp/test', '-o', 'sfbofs', '-m', 'hourly',
+            '-d', '20260315', '-C', '/tmp/test', '-o', 'sfbofs', '-m', 'hourly',
         ])
         assert result.returncode == 2
         assert 'start' in result.stderr.lower() or 'end' in result.stderr.lower()
 
     def test_neither_bounds_nor_ofs(self):
-        result = self._run(['-d', '20260315', '-c', '/tmp/test'])
+        result = self._run(['-d', '20260315', '-C', '/tmp/test'])
         assert result.returncode == 2
         assert 'bounds' in result.stderr.lower() or 'ofs' in result.stderr.lower()

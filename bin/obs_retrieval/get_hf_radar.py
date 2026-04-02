@@ -39,11 +39,11 @@ HF Radar sources and corresponding OFSes:
 
 Example daily average call:
     python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
-        -c ./data/observations/ -b ./ofs_extents/sfbofs.shp
+        -C ./data/observations/ -b ./ofs_extents/sfbofs.shp
 
 Example hourly call:
     python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
-        -c ./data/observations/ -b ./ofs_extents/sfbofs.shp \\
+        -C ./data/observations/ -b ./ofs_extents/sfbofs.shp \\
         -m hourly -s 2026030900 -e 2026031023
 """
 from __future__ import annotations
@@ -490,7 +490,7 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-c', '--catalogue',
+        '-C', '--catalogue',
         required=True,
         help='File directory to write the output files to'
     )
@@ -498,6 +498,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '-b', '--bounds',
         help='Bounds (shapefile path)'
+    )
+
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)'
     )
 
     parser.add_argument(
@@ -534,7 +539,7 @@ if __name__ == '__main__':
         parser.error('Hourly mode requires both -s/--start and -e/--end.')
 
     # Set up logging
-    config_file = utils.Utils().get_config_file()
+    config_file = utils.Utils(args.config).get_config_file()
     log_config_file = os.path.join(os.getcwd(), 'conf', 'logging.conf')
 
     if not os.path.isfile(log_config_file):
