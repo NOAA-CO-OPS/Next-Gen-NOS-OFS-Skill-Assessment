@@ -619,6 +619,10 @@ def create_1dplot(prop, logger):
                          f'the folder {ofs_extents_path}. Abort!')
         logger.error(error_message)
         sys.exit(-1)
+    if prop.ofs == 'stofs_2d_glo':
+        logger.warning('IMPORTANT NOTE: STOFS-2D-Global currently uses a '
+                       'copy of the GOMOFS extent file for testing purposes. '
+                       'This may cause issues with some workflows!')
 
     # Datum validations!
     if prop.datum not in prop.datum_list:
@@ -649,8 +653,11 @@ def create_1dplot(prop, logger):
                          'Switching to IGLD...', prop.datum, prop.ofs)
             prop.datum = 'IGLD85'
     except TypeError:
-        logger.error('Failure checking for datum netcdf file on the NODD S3 '
-                     'bucket! Datum conversions may fail. Continuing...')
+        if (vdatums == -9995) and prop.ofs.lower() in ('stofs_2d_glo'):
+            logger.info('No vdatum file for STOFS-2D-Global, as expected.')
+        else:
+            logger.error('Failure checking for datum netcdf file on the NODD S3 '
+                        'bucket! Datum conversions may fail. Continuing...')
 
     # Date-gate for forecast horizon functionality
     if ((datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')-

@@ -172,6 +172,25 @@ conda activate ofs_dps_env
 pip install -e .
 ```
 
+**Configure USGS API key (conda):** To raise the USGS API rate limit (see [Step 2a](#step-2a-configure-usgs-api-key) under Option 1), set the key in the `ofs_dps_env` environment:
+
+*bash:*
+```bash
+conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps_env
+conda deactivate
+conda activate ofs_dps_env
+echo $API_USGS_PAT
+```
+
+*Windows (Anaconda PowerShell):*
+```powershell
+conda activate ofs_dps_env
+conda env config vars set API_USGS_PAT=<your-api-key>
+conda deactivate
+conda activate ofs_dps_env
+echo $env:API_USGS_PAT
+```
+
 For detailed conda setup instructions for beginners, see [Section 3.2](#32-create-an-environment-with-miniconda).
 
 ### Package Organization
@@ -258,7 +277,7 @@ Each OFS runs at specific times each day. For example, the Chesapeake Bay OFS (C
 
 ![Model cycles](./readme_images/model_cycles_color.png)
 
-Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from two additional OFS: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), and the Northeast Coastal OFS (NECOFS). Note that NECOFS is still in development, and output is not yet publically available.
+Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from  additional OFSs: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), the Northeast Coastal OFS (NECOFS), and the 2D global Surge and Tide OFS (STOFS-2D-Global). Note that NECOFS is still in development, and output is not yet publically available.
 
 |OFS|Region|Daily model cycle hours (UTC)|Max forecast horizon (hours)|
 |:---|:---|:---|:---|
@@ -274,6 +293,7 @@ Different OFSs can have different model cycles times for each day, and different
 |NGOFS2|Northern Gulf of America|03, 09, 15, 21|48|
 |SFBOFS|San Francisco Bay|03, 09, 15, 21|48|
 |SSCOFS|Salish Sea & Columbia River|03, 09, 15, 21|72|
+|STOFS-2D-Global|Global|00, 06, 12, 18|180|
 |STOFS-3D-ATL|Atlantic Basin|12|96|
 |TBOFS|Tampa Bay|00, 06, 12, 18|48|
 |WCOFS|West Coast|03|72|
@@ -310,7 +330,7 @@ In terms of the skill assessment software, the functional differences between fi
 * **Field files** have 3D model output (latitude x longitude x depth) in a grid across the entire OFS domain, and can be matched with any observation station locations. But they are generally larger in file size and more cumbersome to work with -- the skill assessment runs more slowly with field files than with station files. Field files are required for 2D analysis in the skill assessment.
 * **Station files** have 1D time series output only at selected locations within an OFS, which cannot always be matched with all available observation station locations. However, station files are much smaller in size, more nimble to work with, and have a higher 6-minute time resolution. The 1D skill assessment can be run up to 10x faster with station files compared to field files. Station files cannot be used for 2D skill assessment.
 
-When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files.
+When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files, and STOFS-2D-Global, which currently only runs with station files.
 
 Note that OFS model data, depending on file type and 'cast', has specific data retention time periods, after which the data will no longer be available. Data retention times are listed below. The time periods are relative to today's date.
 
@@ -498,7 +518,7 @@ Here, you can choose whether to save logging entries to a text file or print the
 ![ofs_dps_conf](./readme_images/logging_conf.png)
 
 ## 3.4 Download OFS model data
-After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL but excluding NECOFS (which is in development).
+After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL and STOFS-2D-Global but excluding NECOFS (which is in development).
 
 The script will retrieve all OFS model files needed to run the skill assessment, and automatically organize them into a new `working directory` folder called `example_data`. __After OFS model data is downloaded, do not move or re-organize the files -- otherwise the skill assessment will not be able to find them.__
 

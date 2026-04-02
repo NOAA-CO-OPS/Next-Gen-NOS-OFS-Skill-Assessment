@@ -70,6 +70,10 @@ def parameter_validation(argu_list, logger):
         folder {ofs_extents_path}. Abort!"""
         logger.error(error_message)
         sys.exit(-1)
+    if ofs == 'stofs_2d_glo':
+        logger.warning('IMPORTANT NOTE: STOFS-2D-Global currently uses a '
+                       'copy of the GOMOFS extent file for testing purposes. '
+                       'This may cause issues with some workflows!')
 
     # filetype validation
     if filetype not in ['stations', 'fields']:
@@ -203,7 +207,7 @@ def list_of_dir(prop, basepath, logger):
         year = datetime.strptime(dates[date_index], '%m/%d/%y').year
         month = datetime.strptime(dates[date_index], '%m/%d/%y').month
         # Add stofs directory structure
-        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_global', 'stofs_3d_pac']:
+        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_glo', 'stofs_3d_pac']:
             day = datetime.strptime(dates[date_index], '%m/%d/%y').day
             model_dir = f'{basepath}{prop.model_path}/{prop.ofs}.{year}' +\
                         f'{month:02}{day:02}'
@@ -260,132 +264,186 @@ def make_file_list(prop, dates, dir_list, logger):
     # Set up empty variable to append to
     file_list = []
 
+    # Logic order:
+    # forecast_a or forecast_b
+    #     fields
+    #         stofs_3d_atl or stofs_3d_pac
+    #         stof_2d_glo
+    #         other OFSs
+    #     stations
+    #         stofs_2d_glo
+    #         other OFSs
+    # nowcast
+    #     fields
+    #         stofs_3d_atl or stofs_3d_pac
+    #         stof_2d_glo
+    #         other OFSs
+    #     stations
+    #         stofs_2d_glo
+    #         other OFSs
+    # whichcast == all (not ready yet)
+    # Note no "hindcast" option. 
+    # TODO: delete the above comment once merged. It's just here to note the change.
     if prop.whichcast in ['forecast_b', 'forecast_a']:
-        if prop.ofsfiletype == 'fields' and prop.ofs not in (
-            'stofs_3d_atl',
-            'stofs_3d_pac',
-        ):
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    for hrstring in hrstrings:
-                        hrstring = hrstring.zfill(3)
+        if prop.ofsfiletype == 'fields':
+            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
+                        for hrstring in hrstrings:
+                            hrstring = hrstring.zfill(3)
+                            hrstring0 = str(int(hrstring)-11).zfill(3)
+                            #skipping field2d files
+                            '''
+                            file_name = f'{prop.ofs}.t{cycle}z.field2d_' + \
+                                f'f{hrstring0}_{hrstring}.nc'
+                            file_name = os.path.join(dir_list[i], file_name). \
+                                replace('\\', '/')
+                            file_list.append(file_name)
+                            '''
+                            for var_name in {'out2d','horizontalVelX', 'horizontalVelY' ,
+                                            'salinity','temperature','zCoordinates'}:
+                                file_name = f'{prop.ofs}.t{cycle}z.fields.' + \
+                                    f'{var_name}_f{hrstring0}_{hrstring}.nc'
+                                file_name = os.path.join(dir_list[i], file_name). \
+                                    replace('\\', '/')
+                                file_list.append(file_name)
+            elif prop.ofs in ('stofs_2d_glo'):
+                for i, datei in enumerate(dates):
+                    for cycle in fcstcycles:
+                        # For now we're just doing the combined water level ("cwl").
+                        # Warnings and errors elsewhere should handle requests for
+                        # other variables.
+                        file_name = f'{prop.ofs}.t{cycle}z.fields.cwl.nc'
+                        file_list.append(
+                            os.path.join(dir_list[i], file_name).replace('\\', '/')
+                        )
+            else:
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
+                        for hrstring in hrstrings:
+                            hrstring = hrstring.zfill(3)
+                            if datetime.strptime(datei, '%Y%m%d') < datechange:
+                                file_name = f'nos.{prop.ofs}.fields.f{hrstring}.' \
+                                    f'{datei}.t{cycle}z.nc'
+                                file_name = os.path.join(dir_list[i], file_name). \
+                                    replace('\\', '/')
+                                file_list.append(file_name)
+                            elif datetime.strptime(datei, '%Y%m%d') >= datechange:
+                                file_name = f'{prop.ofs}.t{cycle}z.{datei}.' +\
+                                    f'fields.f{hrstring}.nc'
+                                file_name = os.path.join(dir_list[i], file_name). \
+                                    replace('\\', '/')
+                                file_list.append(file_name)
+
+        elif prop.ofsfiletype == 'stations':
+            if prop.ofs in ('stofs_2d_glo'):
+                for i, datei in enumerate(dates):
+                    for cycle in fcstcycles:
+                        # For now we're just doing the combined water level ("cwl").
+                        # Note that this is bias corrected for station files.
+                        file_name = f'{prop.ofs}.t{cycle}z.points.cwl.nc'
+                        file_list.append(
+                            os.path.join(dir_list[i], file_name).replace('\\', '/')
+                        )
+            else:
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
                         if datetime.strptime(datei, '%Y%m%d') < datechange:
-                            file_name = f'nos.{prop.ofs}.fields.f{hrstring}.' \
+                            file_name = f'nos.{prop.ofs}.stations.forecast.' \
                                 f'{datei}.t{cycle}z.nc'
                             file_name = os.path.join(dir_list[i], file_name). \
                                 replace('\\', '/')
                             file_list.append(file_name)
                         elif datetime.strptime(datei, '%Y%m%d') >= datechange:
-                            file_name = f'{prop.ofs}.t{cycle}z.{datei}.' +\
-                                f'fields.f{hrstring}.nc'
+                            file_name = f'{prop.ofs}.t{cycle}z.{datei}.stations.' \
+                                f'forecast.nc'
                             file_name = os.path.join(dir_list[i], file_name). \
                                 replace('\\', '/')
                             file_list.append(file_name)
-        elif prop.ofsfiletype == 'fields' and prop.ofs in (
-            'stofs_3d_atl',
-            'stofs_3d_pac',
-        ):
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    for hrstring in hrstrings:
-                        hrstring = hrstring.zfill(3)
-                        hrstring0 = str(int(hrstring)-11).zfill(3)
-                        #skipping field2d files
-                        '''
-                        file_name = f'{prop.ofs}.t{cycle}z.field2d_' + \
-                            f'f{hrstring0}_{hrstring}.nc'
-                        file_name = os.path.join(dir_list[i], file_name). \
-                            replace('\\', '/')
-                        file_list.append(file_name)
-                        '''
-                        for var_name in {'out2d','horizontalVelX', 'horizontalVelY' ,
-                                         'salinity','temperature','zCoordinates'}:
-                            file_name = f'{prop.ofs}.t{cycle}z.fields.' + \
-                                f'{var_name}_f{hrstring0}_{hrstring}.nc'
-                            file_name = os.path.join(dir_list[i], file_name). \
-                                replace('\\', '/')
-                            file_list.append(file_name)
-        elif prop.ofsfiletype == 'stations':
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    if datetime.strptime(datei, '%Y%m%d') < datechange:
-                        file_name = f'nos.{prop.ofs}.stations.forecast.' \
-                            f'{datei}.t{cycle}z.nc'
-                        file_name = os.path.join(dir_list[i], file_name). \
-                            replace('\\', '/')
-                        file_list.append(file_name)
-                    elif datetime.strptime(datei, '%Y%m%d') >= datechange:
-                        file_name = f'{prop.ofs}.t{cycle}z.{datei}.stations.' \
-                            f'forecast.nc'
-                        file_name = os.path.join(dir_list[i], file_name). \
-                            replace('\\', '/')
-                        file_list.append(file_name)
+
     elif prop.whichcast == 'nowcast':
-        if prop.ofsfiletype == 'fields' and prop.ofs not in (
-            'stofs_3d_atl',
-            'stofs_3d_pac',
-        ):
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    for hrstring in hrstrings:
-                        hrstring = hrstring.zfill(3)
+        if prop.ofsfiletype == 'fields':
+            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
+                        for hrstring in {'12', '24'}:
+                            hrstring = hrstring.zfill(3)
+                            hrstring0 = str(int(hrstring)-11).zfill(3)
+                            #skipping field2d files
+                            '''
+                            file_name = f'{prop.ofs}.t{cycle}z.field2d_n' + \
+                                f'{hrstring0}_{hrstring}.nc'
+                            file_name = os.path.join(dir_list[i], file_name). \
+                                replace('\\', '/')
+                            file_list.append(file_name)
+                            '''
+                            for var_name in {'out2d',
+                                'horizontalVelX', 'horizontalVelY',
+                                'salinity', 'temperature', 'zCoordinates',
+                            }:
+                                file_name = f'{prop.ofs}.t{cycle}z.fields.' + \
+                                    f'{var_name}_n{hrstring0}_{hrstring}.nc'
+                                file_name = os.path.join(dir_list[i], file_name). \
+                                    replace('\\', '/')
+                                file_list.append(file_name)
+            elif prop.ofs in ('stofs_2d_glo'):
+                for i, datei in enumerate(dates):
+                    for cycle in fcstcycles:
+                        # For now we're just doing the combined water level ("cwl").
+                        # Warnings and errors elsewhere should handle requests for
+                        # other variables.
+                        file_name = f'{prop.ofs}.t{cycle}z.fields.cwl.nc'
+                        file_list.append(
+                            os.path.join(dir_list[i], file_name).replace('\\', '/')
+                        )
+            else:
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
+                        for hrstring in hrstrings:
+                            hrstring = hrstring.zfill(3)
+                            if datetime.strptime(datei, '%Y%m%d') < datechange:
+                                file_name = f'nos.{prop.ofs}.fields.n{hrstring}.' \
+                                    f'{datei}.t{cycle}z.nc'
+                                file_name = os.path.join(dir_list[i], file_name)
+                                file_list.append(file_name)
+                            elif datetime.strptime(datei, '%Y%m%d') >= datechange:
+                                file_name = f'{prop.ofs}.t{cycle}z.{datei}.' + \
+                                    f'fields.n{hrstring}.nc'
+                                file_name = os.path.join(dir_list[i], file_name). \
+                                    replace('\\', '/')
+                                file_list.append(file_name)
+
+        elif prop.ofsfiletype == 'stations':
+            if prop.ofs in ('stofs_2d_glo'):
+                for i, datei in enumerate(dates):
+                    for cycle in fcstcycles:
+                        # For now we're just doing the combined water level ("cwl").
+                        # Note that this is bias corrected for station files.
+                        file_name = f'{prop.ofs}.t{cycle}z.points.cwl.nc'
+                        file_list.append(
+                            os.path.join(dir_list[i], file_name).replace('\\', '/')
+                        )
+            else:
+                for i, datei in enumerate(dates):
+                    datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
+                    for cycle in fcstcycles:
                         if datetime.strptime(datei, '%Y%m%d') < datechange:
-                            file_name = f'nos.{prop.ofs}.fields.n{hrstring}.' \
+                            file_name = f'nos.{prop.ofs}.stations.nowcast.' \
                                 f'{datei}.t{cycle}z.nc'
                             file_name = os.path.join(dir_list[i], file_name)
                             file_list.append(file_name)
                         elif datetime.strptime(datei, '%Y%m%d') >= datechange:
-                            file_name = f'{prop.ofs}.t{cycle}z.{datei}.' + \
-                                f'fields.n{hrstring}.nc'
+                            file_name = f'{prop.ofs}.t{cycle}z.{datei}.stations.' \
+                                f'nowcast.nc'
                             file_name = os.path.join(dir_list[i], file_name). \
                                 replace('\\', '/')
                             file_list.append(file_name)
-        elif prop.ofsfiletype == 'fields' and prop.ofs in (
-            'stofs_3d_atl',
-            'stofs_3d_pac',
-        ):
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    for hrstring in {'12', '24'}:
-                        hrstring = hrstring.zfill(3)
-                        hrstring0 = str(int(hrstring)-11).zfill(3)
-                        #skipping field2d files
-                        '''
-                        file_name = f'{prop.ofs}.t{cycle}z.field2d_n' + \
-                            f'{hrstring0}_{hrstring}.nc'
-                        file_name = os.path.join(dir_list[i], file_name). \
-                            replace('\\', '/')
-                        file_list.append(file_name)
-                        '''
-                        for var_name in {'out2d',
-                            'horizontalVelX', 'horizontalVelY',
-                            'salinity', 'temperature', 'zCoordinates',
-                        }:
-                            file_name = f'{prop.ofs}.t{cycle}z.fields.' + \
-                                f'{var_name}_n{hrstring0}_{hrstring}.nc'
-                            file_name = os.path.join(dir_list[i], file_name). \
-                                replace('\\', '/')
-                            file_list.append(file_name)
-        elif prop.ofsfiletype == 'stations':
-            for i, datei in enumerate(dates):
-                datei = datetime.strptime(datei, '%m/%d/%y').strftime('%Y%m%d')
-                for cycle in fcstcycles:
-                    if datetime.strptime(datei, '%Y%m%d') < datechange:
-                        file_name = f'nos.{prop.ofs}.stations.nowcast.' \
-                            f'{datei}.t{cycle}z.nc'
-                        file_name = os.path.join(dir_list[i], file_name)
-                        file_list.append(file_name)
-                    elif datetime.strptime(datei, '%Y%m%d') >= datechange:
-                        file_name = f'{prop.ofs}.t{cycle}z.{datei}.stations.' \
-                            f'nowcast.nc'
-                        file_name = os.path.join(dir_list[i], file_name). \
-                            replace('\\', '/')
-                        file_list.append(file_name)
+
     elif prop.whichcast == 'all':
         logger.error('This option is not ready yet!')
         sys.exit(-1)
@@ -408,7 +466,7 @@ def list_of_urls(file_list, prop, logger):
 
     # Retrieve urls from config file
     url_params = utils.Utils().read_config_section('urls', logger)
-    if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+    if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
         url_root = url_params['nodd_s3']
         url_list = []
         for file in file_list:
@@ -426,13 +484,13 @@ def list_of_urls(file_list, prop, logger):
                 f"{file.replace('stofs_3d_atl/', 'STOFS-3D-Atl/')}"
             )
             url_list.append(url)
-    elif prop.ofs == 'stofs_2d_global':
+    elif prop.ofs == 'stofs_2d_glo':
         url_root = url_params['nodd_s3_stofs2d']
         url_list = []
         for file in file_list:
             url = (
                 f'{url_root}'
-                f'{file}'
+                f"{file.replace('stofs_2d_glo/', '')}"
             )
             url_list.append(url)
     logger.info(f'Starting URL building for {url_root}...')
@@ -522,10 +580,14 @@ def download_data(prop, list_of_urls1, dir_list, logger):
     """
     # Set up save path
     savepath = dir_list[0][:].split(prop.ofs)[0]
+    # Need to add a "stofs_2d_glo" to the savepath for stofs_2d_glo files 
+    # because the NODD S3 bucket doesn't contain it (unlike other models).
+    if prop.ofs == 'stofs_2d_glo':
+        savepath = savepath + 'stofs_2d_glo/'
     # First try the NODD and see if it's responding
     try:
         logger.info('Try NODD S3 download...')
-        if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+        if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
             urllib.request.urlretrieve(
                 list_of_urls1[0].replace('\\', '/'), (
                     savepath +
@@ -539,6 +601,11 @@ def download_data(prop, list_of_urls1, dir_list, logger):
                     list_of_urls1[0].split('.com')[-1]
                 ).replace('//', '/').replace('STOFS-3D-Atl/', 'stofs_3d_atl/'),
             )
+        elif prop.ofs in ('stofs_2d_glo'):
+            urllib.request.urlretrieve(
+                list_of_urls1[0].replace('\\', '/'),
+                (savepath + list_of_urls1[0].split('.com')[-1]).replace('//', '/'),
+            )
         logger.info('NODD is responding! Keep going -->')
         list_of_urls_main = list_of_urls1
     except (ValueError, HTTPError, Exception) as e_x:
@@ -550,6 +617,49 @@ def download_data(prop, list_of_urls1, dir_list, logger):
     # Download remaining files in parallel
     parallel_config = get_parallel_config(logger)
     max_workers = parallel_config['model_download_workers']
+    
+    for mod_dat in list_of_urls_main:
+        try:
+            logger.info(f'Downloading model data: {mod_dat}')
+            if prop.ofs not in (
+                'stofs_3d_atl', 'stofs_3d_pac',
+                'stofs_2d_glo',
+            ):
+                if not os.path.isfile((
+                    savepath +
+                    mod_dat.split('.com')[-1]
+                ).replace('//', '/')):
+                    urllib.request.urlretrieve(
+                        mod_dat.replace('\\', '/'), (
+                            savepath +
+                            mod_dat.split('.com')[-1]
+                        ).replace('//', '/'),
+                    )
+            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+                if not os.path.isfile((
+                    savepath +
+                    mod_dat.split('.com')[-1]
+                ).replace('//', '/').replace(
+                    'STOFS-3D-Atl/',
+                    'stofs_3d_atl/',
+                )):
+                    urllib.request.urlretrieve(
+                        mod_dat.replace('\\', '/'), (
+                            savepath +
+                            mod_dat.split('.com')[-1]
+                        ).replace('//', '/').replace(
+                            'STOFS-3D-Atl/',
+                            'stofs_3d_atl/',
+                        ),
+                    )
+            elif prop.ofs in ('stofs_2d_glo'):
+                if not os.path.isfile(
+                    (savepath + mod_dat.split('.com')[-1]).replace('//', '/')
+                ):
+                    urllib.request.urlretrieve(
+                        mod_dat.replace('\\', '/'), 
+                        (savepath + mod_dat.split('.com')[-1]).replace('//', '/'),
+                    )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {

@@ -49,6 +49,7 @@ from typing import Any
 import intake
 import numpy as np
 import xarray as xr
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
 
 
 def _extract_filename_from_encoding(ds):
@@ -156,6 +157,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     - ROMS: Drops many auxiliary variables to reduce memory
     - FVCOM: Minimal dropping (siglay/siglev handled separately)
     - SCHISM: Drops surface/bottom variables
+    - ADCIRC: Drops some mesh/connectivity variables
 
     Time handling:
     - Rounds all times to nearest minute
@@ -208,12 +210,20 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             'temp_surface', 'temp_bottom', 'salt_surface', 'salt_bottom',
             'uvel_surface', 'vvel_surface', 'uvel_bottom', 'vvel_bottom',
             'uvel4.5','vvel4.5','crs', 'SCHISM_hgrid_edge_x','SCHISM_hgrid_edge_y',
-                          'SCHISM_hgrid_face_y','SCHISM_hgrid_face_x',
-                          ]
+            'SCHISM_hgrid_face_y','SCHISM_hgrid_face_x',
+        ]
+        time_name = 'time'
+    elif prop.model_source == 'adcirc':
+        drop_variables = [
+            'nvel', 'element', 'adcirc_mesh', 'nvell', 'max_nvell',
+            'ibtype', 'nbvv'
+        ]
         time_name = 'time'
 
-    if prop.ofs == 'necofs' or prop.ofs == 'loofs2' or prop.ofs == 'secofs':
+    if prop.ofs in ['necofs', 'loofs2','secofs']:
         engine = 'netcdf4'
+    elif prop.ofs in ['stofs_2d_glo']:
+        engine = 'scipy'
     else:
         engine = 'h5netcdf'
 
@@ -392,6 +402,12 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 chunk_spec = {time_name: 1}
             else:
                 chunk_spec = 'auto'
+            # Note it might be possible to add 
+            #     'data_vars': 'minimal'
+            # to the xarray_kwargs to avoid expanding spatial/mesh variables 
+            # in the time dimension, which can result in very large arrays.
+            # But this messes up the indexing.py process, so we will leave 
+            # it out for now.
             source = intake.open_netcdf(
                 urlpath=urlpaths,
                 xarray_kwargs={
@@ -413,6 +429,11 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             urlpaths, dim_ref, drop_variables,
             time_name, logger,
         )
+
+    # If ADCIRC, we need to subset times to the appropriate whichcast.
+    # Note that this needs to be done before removal of duplicate times.    
+    if prop.model_source == 'adcirc':
+        ds = fix_adcirc_dataset(prop, ds, urlpaths, logger)
 
     # Round all times to nearest minute
     ds[time_name] = ds[time_name].dt.round('1min')
@@ -696,6 +717,155 @@ def calc_sigma(h: np.ndarray, sigma: xr.DataArray) -> tuple[np.ndarray, np.ndarr
 
     return siglay, siglev, deplay, deplev
 
+
+def fix_adcirc_dataset(
+    prop: Any, 
+    data_set: xr.Dataset, 
+    urlpaths: Any,
+    logger: Logger
+) -> xr.Dataset:
+    """
+    Apply ADCIRC-specific coordinate adjustments.
+
+    The ADCIRC model netCDF files require special handling of time coordinate.
+    This function subsets to take just the timesteps that are needed for
+    the specific whichcast (nowcast, forecast_a, forecast_b).
+
+    Parameters
+    ----------
+    prop : ModelProperties
+        ModelProperties object containing:
+        - ofsfiletype : str
+            'fields' or 'stations'
+        - whichcast: str
+            'nowcast', 'forecast_a', 'forecast_b'
+    data_set : xr.Dataset
+        ADCIRC model dataset
+    urlpaths: List
+        List of urls/paths that were joined to make data_set.
+    logger : Logger
+        Logger instance for logging messages
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with timesteps only for the appropriate whichcast.
+
+    Notes
+    -----
+    ADCIRC outputs a single file containing all the nowcast and forecast
+    data, contatenated together. So when multiple files are loaded with
+    intake, the time coordinate goes something like
+        t_start_0 ... t_end_0, t_start_1 ... t_end_1, ...
+    where t_start_1 can be earlier than t_end_0. 
+    I.e., this can be a non-monotonic series. 
+    
+    We need to drop the timesteps that are not part of the requested whichcast.
+    We illustrate how to do this with a single STOFS-2D-Global run initialized
+    at 12:00 UTC on March 1st.
+    Nowcast: 06:00 UTC -> 12:00 UTC, both on March 1st
+    Forecast_b: 12:00 UTC -> 18:: UTC, both on March 1st 
+    Forecast_a: 12:00 UTC -> 00:00 UTC on March 9th.
+
+    Technical note: we cannot use time for subsetting, because we have a 
+    non-monotonic coordinate with repeated labels. Therefore we have to 
+    calculate everything with positional indexing (numpy style). This 
+    requires some strong assumptions about structure, and we raise an 
+    exception if these assumptions are off.
+    """
+    if prop.model_source != 'adcirc':
+        raise ValueError('Function fix_adcirc_dataset should only be used with ADCIRC data!')
+    
+    # We use the run length and number of cycles per day for timestep 
+    # indexing, so get them from the appropriate function.
+    fcst_a_hours, fcstcycles = get_fcst_hours(prop.ofs)
+
+    # Get the number of timesteps in various pieces of the dataset:
+    fcst_b_hours = 24 / len(fcstcycles)
+    nowcast_hours = 24 / len(fcstcycles)
+    if int(fcst_a_hours) != fcst_a_hours:
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Forecast_a hours is not an integer: {fcst_a_hours}. '
+                       'This may cause issues with subsetting. Continuing...')
+    if int(fcst_b_hours) != fcst_b_hours:
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Forecast_b hours is not an integer: {fcst_b_hours}. '
+                       'This may cause issues with subsetting. Continuing...')
+    if int(nowcast_hours) != nowcast_hours:
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Nowcast hours is not an integer: {nowcast_hours}. '
+                       'This may cause issues with subsetting. Continuing...')
+    if prop.ofsfiletype == 'fields':
+        timesteps_per_hour = 1
+    elif prop.ofsfiletype == 'stations':
+        timesteps_per_hour = 10
+    else:
+        raise ValueError(f'ofsfiletype {prop.ofsfiletype} not recognized.')
+    n_t_fcst_a = int(fcst_a_hours) * timesteps_per_hour
+    n_t_fcst_b = int(fcst_b_hours) * timesteps_per_hour
+    n_t_nowcast = int(nowcast_hours) * timesteps_per_hour
+    n_t_total = n_t_nowcast + n_t_fcst_a
+
+    # Calculate the number of runs in the dataset, and check 
+    # that it matches the number of items in urlpaths.
+    N_runs = len(data_set.time) / n_t_total
+    if int(N_runs) != N_runs:
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Number of runs calculated from dataset time coordinate ({N_runs}) is not an integer. '
+                       'This may cause issues with subsetting. Converting to integer with int() function.')
+    if N_runs != len(urlpaths):
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Number of constituent files in ADCIRC dataset ({len(urlpaths)})'
+                       'not equal to the number calculated from the number of timesteps '
+                       f'({len(data_set.time)} / {n_t_total}). Continuing with the calculated number.')
+    
+    # Set up a variable that will be equal to 1 for the timesteps 
+    # we want to keep.
+    keep_t_s = np.zeros(len(data_set.time))
+
+    # Loop over each run and convert values from 0 to 1 for the 
+    # timesteps we want to keep.
+    if prop.whichcast == 'nowcast':
+        for i_run in range(int(N_runs)):
+            keep_t_s[(i_run*n_t_total) + 0:
+                     (i_run*n_t_total) + n_t_nowcast] = 1
+    elif prop.whichcast == 'forecast_b':
+        for i_run in range(int(N_runs)):
+            keep_t_s[(i_run*n_t_total) + n_t_nowcast:
+                     (i_run*n_t_total) + n_t_nowcast + n_t_fcst_b] = 1
+    elif prop.whichcast == 'forecast_a':
+        for i_run in range(int(N_runs)):
+            keep_t_s[(i_run*n_t_total) + n_t_nowcast:
+                     (i_run*n_t_total) + n_t_nowcast + n_t_fcst_a] = 1
+    else:
+        raise ValueError(f'ofsfiletype {prop.ofsfiletype} not recognized.')
+
+    # Subset the dataset.
+    data_set = data_set.loc[dict(time=(keep_t_s == 1))]
+
+    # Check timesteps.
+    if prop.whichcast == 'forecast_a':
+        # forecast_a repeats the same time series, so we just consider half.
+        delta_t = np.diff(data_set.time.data[0:int(len(data_set.time)/2)])
+    else:
+        delta_t = np.diff(data_set.time.data)
+    if np.any(delta_t <= np.timedelta64(0, 's')):
+        logger.warning('ADCIRC temporal subsetting: '
+                       'Time coordinate is not strictly increasing after subsetting. '
+                       'This may cause issues with downstream processing. Continuing...')
+    if delta_t.max() != delta_t.min():
+        logger.warning('ADCIRC temporal subsetting: '
+                       'Time coordinate has non-uniform spacing after subsetting '
+                       f'(max = {delta_t.max()}, min = {delta_t.min()}). '
+                       'This may cause issues with downstream processing. Continuing...')
+    expected_delta_t = np.timedelta64(int(3600 / timesteps_per_hour), 's')
+    if delta_t.max() != expected_delta_t:
+        logger.warning('ADCIRC temporal subsetting: '
+                       f'Time coordinate spacing (max = {delta_t.max()}) does not match expected spacing ({expected_delta_t}). '
+                       'This may cause issues with downstream processing. Continuing...')
+    #
+    return data_set
+            
 
 def get_station_dim(engine: str, urlpaths: list[str],
                     drop_variables: list[str], logger: Logger) -> tuple[bool, int]:
