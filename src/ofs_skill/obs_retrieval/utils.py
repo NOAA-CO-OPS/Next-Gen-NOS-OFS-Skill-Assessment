@@ -61,7 +61,11 @@ class Utils:
         Args:
             config_file: Optional path to a config file. If None,
                 defaults to conf/ofs_dps.conf relative to the package root.
+                Falls back to conf/ofs_dps.conf.example if the local conf
+                is missing.
         """
+        project_root = Path(__file__).parent.parent.parent.parent
+
         if config_file is not None:
             self.config_file = Path(config_file).resolve()
             if not self.config_file.is_file():
@@ -69,11 +73,19 @@ class Utils:
                     f'Configuration file not found: {self.config_file}'
                 )
         else:
-            # Navigate from src/ofs_skill/obs_retrieval/ up to project root
-            self.config_file = (
-                Path(__file__).parent.parent.parent.parent
-                / 'conf' / 'ofs_dps.conf'
-            ).resolve()
+            config_file_path = (project_root / 'conf' / 'ofs_dps.conf').resolve()
+            example_file = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
+            if config_file_path.exists():
+                self.config_file = config_file_path
+            elif example_file.exists():
+                logging.getLogger(__name__).warning(
+                    'conf/ofs_dps.conf not found — falling back to '
+                    'conf/ofs_dps.conf.example. Copy it to conf/ofs_dps.conf '
+                    'and set home= to your working directory.'
+                )
+                self.config_file = example_file
+            else:
+                self.config_file = config_file_path  # will error later
 
     def get_config_file(self) -> Path:
         """

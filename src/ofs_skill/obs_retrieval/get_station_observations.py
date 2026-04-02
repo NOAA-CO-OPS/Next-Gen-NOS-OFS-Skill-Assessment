@@ -294,12 +294,15 @@ def get_station_observations(prop,logger):
 
     blank_file = 0
     for variable in var_list:
+        # Use a local variable for the API datum to avoid mutating the
+        # outer `datum` which persists across variable iterations.
+        api_datum = datum
         if variable == 'water_level':
         # Fix datum for CO-OPS API calls
-            if datum.lower() == 'igld85':
-                datum = 'IGLD'
-            if datum.lower() == 'navd88':
-                datum = 'NAVD'
+            if api_datum.lower() == 'igld85':
+                api_datum = 'IGLD'
+            if api_datum.lower() == 'navd88':
+                api_datum = 'NAVD'
             name_var = 'wl'
             logger.info('Making water level station '
                         'ctl file.')
@@ -388,7 +391,7 @@ def get_station_observations(prop,logger):
                         retrieve_input.start_date = start_date
                         retrieve_input.end_date = end_date
                         retrieve_input.variable = variable
-                        retrieve_input.datum = datum
+                        retrieve_input.datum = api_datum
 
                         timeseries = retrieve_t_and_c_station(
                             retrieve_input, logger,

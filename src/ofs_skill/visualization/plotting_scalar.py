@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import configparser
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -35,6 +34,7 @@ import ofs_skill.visualization.make_static_plots as make_static_plots
 from ofs_skill.obs_retrieval import (
     find_nearest_tidal_stations,
     retrieve_tidal_predictions,
+    utils,
 )
 from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
 from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
