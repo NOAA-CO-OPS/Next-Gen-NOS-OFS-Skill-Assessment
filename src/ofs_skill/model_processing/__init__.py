@@ -27,7 +27,7 @@ from ofs_skill.model_processing.get_datum_offset import (
 )
 
 # Forecast cycle management
-from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates, get_fcst_hours
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates, get_fcst_hours, get_s3_bucket
 
 # Model node extraction
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
@@ -101,6 +101,7 @@ __all__ = [
     'construct_expected_files',
     'list_of_dir',
     'list_of_files',
+    'get_s3_bucket',
     # File validation
     'check_model_files',
     # Datum conversions

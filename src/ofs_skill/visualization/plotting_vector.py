@@ -26,7 +26,7 @@ Created: 05/09/2025
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -37,6 +37,7 @@ from matplotlib.dates import date2num
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
+from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
 from ofs_skill.visualization.plotting_functions import (
     find_max_data_gap,
     get_error_range,
@@ -113,22 +114,25 @@ def oned_vector_plot1(
     min_size = 1
     gap_length = 10
     data_count = 48
-    if len(list(now_fores_paired[0].DateTime)) > data_count:
+    # Combine obs from different casts into one main obs array
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
+
+    if len(list(obs_df.DateTime)) > data_count:
         marker_size = (
             6**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
         marker_size_obs = (
             9**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
     else:
         marker_size = 6
         marker_size_obs = 9
     # Check for long data gaps
-    if find_max_data_gap(now_fores_paired[0].OBS_SPD) > gap_length:
+    if find_max_data_gap(obs_df.OBS_SPD) > gap_length:
         connectgaps = False
     else:
         connectgaps = True
@@ -136,9 +140,9 @@ def oned_vector_plot1(
     # Current speed
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[0].DateTime),
-            y=list(now_fores_paired[0].OBS_SPD), name='Observations',
-            hovertext=list(now_fores_paired[0].OBS_SPD),
+            x=list(obs_df.DateTime),
+            y=list(obs_df.OBS_SPD), name='Observations',
+            hovertext=list(obs_df.OBS_SPD),
             hovertemplate='%{y:.2f}',
             connectgaps=connectgaps,
             opacity=lineopacity,
@@ -157,7 +161,7 @@ def oned_vector_plot1(
     # Adding boxplots
     fig.add_trace(
         go.Box(
-            y=now_fores_paired[0]['OBS_SPD'], boxmean='sd',
+            y=obs_df['OBS_SPD'], boxmean='sd',
             name='Observations', showlegend=False, legendgroup='obs',
             width=0.7, line=dict(color=palette[0], width=1.5),
             marker=dict(color=palette[0]),
@@ -169,7 +173,7 @@ def oned_vector_plot1(
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
                 'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
@@ -210,10 +214,15 @@ def oned_vector_plot1(
                     line=dict(width=0, color='black'),
                 ), ), 1, 1,
         )
+        if 'z' in seriesname:
+            seriesnamebox = seriesname.split(' ')[1] + ' ' +\
+                seriesname.split(' ')[3]
+        else:
+            seriesnamebox = seriesname.split(' ')[1]
         fig.add_trace(
             go.Box(
                 y=now_fores_paired[i]['OFS_SPD'], boxmean='sd',
-                name=seriesname,
+                name=seriesnamebox,
                 showlegend=False,
                 legendgroup=seriesname,
                 width=.7,
@@ -228,9 +237,9 @@ def oned_vector_plot1(
     # Now do current direction
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[0].DateTime),
-            y=list(now_fores_paired[0].OBS_DIR), name='Observations',
-            # hovertext=list(now_fores_paired[0].OBS_DIR),
+            x=list(obs_df.DateTime),
+            y=list(obs_df.OBS_DIR),
+            name='Observations',
             hovertemplate='%{y:.2f}',
             connectgaps=False,
             opacity=lineopacity,
@@ -238,9 +247,7 @@ def oned_vector_plot1(
             line=dict(color=palette[0], width=linewidth, dash='dash'),
             mode='lines+markers', legendgroup='obs', marker=dict(
                 symbol=allmarkerstyles[0], size=marker_size, color=palette[0],
-                # angle=list(now_fores_paired[0].OBS_DIR),
                 opacity=marker_opacity,
-                # angleref='up',
                 line=dict(width=0, color='black'),
             ),
         ), 2, 1,
@@ -251,7 +258,7 @@ def oned_vector_plot1(
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
                 'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
@@ -262,7 +269,7 @@ def oned_vector_plot1(
         try:
             namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
-                       for name in list(now_fores_paired[0].filename)]
+                       for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
         except AttributeError:
             logger.error('No hoverinfo filenames available!')
@@ -275,7 +282,6 @@ def oned_vector_plot1(
                 name=seriesname,
                 text=namekey,
                 # Updated hover text to show Obs/Fore/Now values, not bias
-                # hovertext=list(now_fores_paired[0].OFS_DIR),
                 hovertemplate=hovertemplate,
                 line=dict(
                     color=palette[i+1],
@@ -300,6 +306,8 @@ def oned_vector_plot1(
             sdboxName = 'Nowcast - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
+        elif prop.whichcasts[i].capitalize() == 'Forecast_a':
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'z - Obs.'
         else:
             sdboxName = 'Model'+str(i+1)+' - Obs.'
         fig.add_trace(
@@ -321,54 +329,6 @@ def oned_vector_plot1(
                 legendgroup=sdboxName,
             ), 3, 1,
         )
-
-        fig.add_hline(
-            y=0, line_width=1,
-            line_color='black',
-            # line_dash='dash',
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=-X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-        fig.add_hline(
-            y=-X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=3, col=1,
-        )
-
         fig.add_trace(
             go.Box(
                 y=[
@@ -390,6 +350,102 @@ def oned_vector_plot1(
             ),
             3, 2,
         )
+    fig.add_hline(
+        y=0, line_width=1,
+        line_color='black',
+        row=3, col=1,
+    )
+    # Add target error ranges to diff plot
+    # Target error range (yellow, center band: -X1 to +X1)
+    x_data = obs_df.DateTime
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,165,0,0.15)',
+        name='Target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=3, col=1)
+    # 2x error range upper (red, +X1 to +2*X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
+        name='2x target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=3, col=1)
+    # 2x error range lower (red, -2*X1 to -X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
+        showlegend=False, hoverinfo='skip',
+    ), row=3, col=1)
+    # Check if end datetime is > current date
+    max_datetime = now_fores_paired[0].DateTime.max().replace(tzinfo=UTC)
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = now_fores_paired[i].DateTime.max().replace(tzinfo=UTC)
+    if max_datetime > datetime.now(UTC):
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        if 'nowcast' in prop.whichcasts:
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=1,
+                line_color='gray',
+                annotation_text='Forecast >',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=1, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=0,
+                line_color='gray',
+                annotation_text='< Nowcast',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top left',
+                row=1, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=1,
+                line_color='gray',
+                annotation_text='Forecast >',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=2, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=0,
+                line_color='gray',
+                annotation_text='< Nowcast',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top left',
+                row=2, col=1
+            )
 
     figheight = 700
     figwidth  = 900
@@ -463,7 +519,7 @@ def oned_vector_plot1(
         transition_ordering='traces first', dragmode='zoom',
         hovermode='x unified', height=figheight, width=figwidth,
         template='plotly_white', margin=dict(
-            t=130, b=100,
+            t=150, b=100,
         ),
         legend=dict(
             orientation='h', yanchor='bottom',
@@ -757,7 +813,7 @@ def oned_vector_plot2b(
             subplot_titles_str.append('Model Nowcast Guidance')
         elif prop.whichcasts[i][-1].capitalize() == 'A':
             subplot_titles_str.append(
-                'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +
+                'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +
                 'z cycle',
             )
         else:
@@ -1013,7 +1069,7 @@ def oned_vector_plot3(
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
                 'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'

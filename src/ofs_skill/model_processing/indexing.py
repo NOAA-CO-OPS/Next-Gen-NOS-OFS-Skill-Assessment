@@ -3,7 +3,7 @@ Spatial Indexing Functions
 
 Functions for matching observation stations to model nodes and depth levels.
 Calculates spatial distances and finds nearest neighbors for different model types
-(FVCOM, ROMS, SCHISM).
+(FVCOM, ROMS, SCHISM, ADCIRC).
 """
 
 import logging
@@ -26,7 +26,7 @@ def index_nearest_node(
 
     Calculates the distance between observation stations and all model nodes,
     returning the index of the nearest node for each station. Supports different
-    model frameworks (FVCOM, ROMS, SCHISM).
+    model frameworks (FVCOM, ROMS, SCHISM, ADCIRC).
 
     Parameters
     ----------
@@ -38,8 +38,9 @@ def index_nearest_node(
         - FVCOM: 'lonc', 'latc', 'lon', 'lat'
         - ROMS: 'lon_rho', 'lat_rho', 'mask_rho'
         - SCHISM: 'lon', 'lat'
+        - ADCIRC: 'lon', 'lat'
     model_source : str
-        Model type: 'fvcom', 'roms', or 'schism'
+        Model type: 'fvcom', 'roms', 'schism', or 'adcirc'
     name_var : str
         Variable name: 'wl', 'temp', 'salt', or 'cu'
     logger : logging.Logger
@@ -330,6 +331,10 @@ def index_nearest_node(
                nearest_idx = int(nearby_nodes[np.nanargmin(dist)][0])
                index_min_dist.append(nearest_idx)
             logger.info('Nearest element found: station %s of %s', obs_p + 1, len(ctl_file_extract))
+
+    elif model_source == 'adcirc':
+        raise NotImplementedError('ADCIRC indexing not yet implemented.')
+    
     else:
         raise ValueError(f'Unknown model source: {model_source}')
 
@@ -363,7 +368,7 @@ def index_nearest_depth(
     station_ctl_file_extract : array-like
         Station information including depths
     model_source : str
-        Model type: 'fvcom', 'roms', or 'schism'
+        Model type: 'fvcom', 'roms', 'adcirc', or 'schism'
     name_var : str
         Variable name
     logger : logging.Logger
@@ -581,6 +586,23 @@ def index_nearest_depth(
                 logger.info(
                   'Nearest depth found: node %s of %s', idx + 1,
                   len(index_min_dist))
+            elif model_source == 'adcirc':
+                if prop.ofs == 'stofs_2d_glo':
+                    if name_var == 'wl':
+                        index_min_depth.append(0)
+                        depth_value.append(0.0)
+                        logger.info(
+                            'Nearest depth found: node %s of %s', 
+                            idx + 1, len(index_min_dist)
+                        )
+                    else:
+                        # We raise en exception here for STOFS-2D-Global non-water level variables 
+                        # because it does not have depth-wise data, and logic elsewhere should steer users
+                        # away from calling this function with STOFS-2D-Global and other variables.
+                        raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
+                else:
+                    raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
+                
     elif prop.ofsfiletype == 'stations':
         if 'stofs' in prop.ofs:
             return [], []
@@ -596,7 +618,7 @@ def index_nearest_depth(
             z_np = np.array(model_netcdf['zcoords'])
 
         for idx in range(0, length):
-            if np.isnan(index_min_dist[idx]) == 0:
+            if ~np.isnan(index_min_dist[idx]):
                 node = index_min_dist[idx]
                 if model_source=='fvcom':
                     model_depths = np.asarray(z_np[:,node,0])
@@ -604,6 +626,24 @@ def index_nearest_depth(
                     model_depths = np.asarray(s_rho_np*h_np[0,node])
                 elif model_source == 'schism' and prop.ofs == 'loofs2':
                     model_depths = np.asarray(z_np[0,node,:])
+                elif model_source == 'adcirc':
+                    if prop.ofs == 'stofs_2d_glo':
+                        if name_var == 'wl':
+                            index_min_depth.append(0)
+                            depth_value.append(0.0)
+                            logger.info(
+                                'Nearest depth found: node %s of %s',
+                                idx + 1, len(index_min_dist)
+                            )
+                            continue
+                        else:
+                            # We raise en exception here for STOFS-2D-Global non-water level variables 
+                            # because it does not have depth-wise data, and logic elsewhere should steer users
+                            # away from calling this function with STOFS-2D-Global and other variables.
+                            raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
+                    else:
+                        raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
+
                 if np.isnan(model_depths).all():
                     index_min_depth.append(np.nan)
                     depth_value.append(np.nan)
@@ -746,24 +786,27 @@ def index_nearest_station(
         lon_rho_np = np.array(model_netcdf['lon_rho'])
         lat_rho_np = np.array(model_netcdf['lat_rho'])
 
+        lat_flat = lat_rho_np.ravel()
+        lon_flat = lon_rho_np.ravel()
+
         for obs_p in range(len(ctl_file_extract)):
-            dist = np.empty(len(model_netcdf['lon_rho']))
+            dist = np.empty(lat_flat.shape)
             dist[:] = np.nan
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
             nearby_nodes = np.argwhere(
-                (lon_rho_np < obs_lon + 0.1) &
-                (lon_rho_np > obs_lon - 0.1) &
-                (lat_rho_np < obs_lat + 0.1) &
-                (lat_rho_np > obs_lat - 0.1)
+                (lon_flat < obs_lon + 0.1) &
+                (lon_flat > obs_lon - 0.1) &
+                (lat_flat < obs_lat + 0.1) &
+                (lat_flat > obs_lat - 0.1)
             )
 
             if nearby_nodes.size > 0:
-                for i_index in nearby_nodes:
+                for i_index in nearby_nodes[:, 0]:
                     distance = calculate_station_distance(
-                        lat_rho_np[i_index],
-                        lon_rho_np[i_index],
+                        float(lat_flat[i_index]),
+                        float(lon_flat[i_index]),
                         obs_lat,
                         obs_lon
                     )
