@@ -179,8 +179,8 @@ def transform_to_z(ds,var,x_labels,logger):
                              np.nanmin(np.array(ds['h'])/len(ds['siglay']))))
     # Need to reduce spatial and temporal resolution for plotting
     # with a time slider!
-    max_rows = 500
-    max_cols = 500
+    max_rows = 300
+    max_cols = 300
     if siglay_len > max_rows:
         siglay_len = int(siglay_len/(np.ceil(siglay_len/max_rows)))
     time_iterator = 1

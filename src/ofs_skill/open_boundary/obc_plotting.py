@@ -19,12 +19,14 @@ from ofs_skill.open_boundary.obc_processing import make_x_labels, transform_to_z
 def plot_roms_obc(prop,ds,logger):
     '''
     '''
-    for variable in ['zeta','temp','salt']:
-        boundaries = []
-        # Search for variable boundaries in dataset
-        for var_name in ds.data_vars:
-            if variable in var_name:
-                boundaries.append(var_name)
+    logger.info('Starting ROMS plots...')
+    # Convert time to datetime object. Units of time are:
+    # days since 1858-11-17 00:00:00
+    time_dt = []
+    time_0 = datetime.strptime('1858-11-17','%Y-%m-%d')
+    for t in np.array(ds['time']):
+        delta = timedelta(days=float(t))
+        time_dt.append(time_0 + delta)
 
 def plot_fvcom_obc(prop,ds,logger):
     '''
@@ -64,9 +66,9 @@ def plot_fvcom_obc(prop,ds,logger):
         z, y_labels, x_labels = transform_to_z(ds,var,x_labels,logger)
 
         # Some OFS repeat themselves -- set boundaries
-        # if prop.ofs == 'ngofs2':
-        #     z = z[:,:,:171]
-        #     x_labels = x_labels[:171]
+        # if prop.ofs == 'sfbofs':
+        #     z = z[:,:,:100]
+        #     x_labels = x_labels[:100]
 
         # Figures
         fig = make_subplots(rows=nrows, cols=ncols)
@@ -136,13 +138,21 @@ def plot_fvcom_obc(prop,ds,logger):
 
     # Now do water level
     logger.info('Plotting FVCOM water level transect')
-    z = np.asarray(ds['elevation'])
-    nodes = np.asarray(ds['obc_nodes'])
+    time_iterator = int(np.ceil(len(ds['time'])/55))
+    try:
+        z = np.asarray(ds['elevation'])
+    except KeyError:
+        z = np.asarray(ds['zeta'])
+    try:
+        nodes = np.asarray(ds['obc_nodes'])
+    except KeyError:
+        nodes = np.linspace(0,len(ds['lat'])-1,len(ds['lat']))
+        nodes = nodes.astype(int)
     # Make x-axis labels
     x_labels = make_x_labels(ds,logger)
     # Build big dataframe
     df = None
-    for t in range(len(time_dt)):
+    for t in range(0,len(time_dt),time_iterator):
         temp_ = pd.DataFrame(
             {
             'Time': time_dt[t],
