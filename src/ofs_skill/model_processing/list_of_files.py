@@ -789,7 +789,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                         hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
                     except (IndexError, ValueError, TypeError) as e:
                         skipped_files.append(af_name)
-                        logger.debug('Skipping unparseable file in %s: %s (%s)', dir_list[i_index], af_name, e)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
                 if skipped_files:
                     logger.warning('Skipped %d unparseable file(s) in %s: %s',
                                    len(skipped_files), dir_list[i_index], skipped_files[:5])
@@ -843,22 +845,24 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 hr_cyc_day.append(checkstr)
                                 files.append(af_name)
                         elif ('out2d' in af_name and prop.ofsfiletype == 'fields'):
-                                checkstr = '999' + spltstr[-5][1:3] + \
-                                    spltstr[-4][-2:]
-                                if (checkstr not in hr_cyc_day
-                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
-                                         datetime.strptime
-                                         (prop.startdate[:-2], '%Y%m%d'))
-                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
-                                         datetime.strptime(prop.enddate[:-2], '%Y%m%d')
-                                         + timedelta(days=ndays))
-                                    and checkstr[0:3] != '000'
-                                    ):
-                                    hr_cyc_day.append(checkstr)
-                                    files.append(af_name)
+                            checkstr = '999' + spltstr[-5][1:3] + \
+                                spltstr[-4][-2:]
+                            if (checkstr not in hr_cyc_day
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                     datetime.strptime
+                                     (prop.startdate[:-2], '%Y%m%d'))
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                     + timedelta(days=ndays))
+                                and checkstr[0:3] != '000'
+                                ):
+                                hr_cyc_day.append(checkstr)
+                                files.append(af_name)
                     except (IndexError, ValueError, TypeError) as e:
                         skipped_files.append(af_name)
-                        logger.debug('Skipping unparseable file in %s: %s (%s)', dir_list[i_index], af_name, e)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
                 if skipped_files:
                     logger.warning('Skipped %d unparseable file(s) in %s: %s',
                                    len(skipped_files), dir_list[i_index], skipped_files[:5])
@@ -996,7 +1000,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                         hr_cyc_day.append('0000000')
                     except (IndexError, ValueError, TypeError) as e:
                         skipped_files.append(af_name)
-                        logger.debug('Skipping unparseable file in %s: %s (%s)', dir_list[i_index], af_name, e)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
                 if skipped_files:
                     logger.warning('Skipped %d unparseable file(s) in %s: %s',
                                    len(skipped_files), dir_list[i_index], skipped_files[:5])
@@ -1167,7 +1173,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                         hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
                     except (IndexError, ValueError, TypeError) as e:
                         skipped_files.append(af_name)
-                        logger.debug('Skipping unparseable file in %s: %s (%s)', dir_list[i_index], af_name, e)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
                 if skipped_files:
                     logger.warning('Skipped %d unparseable file(s) in %s: %s',
                                    len(skipped_files), dir_list[i_index], skipped_files[:5])
@@ -1192,6 +1200,8 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
             # Append files to master
             list_files.append(files)
 
+    except (SystemExit, KeyboardInterrupt):
+        raise
     except Exception as e:
         logger.error(
             'Unexpected error in list_of_files while processing directories. '
