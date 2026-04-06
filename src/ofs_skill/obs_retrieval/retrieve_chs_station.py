@@ -156,6 +156,8 @@ def _retrieve_chs_currents(date_list, id_number, logger):
     # Try matched sensor pairs first (same sensor number for speed+dir)
     for speed_code, dir_code in _CURRENT_SENSOR_PAIRS:
         speed_data = _fetch_chs_chunked(date_list, id_number, speed_code)
+        if speed_data is None:
+            continue
         dir_data = _fetch_chs_chunked(date_list, id_number, dir_code)
         if speed_data is not None and dir_data is not None:
             logger.info('CHS currents found using matched pair %s/%s '

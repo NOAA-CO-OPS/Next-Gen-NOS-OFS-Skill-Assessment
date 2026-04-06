@@ -285,6 +285,28 @@ class TestRetrieveScalar:
 
         assert result is None
 
+    @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
+    def test_qc_filtering_rejects_suspect_data(self, mock_fetch, logger):
+        """Records with qcFlagCode 3 (suspect) or 4 (erroneous) are filtered."""
+        n = 5
+        dates = pd.date_range('2025-01-01', periods=n, freq='5min')
+        df = pd.DataFrame({
+            'eventDate': [d.strftime('%Y-%m-%dT%H:%M:%SZ') for d in dates],
+            'qcFlagCode': ['1', '2', '3', '4', '1'],
+            'value': [5.0, 5.5, 999.0, -99.0, 6.0],
+            'timeSeriesId': ['ts'] * n,
+            'reviewed': [False] * n,
+        })
+        mock_fetch.return_value = df
+
+        result = retrieve_chs_station(
+            '20250101', '20250102', 'test_st', 'water_temperature', logger)
+
+        assert result is not None
+        assert len(result) == 3  # only codes '1' and '2' accepted
+        assert 999.0 not in result['OBS'].values
+        assert -99.0 not in result['OBS'].values
+
 
 class TestRetrieveCurrents:
     """Test current speed/direction retrieval and merge."""
@@ -329,16 +351,20 @@ class TestRetrieveCurrents:
         """If speed data is missing from all pairs, should return None."""
         empty_df = pd.DataFrame(columns=[
             'eventDate', 'qcFlagCode', 'value', 'timeSeriesId', 'reviewed'])
-        dir_df = _make_chs_api_response([90.0, 135.0])
 
-        # Pair 1: wcs1 empty, wcd1 has data -> pair fails (no speed)
-        # Pair 2: wcs2 empty, wcd2 has data -> pair fails (no speed)
-        mock_fetch.side_effect = [empty_df, dir_df, empty_df, dir_df]
+        # Pair 1: wcs1 empty -> skip direction, continue to pair 2
+        # Pair 2: wcs2 empty -> skip direction, no pairs left
+        mock_fetch.side_effect = [empty_df, empty_df]
 
         result = retrieve_chs_station(
             '20250101', '20250102', 'test_st', 'currents', logger)
 
         assert result is None
+        # Only speed codes tried (direction skipped due to early continue)
+        calls = mock_fetch.call_args_list
+        assert len(calls) == 2
+        assert calls[0][1]['time_series_code'] == 'wcs1'
+        assert calls[1][1]['time_series_code'] == 'wcs2'
 
     @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
     def test_currents_matched_sensor_pair(self, mock_fetch, logger):
@@ -348,21 +374,19 @@ class TestRetrieveCurrents:
         speed_df = _make_chs_api_response([1.0])
         dir_df = _make_chs_api_response([90.0])
 
-        # Pair 1: wcs1 empty, wcd1 has data -> pair fails
+        # Pair 1: wcs1 empty -> skip wcd1 (early continue)
         # Pair 2: wcs2 has data, wcd2 has data -> pair succeeds
-        mock_fetch.side_effect = [empty_df, dir_df, speed_df, dir_df]
+        mock_fetch.side_effect = [empty_df, speed_df, dir_df]
 
         result = retrieve_chs_station(
             '20250101', '20250102', 'test_st', 'currents', logger)
 
         assert result is not None
         calls = mock_fetch.call_args_list
-        # Pair 1 tried wcs1 first (failed), then wcd1
         assert calls[0][1]['time_series_code'] == 'wcs1'
-        assert calls[1][1]['time_series_code'] == 'wcd1'
-        # Pair 2 tried wcs2 (succeeded), then wcd2 (succeeded)
-        assert calls[2][1]['time_series_code'] == 'wcs2'
-        assert calls[3][1]['time_series_code'] == 'wcd2'
+        # wcd1 skipped because wcs1 was empty
+        assert calls[1][1]['time_series_code'] == 'wcs2'
+        assert calls[2][1]['time_series_code'] == 'wcd2'
 
     @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
     def test_currents_api_codes(self, mock_fetch, logger):
