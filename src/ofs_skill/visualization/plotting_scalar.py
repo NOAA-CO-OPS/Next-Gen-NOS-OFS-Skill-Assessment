@@ -22,9 +22,7 @@ Last Modified: 10/2025 - Split ice plotting into separate file
 """
 from __future__ import annotations
 
-import configparser
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -32,7 +30,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
-
 from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
 from ofs_skill.visualization.plotting_functions import (
@@ -279,7 +276,7 @@ def oned_scalar_plot(
           data_times = obs_df.DateTime
           start_dt = data_times.min().to_pydatetime()
           end_dt = data_times.max().to_pydatetime()
-          tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id, logger)
+          tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id[0], logger)
 
           if tidal_data is not None and len(tidal_data) > 0:
               # Build hover text with source information including distance
@@ -288,12 +285,12 @@ def oned_scalar_plot(
               else:
                   source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]}'
 
-              if tidal_info["tidal_station_distance"] is not None and tidal_info["tidal_station_distance"] > 0:
+              if tidal_info['tidal_station_distance'] is not None and tidal_info['tidal_station_distance'] > 0:
                   distance_text = f'<br>Distance: {tidal_info["tidal_station_distance"]:.1f} km'
               else:
                   distance_text = ''
 
-              if tidal_info["used_datum"] == prop.datum:
+              if tidal_info['used_datum'] == prop.datum:
                     hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}<i><extra></extra>'
               else:
                     hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}(requested: {prop.datum})<i><extra></extra>'
@@ -310,7 +307,7 @@ def oned_scalar_plot(
                       legendgroup='tide',
                       marker=dict(size=0)), 1, 1)
               logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-                         str(station_id[0]), tidal_info["tidal_station_id"], tidal_info["used_datum"])
+                         str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
               # Adding boxplots for tides
               fig.add_trace(
                   go.Box(
@@ -327,7 +324,7 @@ def oned_scalar_plot(
                         station_id[0], ex)
 
       logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-           str(station_id[0]), tidal_info["tidal_station_id"], tidal_info["used_datum"])
+           str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
     #####################################################################
     ## Done tide retrieval and plotting                                ##
     #####################################################################

@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import ConstantInputWarning
 
-from ofs_skill.skill_assessment import nos_metrics
 from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
+from ofs_skill.skill_assessment import nos_metrics
 
 warnings.simplefilter('ignore', ConstantInputWarning)
 
@@ -129,15 +129,16 @@ def skill_scalar(
 
         # Worst case outlier frequency (WOF)
         wof = None
+        tidal_data = None
         if name_var == 'wl':
+            if station_id == '8548989':
+                print('debug pause')
             tidal_data, _ = get_station_tidal_data(df_paired['DateTime'].min().to_pydatetime(),
                                                    df_paired['DateTime'].max().to_pydatetime(),
                                                    prop, station_id, logger)
             # Pair tidal data to df_paired
             if tidal_data is not None:
                 tides = pd.merge(df_paired, tidal_data, on='DateTime', ).reset_index()
-                if station_id == '8635027':
-                    print('debug pause')
                 wof = nos_metrics.worst_case_outlier_frequency(tides['OFS'],
                                                                tides['OBS'],
                                                                tides['TIDE'],
