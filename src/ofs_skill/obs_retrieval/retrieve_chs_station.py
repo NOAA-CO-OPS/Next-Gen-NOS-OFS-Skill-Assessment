@@ -31,6 +31,18 @@ _SCALAR_CODE_MAP = {
 _CURRENT_SPEED_CODES = ['wcs1', 'wcs2']
 _CURRENT_DIR_CODES = ['wcd1', 'wcd2']
 
+# Matched sensor pairs for currents: speed and direction must come from
+# the same sensor number to avoid mixing sensors at different depths.
+_CURRENT_SENSOR_PAIRS = [('wcs1', 'wcd1'), ('wcs2', 'wcd2')]
+
+# CHS QC flag codes (from IWLS API):
+#   '1' = Not quality controlled
+#   '2' = Correct value
+#   '3' = Suspect/doubtful
+#   '4' = Erroneous/rejected
+# Accept codes 1 and 2; reject 3 (suspect) and 4 (erroneous).
+_ACCEPTED_QC_CODES = {'1', '2'}
+
 
 def _make_date_chunks(start_date, end_date, interval_hours):
     """
@@ -80,8 +92,17 @@ def _fetch_chs_chunked(date_list, id_number, time_series_code):
     return None
 
 
+def _filter_qc(data_all):
+    """Filter out records with rejected/suspect QC flags."""
+    if 'qcFlagCode' in data_all.columns:
+        data_all = data_all[
+            data_all['qcFlagCode'].isin(_ACCEPTED_QC_CODES)]
+    return data_all
+
+
 def _format_raw_data(data_all):
-    """Format raw CHS API response into standard columns."""
+    """Filter QC flags and format raw CHS API response into standard columns."""
+    data_all = _filter_qc(data_all)
     data_all['DateTime'] = pd.to_datetime(
         data_all['eventDate'], format='%Y-%m-%dT%H:%M:%SZ')
     drop_cols = [c for c in ['eventDate', 'qcFlagCode',
@@ -128,26 +149,30 @@ def _retrieve_chs_currents(date_list, id_number, logger):
     """
     Retrieve CHS current speed and direction, merge into single DataFrame.
 
-    Fetches speed and direction separately, then inner-merges on DateTime
-    so only timestamps with both values are kept.
+    Tries matched sensor pairs (wcs1+wcd1, then wcs2+wcd2) to avoid
+    mixing sensors at different depths. Falls back across pairs only if
+    a matched pair is not available.
     """
-    speed_data = None
-    for code in _CURRENT_SPEED_CODES:
-        speed_data = _fetch_chs_chunked(date_list, id_number, code)
-        if speed_data is not None:
-            logger.info('CHS current speed found using code %s for '
-                        'station %s', code, str(id_number))
+    # Try matched sensor pairs first (same sensor number for speed+dir)
+    for speed_code, dir_code in _CURRENT_SENSOR_PAIRS:
+        speed_data = _fetch_chs_chunked(date_list, id_number, speed_code)
+        dir_data = _fetch_chs_chunked(date_list, id_number, dir_code)
+        if speed_data is not None and dir_data is not None:
+            logger.info('CHS currents found using matched pair %s/%s '
+                        'for station %s',
+                        speed_code, dir_code, str(id_number))
             break
+    else:
+        # No matched pair found
+        logger.warning('CHS currents: no matched speed/direction sensor '
+                       'pair found for station %s', str(id_number))
+        return None
 
-    dir_data = None
-    for code in _CURRENT_DIR_CODES:
-        dir_data = _fetch_chs_chunked(date_list, id_number, code)
-        if dir_data is not None:
-            logger.info('CHS current direction found using code %s for '
-                        'station %s', code, str(id_number))
-            break
+    # Apply QC filtering before merge
+    speed_data = _filter_qc(speed_data)
+    dir_data = _filter_qc(dir_data)
 
-    if speed_data is None or dir_data is None:
+    if speed_data.empty or dir_data.empty:
         return None
 
     # Parse DateTimes for both

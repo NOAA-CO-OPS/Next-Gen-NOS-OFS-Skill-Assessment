@@ -454,7 +454,14 @@ def _process_chs_station(id_number, name, x_value, y_value,
             )
 
         if variable == 'water_level':
-            if 'l' not in ofs[0]:
+            # CHS IWLS API returns water levels relative to chart datum.
+            # For Great Lakes, chart datum IS the Low Water Datum (LWD).
+            # The Datum column is labeled 'IGLD' for consistency with the
+            # pipeline, but the GL offsets below convert from LWD to IGLD
+            # when the user requests IGLD.
+            if ofs not in [
+                    'leofs', 'lmhofs', 'loofs',
+                    'loofs2', 'lsofs']:
                 if (str(
                         data_station['Datum'][1]
                         ).upper() == datum):

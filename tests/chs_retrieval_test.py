@@ -326,18 +326,43 @@ class TestRetrieveCurrents:
 
     @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
     def test_currents_no_speed_returns_none(self, mock_fetch, logger):
-        """If speed data is missing, should return None."""
+        """If speed data is missing from all pairs, should return None."""
         empty_df = pd.DataFrame(columns=[
             'eventDate', 'qcFlagCode', 'value', 'timeSeriesId', 'reviewed'])
         dir_df = _make_chs_api_response([90.0, 135.0])
 
-        # wcs1 empty, wcs2 empty, then wcd1 would succeed but speed is None
-        mock_fetch.side_effect = [empty_df, empty_df, dir_df]
+        # Pair 1: wcs1 empty, wcd1 has data -> pair fails (no speed)
+        # Pair 2: wcs2 empty, wcd2 has data -> pair fails (no speed)
+        mock_fetch.side_effect = [empty_df, dir_df, empty_df, dir_df]
 
         result = retrieve_chs_station(
             '20250101', '20250102', 'test_st', 'currents', logger)
 
         assert result is None
+
+    @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
+    def test_currents_matched_sensor_pair(self, mock_fetch, logger):
+        """Speed and direction must come from same sensor number."""
+        empty_df = pd.DataFrame(columns=[
+            'eventDate', 'qcFlagCode', 'value', 'timeSeriesId', 'reviewed'])
+        speed_df = _make_chs_api_response([1.0])
+        dir_df = _make_chs_api_response([90.0])
+
+        # Pair 1: wcs1 empty, wcd1 has data -> pair fails
+        # Pair 2: wcs2 has data, wcd2 has data -> pair succeeds
+        mock_fetch.side_effect = [empty_df, dir_df, speed_df, dir_df]
+
+        result = retrieve_chs_station(
+            '20250101', '20250102', 'test_st', 'currents', logger)
+
+        assert result is not None
+        calls = mock_fetch.call_args_list
+        # Pair 1 tried wcs1 first (failed), then wcd1
+        assert calls[0][1]['time_series_code'] == 'wcs1'
+        assert calls[1][1]['time_series_code'] == 'wcd1'
+        # Pair 2 tried wcs2 (succeeded), then wcd2 (succeeded)
+        assert calls[2][1]['time_series_code'] == 'wcs2'
+        assert calls[3][1]['time_series_code'] == 'wcd2'
 
     @patch('ofs_skill.obs_retrieval.retrieve_chs_station.fetch_chs_station')
     def test_currents_api_codes(self, mock_fetch, logger):
