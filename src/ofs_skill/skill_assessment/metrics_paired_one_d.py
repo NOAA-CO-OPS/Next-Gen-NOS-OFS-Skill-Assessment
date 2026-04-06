@@ -16,6 +16,7 @@ import pandas as pd
 from scipy.stats import ConstantInputWarning
 
 from ofs_skill.skill_assessment import nos_metrics
+from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 
 warnings.simplefilter('ignore', ConstantInputWarning)
 
@@ -23,6 +24,7 @@ warnings.simplefilter('ignore', ConstantInputWarning)
 def skill_scalar(
     df_paired: pd.DataFrame,
     name_var: str,
+    station_id: str,
     prop: Any,
     logger: Logger,
 ) -> list[Union[float, str]]:
@@ -105,22 +107,52 @@ def skill_scalar(
         npbias = np.array(df_bias)
         cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
-        # Pass or fail?
-        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
-        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
         pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
         nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
-        pofpf = criteria['pof']
-        nofpf = criteria['nof']
 
         # Standard deviation or error/bias
         stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
+
+        # MDPO/MDNO
+        mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
+        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
+
+        # Worst case outlier frequency (WOF)
+        wof = None
+        if name_var == 'wl':
+            tidal_data, _ = get_station_tidal_data(df_paired['DateTime'].min().to_pydatetime(),
+                                                   df_paired['DateTime'].max().to_pydatetime(),
+                                                   prop, station_id, logger)
+            # Pair tidal data to df_paired
+            if tidal_data is not None:
+                tides = pd.merge(df_paired, tidal_data, on='DateTime', ).reset_index()
+                if station_id == '8635027':
+                    print('debug pause')
+                wof = nos_metrics.worst_case_outlier_frequency(tides['OFS'],
+                                                               tides['OBS'],
+                                                               tides['TIDE'],
+                                                               X1)
+                wof = np.around(wof, decimals=2)
+
+        # Check criteria
+        # Pass or fail?
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
 
     else:
         nodatatext = '<' + str(datathreshold) + ' data points'
@@ -134,6 +166,12 @@ def skill_scalar(
         pofpf = nodatatext
         nof = nodatatext
         nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
         stdev = nodatatext
 
     # Return stats
@@ -148,6 +186,12 @@ def skill_scalar(
             pofpf,
             nof,
             nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
             stdev,
             X1]
 
@@ -231,27 +275,42 @@ def skill_vector(
         bias_dir = dir_bias.mean()
         bias_dir = np.around(bias_dir, decimals=2)
 
+        ######### SPEED THRESHOLD STATS ##########
         # Central frequency
         # Not using X2 right now, only X1
         npbias = np.array(spd_bias)
         cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
-        # Pass or fail?
-        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
-        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
         pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
         nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
-        pofpf = criteria['pof']
-        nofpf = criteria['nof']
+
+        # MDPO/MDNO
+        mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
+        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
 
         # Standard deviation or error/bias
         stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
+
+        # Check criteria
+        # Pass or fail?
+        wof = None
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
     else:
         nodatatext = '<' + str(datathreshold) + ' data points'
         rmse = nodatatext
@@ -265,6 +324,12 @@ def skill_vector(
         pofpf = nodatatext
         nof = nodatatext
         nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
         stdev = nodatatext
 
     return [rmse,
@@ -278,5 +343,166 @@ def skill_vector(
             pofpf,
             nof,
             nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
+            stdev,
+            X1]
+
+def skill_vector_dir(
+    df_paired: pd.DataFrame,
+    name_var: str,
+    prop: Any,
+    logger: Logger,
+) -> list[Union[float, str]]:
+    """
+    Calculate skill metrics for vector variables.
+
+    Computes skill assessment metrics including RMSE, correlation coefficient,
+    speed bias, direction bias, central frequency, and outlier frequencies for
+    vector variables (currents).
+
+    Parameters
+    ----------
+    df_paired : pd.DataFrame
+        Paired observation and model data with columns ['OBS', 'OFS',
+        'SPD_BIAS', 'DIR_BIAS']
+    name_var : str
+        Variable name ('cu' for currents)
+    prop : Any
+        Properties object containing configuration parameters
+    logger : Logger
+        Logger instance for logging messages
+
+    Returns
+    -------
+    List[Union[float, str]]
+        List of skill metrics:
+        [rmse, r_value, bias, bias_perc, bias_dir, cf, cfpf, pof, pofpf,
+         nof, nofpf, stdev, X1]
+        Where:
+        - rmse: Root mean squared error of speed
+        - r_value: Pearson correlation coefficient of speed
+        - bias: Mean speed bias
+        - bias_perc: Mean speed bias as percentage
+        - bias_dir: Mean direction bias
+        - cf: Central frequency (percentage within error threshold)
+        - cfpf: Central frequency pass/fail ('pass' if >= 90%)
+        - pof: Positive outlier frequency
+        - pofpf: Positive outlier frequency pass/fail
+        - nof: Negative outlier frequency
+        - nofpf: Negative outlier frequency pass/fail
+        - stdev: Standard deviation of speed bias
+        - X1: Error threshold
+    """
+    datathreshold = 5
+
+    # Get target error range
+    X1, X2 = nos_metrics.get_error_threshold(
+        'cu_dir', os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+
+    df_paired = df_paired.dropna(subset=['OBS_DIR', 'OFS_DIR'])
+    # Update obs and ofs after handling NaN
+    obs = df_paired['OBS_DIR']
+    ofs = df_paired['OFS_DIR']
+    dir_bias = df_paired['DIR_BIAS']
+    if np.nansum(~np.isnan(obs)) >= datathreshold:
+        # RMSE -- fixed 8/13/24
+        rmse = nos_metrics.rmse(ofs, obs)
+        rmse = np.around(rmse, decimals=2)
+
+        # Pearson's R
+        r_value = nos_metrics.pearson_r(ofs, obs)
+        if math.isnan(r_value):
+            logger.warning(
+                '%s -- The correlation coefficient could not be calculated (i.e. R=NaN)',
+                name_var)
+        r_value = np.around(r_value, decimals=2)
+
+        # Mean bias & bias percent
+        bias = dir_bias.mean()
+        bias_perc = 100 * (bias / obs.mean())
+        bias = np.around(bias, decimals=2)
+        bias_perc = np.around(bias_perc, decimals=2)
+        bias_dir = dir_bias.mean()
+        bias_dir = np.around(bias_dir, decimals=2)
+
+        ######### DIR THRESHOLD STATS ##########
+        # Central frequency
+        # Not using X2 right now, only X1
+        npbias = np.array(dir_bias)
+        cf = nos_metrics.central_frequency(npbias, X1)
+        cf = np.around(cf, decimals=2)
+
+        # Positive/negative outlier frequency
+        pof = nos_metrics.positive_outlier_freq(npbias, X1)
+        pof = np.around(pof, decimals=2)
+        nof = nos_metrics.negative_outlier_freq(npbias, X1)
+        nof = np.around(nof, decimals=2)
+
+        # MDPO/MDNO
+        mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
+        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
+
+        # Standard deviation or error/bias
+        stdev = nos_metrics.standard_deviation(npbias)
+        stdev = np.around(stdev, decimals=2)
+
+        # Check criteria
+        # Pass or fail?
+        wof = None
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
+    else:
+        nodatatext = '<' + str(datathreshold) + ' data points'
+        rmse = nodatatext
+        r_value = nodatatext
+        bias = nodatatext
+        bias_perc = nodatatext
+        bias_dir = nodatatext
+        cf = nodatatext
+        cfpf = nodatatext
+        pof = nodatatext
+        pofpf = nodatatext
+        nof = nodatatext
+        nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
+        stdev = nodatatext
+
+    return [rmse,
+            r_value,
+            bias,
+            bias_perc,
+            bias_dir,
+            cf,
+            cfpf,
+            pof,
+            pofpf,
+            nof,
+            nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
             stdev,
             X1]

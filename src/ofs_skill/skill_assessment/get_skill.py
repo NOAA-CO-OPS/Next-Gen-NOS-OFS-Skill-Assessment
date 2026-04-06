@@ -211,6 +211,15 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         'node': [],
         'skill': []
               }
+    output_dir = {
+        'station_id': [],
+        'X': [],
+        'Y': [],
+        'obs_depth': [],
+        'mod_depth': [],
+        'node': [],
+        'skill': []
+              }
 
     data_length = len(read_station_ctl_file[0])
     if len(read_ofs_ctl_file[-1]) < data_length:
@@ -241,8 +250,16 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
             and len(formatted_series[0]) > 1
         ):
             if name_var == 'cu':
-                # stats = metrics_paired_one_d.skill_vector
-                # (formatted_series[-1])
+                series_df = formatted_series[-1]
+                series_df['DateTime'] = pd.to_datetime(
+                    dict(
+                        year=series_df[1],
+                        month=series_df[2],
+                        day=series_df[3],
+                        hour=series_df[4],
+                        minute=series_df[5],
+                    )
+                )
                 logger.info('Start cu metrics for %s',
                             read_station_ctl_file[0][obs_row][0])
                 output['station_id'].append(
@@ -263,10 +280,40 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
                         prop, logger
                     )
                 )
+                logger.info('Start cu dir metrics for %s',
+                            read_station_ctl_file[0][obs_row][0])
+                output_dir['station_id'].append(
+                    read_station_ctl_file[0][obs_row][0])
+                output_dir['node'].append(
+                    read_ofs_ctl_file[1][i])
+                output_dir['obs_depth'].append(
+                    read_station_ctl_file[1][obs_row][-2])
+                output_dir['mod_depth'].append(
+                    read_ofs_ctl_file[-2][i])
+                output_dir['X'].append(
+                    read_station_ctl_file[1][obs_row][1])
+                output_dir['Y'].append(
+                    read_station_ctl_file[1][obs_row][0])
+                output_dir['skill'].append(
+                    metrics_paired_one_d.skill_vector_dir(
+                        formatted_series[-1], name_var,
+                        prop, logger
+                    )
+                )
 
             else:
                 # stats = metrics_paired_one_d.skill_scalar
                 # (formatted_series[-1])
+                series_df = formatted_series[-1]
+                series_df['DateTime'] = pd.to_datetime(
+                    dict(
+                        year=series_df[1],
+                        month=series_df[2],
+                        day=series_df[3],
+                        hour=series_df[4],
+                        minute=series_df[5],
+                    )
+                )
                 logger.info('Start %s metrics for %s',
                             name_var,
                             read_station_ctl_file[0][obs_row][0])
@@ -287,7 +334,7 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
                     read_station_ctl_file[1][obs_row][0])
                 output['skill'].append(
                     metrics_paired_one_d.skill_scalar(
-                        formatted_series[-1], name_var,
+                        series_df, name_var, read_station_ctl_file[0][obs_row][0],
                         prop, logger
                     )
                 )
@@ -328,6 +375,10 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
                 prop.ofsfiletype
             )
 
+    if name_var == 'cu' and len(output_dir['station_id']) > 0:
+        output = [output, output_dir]
+    else:
+        output = [output]
     return output
 
 
@@ -663,69 +714,78 @@ def get_skill(prop, logger):
                 name_var, logger
             )
 
-            if (
-                len(skill_results.get('station_id')) != 0
-                and len(skill_results.get('node')) != 0
-                and len(skill_results.get('X')) != 0
-                and len(skill_results.get('Y')) != 0
-                and len(skill_results.get('skill')) != 0
-            ):
+            for i,skill_result in enumerate(skill_results):
+                if i == 1:
+                    variable = 'currents_dir'
+                if (
+                    len(skill_result.get('station_id')) != 0
+                    and len(skill_result.get('node')) != 0
+                    and len(skill_result.get('X')) != 0
+                    and len(skill_result.get('Y')) != 0
+                    and len(skill_result.get('skill')) != 0
+                ):
 
 
-                #Make overview maps and save them
-                make_skill_maps(skill_results,
-                                prop, name_var,
-                                logger)
-                if name_var == 'wl':
-                    tabledatum = prop.datum
+                    #Make overview maps and save them
+                    make_skill_maps(skill_result,
+                                    prop, name_var,
+                                    logger)
+                    if name_var == 'wl':
+                        tabledatum = prop.datum
+                    else:
+                        tabledatum= None
+
+                    pd.DataFrame(
+                        {
+                            'ID': skill_result['station_id'],
+                            'NODE': skill_result['node'],
+                            'obs_water_depth': skill_result['obs_depth'],
+                            'mod_water_depth': skill_result['mod_depth'],
+                            'rmse': list(zip(*skill_result['skill']))[0],
+                            'r': list(zip(*skill_result['skill']))[1],
+                            'bias': list(zip(*skill_result['skill']))[2],
+                            'bias_perc': list(zip(*skill_result['skill']))[3],
+                            'bias_dir': list(zip(*skill_result['skill']))[4],
+                            'central_freq': list(zip(*skill_result['skill']))[5],
+                            'central_freq_pass_fail': list(zip(*skill_result['skill']))[6],
+                            'pos_outlier_freq': list(zip(*skill_result['skill']))[7],
+                            'pos_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[8],
+                            'neg_outlier_freq': list(zip(*skill_result['skill']))[9],
+                            'neg_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[10],
+                            'max_duration_pos_outlier': list(zip(*skill_result['skill']))[11],
+                            'max_duration_pos_outlier_pass_fail': list(zip(*skill_result['skill']))[12],
+                            'max_duration_neg_outlier': list(zip(*skill_result['skill']))[13],
+                            'max_duration_neg_outlier_pass_fail': list(zip(*skill_result['skill']))[14],
+                            'worst_case_outlier_freq': list(zip(*skill_result['skill']))[15],
+                            'worst_case_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[16],
+                            'bias_standard_dev': list(zip(*skill_result['skill']))[17],
+                            'target_error_range': list(zip(*skill_result['skill']))[18],
+                            'datum': tabledatum,
+                            'Y': skill_result['Y'],
+                            'X': skill_result['X'],
+                            'start_date': prop.start_date_full,
+                            'end_date': prop.end_date_full,
+                        }
+                    ).to_csv(
+                        r'' + f'{prop.data_skill_1d_table_path}/'
+                              f'skill_{prop.ofs}_'
+                        f'{variable}_{prop.whichcast}_{prop.ofsfiletype}.csv'
+                    )
+
+                    logger.info(
+                        'Summary skill table for prop.ofs %s and variable %s '
+                        'is created successfully',
+                        prop.ofs,
+                        variable,
+                    )
+
                 else:
-                    tabledatum= None
-
-                pd.DataFrame(
-                    {
-                        'ID': skill_results['station_id'],
-                        'NODE': skill_results['node'],
-                        'obs_water_depth': skill_results['obs_depth'],
-                        'mod_water_depth': skill_results['mod_depth'],
-                        'rmse': list(zip(*skill_results['skill']))[0],
-                        'r': list(zip(*skill_results['skill']))[1],
-                        'bias': list(zip(*skill_results['skill']))[2],
-                        'bias_perc': list(zip(*skill_results['skill']))[3],
-                        'bias_dir': list(zip(*skill_results['skill']))[4],
-                        'central_freq': list(zip(*skill_results['skill']))[5],
-                        'central_freq_pass_fail': list(zip(*skill_results['skill']))[6],
-                        'pos_outlier_freq': list(zip(*skill_results['skill']))[7],
-                        'pos_outlier_freq_pass_fail': list(zip(*skill_results['skill']))[8],
-                        'neg_outlier_freq': list(zip(*skill_results['skill']))[9],
-                        'neg_outlier_freq_pass_fail': list(zip(*skill_results['skill']))[10],
-                        'bias_standard_dev': list(zip(*skill_results['skill']))[11],
-                        'target_error_range': list(zip(*skill_results['skill']))[12],
-                        'datum': tabledatum,
-                        'Y': skill_results['Y'],
-                        'X': skill_results['X'],
-                        'start_date': prop.start_date_full,
-                        'end_date': prop.end_date_full,
-                    }
-                ).to_csv(
-                    r'' + f'{prop.data_skill_1d_table_path}/'
-                          f'skill_{prop.ofs}_'
-                    f'{variable}_{prop.whichcast}_{prop.ofsfiletype}.csv'
-                )
-
-                logger.info(
-                    'Summary skill table for prop.ofs %s and variable %s '
-                    'is created successfully',
-                    prop.ofs,
-                    variable,
-                )
-
-            else:
-                logger.error(
-                    'Fail to create summary skill table for OFS: %s and '
-                    'variable: %s',
-                    prop.ofs,
-                    variable,
-                )
+                    logger.error(
+                        'Fail to create summary skill table for OFS: %s and '
+                        'variable: %s',
+                        prop.ofs,
+                        variable,
+                    )
         else:
             logger.error(
                 'Fail to create summary skill table for OFS: %s and '

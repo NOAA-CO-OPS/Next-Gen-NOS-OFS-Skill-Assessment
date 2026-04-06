@@ -31,6 +31,7 @@ _DEFAULT_THRESHOLDS = {
     'salt': (3.5, 0.5),
     'temp': (3.0, 0.5),
     'cu': (0.26, 0.5),
+    'cu_dir': (22.5, 0.5),
     'ice_conc': (10.0, 0.5),
 }
 
@@ -221,8 +222,35 @@ def max_duration_negative_outliers(errors, threshold):
             current = 0
     return max(max_run, current)
 
+def worst_case_outlier_frequency(ofs, obs, tides, threshold):
+    """Longest consecutive run of negative outliers (errors <= -2*threshold).
 
-def check_nos_criteria(cf, pof, nof):
+    Parameters
+    ----------
+    errors : array-like
+    threshold : float
+
+    Returns
+    -------
+    float (percentage)
+    """
+
+    # ofs, obs, tides are numpy arrays of same length and
+    # nsum counts where the sign of (ofs-tides) is different from (obs-tides)
+    # AND the absolute difference between ofs and obs is greater than 2x error threshold
+    n = np.count_nonzero(~np.isnan(ofs-obs))
+    mask = np.abs(ofs - obs) > threshold*2
+    try:
+        crossings = ((ofs > tides) & (obs < tides)) | ((ofs < tides) & (obs > tides))
+    except ValueError:
+        return None
+    # Combine conditions and count occurrences
+    nsum = np.sum(mask & crossings)
+    # Calculate the percentage and return
+    return (100.0 * nsum / n)
+
+
+def check_nos_criteria(cf, pof, nof, mdpo, mdno, wof):
     """Evaluate CF/POF/NOF against NOS Standard Suite thresholds.
 
     Parameters
@@ -239,12 +267,17 @@ def check_nos_criteria(cf, pof, nof):
     dict
         ``{'cf': 'pass'/'fail', 'pof': 'pass'/'fail', 'nof': 'pass'/'fail'}``
     """
+    if wof is None:
+        wof = 9999
+
     return {
         'cf': 'pass' if cf >= 90 else 'fail',
         'pof': 'pass' if pof <= 1 else 'fail',
         'nof': 'pass' if nof <= 1 else 'fail',
+        'mdpo': 'pass' if mdpo <= 24 else 'fail',
+        'mdno': 'pass' if mdno <= 24 else 'fail',
+        'wof': 'pass' if wof <= 0.5 else 'NA' if wof == 9999 else 'fail',
     }
-
 
 def get_error_threshold(variable_name, config_path=None):
     """Return (X1, X2) error-range thresholds for *variable_name*.
@@ -276,7 +309,7 @@ def get_error_threshold(variable_name, config_path=None):
             for row in reader:
                 if row['name_var'] == variable_name:
                     return float(row['X1']), float(row['X2'])
-        # Variable not found in CSV — fall through to defaults
+        # Variable not found in CSV fall through to defaults
     if variable_name not in _DEFAULT_THRESHOLDS:
         raise KeyError(
             f"Unknown variable '{variable_name}'. "

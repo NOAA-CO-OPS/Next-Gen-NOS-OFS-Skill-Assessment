@@ -76,6 +76,7 @@ __all__ = [
     'retrieve_usgs_station',
     'get_station_observations',
     'write_obs_ctlfile',
+    'get_station_tidal_data',
     # Inventory
     'inventory_t_c_station',
     'inventory_ndbc_station',

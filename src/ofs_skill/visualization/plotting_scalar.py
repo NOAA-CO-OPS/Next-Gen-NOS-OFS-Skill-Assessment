@@ -32,11 +32,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
-from ofs_skill.obs_retrieval import (
-    find_nearest_tidal_stations,
-    retrieve_tidal_predictions,
-)
-from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
+
+from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
 from ofs_skill.visualization.plotting_functions import (
     find_max_data_gap,
@@ -279,114 +276,27 @@ def oned_scalar_plot(
     #####################################################################
     if name_var == 'wl' and prop.ofs[0] != 'l':
       try:
-          import os
-
-          retrieve_input = RetrieveProperties()
-          obs_station_id = str(station_id[0])
-          station_source = str(station_id[2]) if len(station_id) > 2 else 'CO-OPS'
-
-          # Get date range from actual paired data to ensure tidal predictions cover plotted range
           data_times = obs_df.DateTime
           start_dt = data_times.min().to_pydatetime()
           end_dt = data_times.max().to_pydatetime()
-          retrieve_input.start_date = start_dt.strftime('%Y%m%d%H%M%S')
-          retrieve_input.end_date = end_dt.strftime('%Y%m%d%H%M%S')
-
-          # Try requested datum first, then fallback datums if needed
-          requested_datum = prop.datum
-          fallback_datums = ['MLLW', 'MHHW', 'MHW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B']
-          # Read fallback datums from config file
-          config = configparser.ConfigParser()
-          config_file = Path(__file__).resolve().parent.parent.parent.parent / 'conf' / 'ofs_dps.conf'
-          try:
-                config.read(config_file)
-                if config.has_option('datums', 'datum_list'):
-                    datum_list_str = config.get('datums', 'datum_list')
-                    fallback_datums = [d.strip() for d in datum_list_str.split()]
-          except Exception as ex:
-                logger.warning('Could not read datum_list from config, using defaults: %s',ex)
-
-          datums_to_try = [requested_datum] + [d for d in fallback_datums if d != requested_datum]
-
-          tidal_data = None
-          used_datum = None
-          tidal_station_id = None
-          tidal_station_name = None
-          tidal_station_distance = None
-
-          # Helper function to try getting tidal data from a station
-          def try_get_tidal_data(station_id_to_try):
-              retrieve_input.station = station_id_to_try
-              for datum in datums_to_try:
-                  retrieve_input.datum = datum
-                  data = retrieve_tidal_predictions(
-                      retrieve_input, logger)
-                  if data is False:
-                      # Station doesn't support predictions
-                      return None, None
-                  if data is not None and len(data) > 0:
-                      return data, datum
-              return None, None
-
-          # Get station coordinates from control file
-          lat, lon = None, None
-          try:
-              ctl_file = os.path.join(prop.control_files_path, f'{prop.ofs}_wl_station.ctl')
-              with open(ctl_file) as f:
-                  lines = f.readlines()
-              for i, line in enumerate(lines):
-                  if line.strip().startswith(obs_station_id):
-                      coords = lines[i+1].split()
-                      lat, lon = float(coords[0]), float(coords[1])
-                      break
-          except Exception as ex:
-              logger.warning('Could not find coordinates for station %s: %s', obs_station_id, ex)
-
-          # For CO-OPS stations, try the station itself first
-          if station_source.upper() in ['CO-OPS', 'COOPS', 'TC', 'TAC']:
-              tidal_data, used_datum = try_get_tidal_data(obs_station_id)
-              if tidal_data is not None:
-                  tidal_station_id = obs_station_id
-                  tidal_station_distance = 0.0
-
-          # If no data yet (non-CO-OPS or CO-OPS failed), try nearby tidal stations
-          if tidal_data is None and lat is not None and lon is not None:
-              logger.info('Finding nearby tidal stations for %s station %s...',
-                         station_source, obs_station_id)
-              nearby_stations = find_nearest_tidal_stations(
-                  lat, lon, logger, max_stations=10)
-
-              for candidate_id, candidate_name, candidate_dist in nearby_stations:
-                  # Skip if same as observation station (already tried for CO-OPS)
-                  if candidate_id == obs_station_id:
-                      continue
-                  logger.info('Trying tidal station %s (%s) at %.1f km...',
-                             candidate_id, candidate_name, candidate_dist)
-                  tidal_data, used_datum = try_get_tidal_data(candidate_id)
-                  if tidal_data is not None:
-                      tidal_station_id = candidate_id
-                      tidal_station_name = candidate_name
-                      tidal_station_distance = candidate_dist
-                      logger.info('Using tidal station %s (%s) at %.1f km for station %s',
-                                 tidal_station_id, tidal_station_name, tidal_station_distance, obs_station_id)
-                      break
+          tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id, logger)
 
           if tidal_data is not None and len(tidal_data) > 0:
               # Build hover text with source information including distance
-              if tidal_station_name:
-                  source_text = f'CO-OPS Station {tidal_station_id} ({tidal_station_name})'
+              if tidal_info['tidal_station_name']:
+                  source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]} ({tidal_info["tidal_station_name"]})'
               else:
-                  source_text = f'CO-OPS Station {tidal_station_id}'
+                  source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]}'
 
-              if tidal_station_distance is not None and tidal_station_distance > 0:
-                  distance_text = f'<br>Distance: {tidal_station_distance:.1f} km'
+              if tidal_info["tidal_station_distance"] is not None and tidal_info["tidal_station_distance"] > 0:
+                  distance_text = f'<br>Distance: {tidal_info["tidal_station_distance"]:.1f} km'
               else:
                   distance_text = ''
 
-              if used_datum == requested_datum:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}<i><extra></extra>'
+              if tidal_info["used_datum"] == prop.datum:
+                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}<i><extra></extra>'
               else:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}(requested: {requested_datum})<i><extra></extra>'
+                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}(requested: {prop.datum})<i><extra></extra>'
 
               fig.add_trace(
                   go.Scattergl(
@@ -400,7 +310,7 @@ def oned_scalar_plot(
                       legendgroup='tide',
                       marker=dict(size=0)), 1, 1)
               logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-                         obs_station_id, tidal_station_id, used_datum)
+                         str(station_id[0]), tidal_info["tidal_station_id"], tidal_info["used_datum"])
               # Adding boxplots for tides
               fig.add_trace(
                   go.Box(
@@ -417,7 +327,7 @@ def oned_scalar_plot(
                         station_id[0], ex)
 
       logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-           obs_station_id, tidal_station_id, used_datum)
+           str(station_id[0]), tidal_info["tidal_station_id"], tidal_info["used_datum"])
     #####################################################################
     ## Done tide retrieval and plotting                                ##
     #####################################################################
