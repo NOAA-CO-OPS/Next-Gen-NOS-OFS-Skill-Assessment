@@ -126,11 +126,11 @@ def validate_and_initialize_parameters(prop):
     prop.whichcasts = prop.whichcasts.replace(']', '')
     prop.whichcasts = prop.whichcasts.split(',')
     for whichcast in prop.whichcasts:
-        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b'}:
+        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}:
             logger.error("Invalid whichcast value: '%s'. Abort!",prop.whichcasts)
             sys.exit(-1)
 
-    if prop.whichcasts == 'forecast_a' and prop.forecast_hr is None:
+    if 'forecast_a' in prop.whichcasts and prop.forecast_hr is None:
         logger.error('Forecast_Hr is required if Whichcast is forecast_a. Abort!')
         sys.exit(-1)
 

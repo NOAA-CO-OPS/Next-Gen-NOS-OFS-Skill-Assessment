@@ -365,6 +365,15 @@ def create_1dplot(prop, logger):
 
     logger.info('Starting parameter validation...')
 
+    # Validate whichcast values
+    valid_whichcasts = {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}
+    for wc in prop.whichcasts:
+        if wc.lower() not in valid_whichcasts:
+            logger.error("Invalid whichcast value: '%s'. "
+                         'Valid values: %s. Abort!',
+                         wc, sorted(valid_whichcasts))
+            sys.exit(-1)
+
     # Do forecast_a start and end date reshuffle
 
     if 'forecast_a' in prop.whichcasts:
