@@ -260,7 +260,8 @@ def create_1dplot_2nd_part(
                         now_fores_paired, var_info[1],
                         [read_ofs_ctl_file[-1][i],
                          read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                         read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
                         read_ofs_ctl_file[1][i],
                         prop,logger)
                 elif var_info[1] == 'cu':
@@ -274,7 +275,8 @@ def create_1dplot_2nd_part(
                         now_fores_paired, var_info[1],
                         [read_ofs_ctl_file[-1][i],
                          read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                         read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
                         read_ofs_ctl_file[1][i],
                         prop,logger)
 
@@ -288,7 +290,8 @@ def create_1dplot_2nd_part(
                         var_info[1],
                         [read_ofs_ctl_file[-1][i],
                          read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                         read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
                         read_ofs_ctl_file[1][i],
                         prop, logger)
                     if deltat <= -1:
@@ -300,7 +303,8 @@ def create_1dplot_2nd_part(
                             now_fores_paired, var_info[1],
                             [read_ofs_ctl_file[-1][i],
                               read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                              read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                              read_station_ctl_file[1][obs_row][2]],
                             read_ofs_ctl_file[1][i],
                             prop,logger)
                         logger.info(
@@ -312,7 +316,8 @@ def create_1dplot_2nd_part(
                             now_fores_paired, var_info[1],
                             [read_ofs_ctl_file[-1][i],
                               read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                              read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                              read_station_ctl_file[1][obs_row][2]],
                             read_ofs_ctl_file[1][i],
                             prop,logger)
             except Exception as ex:
