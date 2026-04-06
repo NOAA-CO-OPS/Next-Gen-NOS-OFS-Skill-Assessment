@@ -512,6 +512,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
+    return None
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,

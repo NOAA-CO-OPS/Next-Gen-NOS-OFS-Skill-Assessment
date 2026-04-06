@@ -8,8 +8,6 @@ an inventory of all buoy stations within specified geographic bounds.
 Created on Wed Feb  4 16:58:00 2026
 """
 
-import urllib.error
-import urllib.request
 from logging import Logger
 from typing import Optional
 
@@ -64,7 +62,7 @@ def inventory_chs_station(
             lon_min=lon1, lon_max=lon2,
             lat_min=lat1, lat_max=lat2,
         )
-    except (urllib.error.HTTPError, Exception) as ex:
+    except Exception as ex:
         logger.error('CHS data download failed! Error: %s', ex)
         return None
 

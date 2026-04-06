@@ -49,7 +49,7 @@ def _make_date_chunks(start_date, end_date, interval_hours):
     return date_list
 
 
-def _fetch_chs_chunked(date_list, id_number, time_series_code, logger):
+def _fetch_chs_chunked(date_list, id_number, time_series_code):
     """
     Fetch CHS data in 7-day chunks for a single time series code.
 
@@ -59,26 +59,24 @@ def _fetch_chs_chunked(date_list, id_number, time_series_code, logger):
         date_list: List of datetime chunk boundaries
         id_number: CHS station ID
         time_series_code: CHS time series code (e.g., 'wlo', 'wt1')
-        logger: Logger instance
 
     Returns:
         Concatenated DataFrame of all chunks, or None if no data.
     """
     data_all_append = []
-    for i in range(len(date_list) - 1):
+    for start, end in zip(date_list, date_list[1:]):
         data_station = fetch_chs_station(
             station_id=str(id_number),
             time_series_code=time_series_code,
-            start_date=datetime.strftime(date_list[i], '%Y-%m-%d'),
-            end_date=datetime.strftime(date_list[i + 1], '%Y-%m-%d'),
+            start_date=datetime.strftime(start, '%Y-%m-%d'),
+            end_date=datetime.strftime(end, '%Y-%m-%d'),
         )
-        if 'errors' in data_station.columns or data_station.empty is True:
+        if 'errors' in data_station.columns or data_station.empty:
             continue
         data_all_append.append(data_station)
 
-    if len(data_all_append) > 0:
-        data_all = pd.concat(data_all_append, ignore_index=True)
-        return data_all
+    if data_all_append:
+        return pd.concat(data_all_append, ignore_index=True)
     return None
 
 
@@ -109,7 +107,7 @@ def _retrieve_chs_scalar(date_list, id_number, variable, logger):
 
     data_all = None
     for code in codes:
-        data_all = _fetch_chs_chunked(date_list, id_number, code, logger)
+        data_all = _fetch_chs_chunked(date_list, id_number, code)
         if data_all is not None:
             logger.info('CHS %s data found using code %s for station %s',
                         variable, code, str(id_number))
@@ -135,7 +133,7 @@ def _retrieve_chs_currents(date_list, id_number, logger):
     """
     speed_data = None
     for code in _CURRENT_SPEED_CODES:
-        speed_data = _fetch_chs_chunked(date_list, id_number, code, logger)
+        speed_data = _fetch_chs_chunked(date_list, id_number, code)
         if speed_data is not None:
             logger.info('CHS current speed found using code %s for '
                         'station %s', code, str(id_number))
@@ -143,7 +141,7 @@ def _retrieve_chs_currents(date_list, id_number, logger):
 
     dir_data = None
     for code in _CURRENT_DIR_CODES:
-        dir_data = _fetch_chs_chunked(date_list, id_number, code, logger)
+        dir_data = _fetch_chs_chunked(date_list, id_number, code)
         if dir_data is not None:
             logger.info('CHS current direction found using code %s for '
                         'station %s', code, str(id_number))
