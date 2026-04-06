@@ -1,13 +1,19 @@
 """
 Retrieve CHS (Canadian Hydrographic Service) station observations.
 
-This module uses SEARVEY to retrieve all CHS water level time series.
+This module uses SEARVEY to retrieve CHS time series data for water level,
+water temperature, salinity, and currents.
+
+Supported variables:
+    - water_level: Time series code 'wlo'
+    - water_temperature: Time series codes 'wt1', 'wt2' (fallback)
+    - salinity: Time series codes 'ws1', 'ws2' (fallback)
+    - currents: Speed ('wcs1'/'wcs2') + direction ('wcd1'/'wcd2')
 
 @author: PWL
 Created on Wed Feb  4 19:51:12 2026
 """
 
-import time
 from datetime import datetime, timedelta
 from logging import Logger
 from typing import Optional
@@ -15,8 +21,18 @@ from typing import Optional
 import pandas as pd
 from searvey._chs_api import fetch_chs_station
 
+# CHS time series codes per variable, in priority order (try first, fallback)
+_SCALAR_CODE_MAP = {
+    'water_level': ['wlo'],
+    'water_temperature': ['wt1', 'wt2'],
+    'salinity': ['ws1', 'ws2'],
+}
 
-def make_datetime_list(start_date, end_date, interval_hours):
+_CURRENT_SPEED_CODES = ['wcs1', 'wcs2']
+_CURRENT_DIR_CODES = ['wcd1', 'wcd2']
+
+
+def _make_date_chunks(start_date, end_date, interval_hours):
     """
     Generates a list of datetimes every `interval_hours` between start and
     end dates (inclusive of start & end). Returns list of datetime objects.
@@ -33,6 +49,128 @@ def make_datetime_list(start_date, end_date, interval_hours):
     return date_list
 
 
+def _fetch_chs_chunked(date_list, id_number, time_series_code, logger):
+    """
+    Fetch CHS data in 7-day chunks for a single time series code.
+
+    Uses searvey's built-in rate limiting (default 5 req/sec).
+
+    Args:
+        date_list: List of datetime chunk boundaries
+        id_number: CHS station ID
+        time_series_code: CHS time series code (e.g., 'wlo', 'wt1')
+        logger: Logger instance
+
+    Returns:
+        Concatenated DataFrame of all chunks, or None if no data.
+    """
+    data_all_append = []
+    for i in range(len(date_list) - 1):
+        data_station = fetch_chs_station(
+            station_id=str(id_number),
+            time_series_code=time_series_code,
+            start_date=datetime.strftime(date_list[i], '%Y-%m-%d'),
+            end_date=datetime.strftime(date_list[i + 1], '%Y-%m-%d'),
+        )
+        if 'errors' in data_station.columns or data_station.empty is True:
+            continue
+        data_all_append.append(data_station)
+
+    if len(data_all_append) > 0:
+        data_all = pd.concat(data_all_append, ignore_index=True)
+        return data_all
+    return None
+
+
+def _format_raw_data(data_all):
+    """Format raw CHS API response into standard columns."""
+    data_all['DateTime'] = pd.to_datetime(
+        data_all['eventDate'], format='%Y-%m-%dT%H:%M:%SZ')
+    drop_cols = [c for c in ['eventDate', 'qcFlagCode',
+                             'timeSeriesId', 'reviewed']
+                 if c in data_all.columns]
+    data_all = data_all.drop(columns=drop_cols)
+    data_all.rename(columns={'value': 'OBS'}, inplace=True)
+    data_all.drop_duplicates(subset=['DateTime'], keep='first',
+                             inplace=True)
+    return data_all
+
+
+def _retrieve_chs_scalar(date_list, id_number, variable, logger):
+    """
+    Retrieve a scalar CHS variable (water_level, temperature, salinity).
+
+    Tries codes in priority order; returns data from the first code
+    that yields results.
+    """
+    codes = _SCALAR_CODE_MAP.get(variable)
+    if codes is None:
+        return None
+
+    data_all = None
+    for code in codes:
+        data_all = _fetch_chs_chunked(date_list, id_number, code, logger)
+        if data_all is not None:
+            logger.info('CHS %s data found using code %s for station %s',
+                        variable, code, str(id_number))
+            break
+
+    if data_all is None:
+        return None
+
+    data_all = _format_raw_data(data_all)
+    data_all['DEP01'] = 0.0
+    if variable == 'water_level':
+        data_all['Datum'] = 'IGLD'
+
+    return data_all
+
+
+def _retrieve_chs_currents(date_list, id_number, logger):
+    """
+    Retrieve CHS current speed and direction, merge into single DataFrame.
+
+    Fetches speed and direction separately, then inner-merges on DateTime
+    so only timestamps with both values are kept.
+    """
+    speed_data = None
+    for code in _CURRENT_SPEED_CODES:
+        speed_data = _fetch_chs_chunked(date_list, id_number, code, logger)
+        if speed_data is not None:
+            logger.info('CHS current speed found using code %s for '
+                        'station %s', code, str(id_number))
+            break
+
+    dir_data = None
+    for code in _CURRENT_DIR_CODES:
+        dir_data = _fetch_chs_chunked(date_list, id_number, code, logger)
+        if dir_data is not None:
+            logger.info('CHS current direction found using code %s for '
+                        'station %s', code, str(id_number))
+            break
+
+    if speed_data is None or dir_data is None:
+        return None
+
+    # Parse DateTimes for both
+    for df in [speed_data, dir_data]:
+        df['DateTime'] = pd.to_datetime(
+            df['eventDate'], format='%Y-%m-%dT%H:%M:%SZ')
+
+    speed_data = speed_data[['DateTime', 'value']].drop_duplicates(
+        subset=['DateTime'], keep='first')
+    dir_data = dir_data[['DateTime', 'value']].drop_duplicates(
+        subset=['DateTime'], keep='first')
+
+    merged = speed_data.merge(dir_data, on='DateTime',
+                              suffixes=('_speed', '_dir'))
+    merged.rename(columns={'value_speed': 'OBS', 'value_dir': 'DIR'},
+                  inplace=True)
+    merged['DEP01'] = 0.0
+
+    return merged
+
+
 def retrieve_chs_station(
     start_date: str,
     end_date: str,
@@ -43,67 +181,43 @@ def retrieve_chs_station(
     """
     Retrieve CHS station data using SEARVEY library.
 
-    This function fetches all CHS data for a given station and time period.
+    This function fetches CHS data for a given station and time period.
 
     Args:
         start_date: Start date in YYYYMMDD format
         end_date: End date in YYYYMMDD format
         id_number: CHS station ID
-        variable: Variable to retrieve -- water level only!
+        variable: Variable to retrieve ('water_level',
+                  'water_temperature', 'salinity', 'currents')
         logger: Logger instance for logging messages
 
     Returns:
         DataFrame with columns:
             - DateTime: Observation timestamps
-            - DEP01: Depth (for currents/temperature/salinity)
+            - DEP01: Depth (0.0 for all CHS observations)
             - OBS: Observation values
             - DIR: Direction (for currents only)
-            - Datum: Vertical datum (for water_level only)
+            - Datum: Vertical datum (for water_level only, 'IGLD')
         Returns None if no data available.
-
-    Note:
-        - Water level returned in LWD datum
     """
-    data_station = []
-    start_date = start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:]
-    end_date = end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:]
-    start_date_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_date_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    start_date_str = (start_date[:4] + '-' + start_date[4:6]
+                      + '-' + start_date[6:])
+    end_date_str = (end_date[:4] + '-' + end_date[4:6]
+                    + '-' + end_date[6:])
+    start_date_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+    end_date_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+
     if (end_date_dt - start_date_dt).days > 7:
-        # Chunk the time
-        date_list = make_datetime_list(start_date_dt, end_date_dt, 7*24)
+        date_list = _make_date_chunks(start_date_dt, end_date_dt, 7 * 24)
     else:
         date_list = [start_date_dt, end_date_dt]
-    data_all_append = []
-    for i in range(len(date_list)-1):
-        data_station = fetch_chs_station(
-            station_id=str(id_number),
-            time_series_code='wlo',
-            start_date=datetime.strftime(date_list[i],'%Y-%m-%d'),
-            end_date=datetime.strftime(date_list[i+1],'%Y-%m-%d'),
-            )
-        if 'errors' in data_station.columns or data_station.empty is True:
-            continue
-        data_all_append.append(data_station)
-        time.sleep(0.33)
 
-    if len(data_all_append) > 0:
-        data_all = pd.concat(data_all_append, ignore_index=True)
-        # Do a bunch of formatting
-        data_all['DateTime'] = pd.to_datetime(data_all['eventDate'],
-                                              format='%Y-%m-%dT%H:%M:%SZ')
-        data_all = data_all.drop(columns=['eventDate',
-                                          'qcFlagCode',
-                                          'timeSeriesId',
-                                          'reviewed'])
-        data_all.rename(columns={'value': 'OBS'},
-                        inplace=True)
-        data_all['DEP01'] = 0.0
-        data_all['Datum'] = 'IGLD'
-        data_all.drop_duplicates(subset=['DateTime'], keep='first',
-                                 inplace=True)
+    if variable == 'currents':
+        data_all = _retrieve_chs_currents(date_list, id_number, logger)
     else:
-        data_all = None
+        data_all = _retrieve_chs_scalar(
+            date_list, id_number, variable, logger)
+
     if data_all is None:
         logger.error(
             'Retrieve CHS station %s failed for %s -- station contacted, '

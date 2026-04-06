@@ -758,6 +758,24 @@ def get_station_observations(prop,logger):
                                 start_date_full,
                                 end_date_full
                             )
+
+                        elif (
+                            variable == 'currents'
+                        ):  # different format than scalar variables
+                            formatted_series = \
+                                vector(
+                                timeseries,
+                                start_date_full,
+                                end_date_full
+                            )
+
+                        else:
+                            formatted_series = \
+                                scalar(
+                                timeseries,
+                                start_date_full,
+                                end_date_full
+                            )
                     except Exception as e_x:
                         logger.error('Fail when getting CHS %s '
                                      'data for station %s',

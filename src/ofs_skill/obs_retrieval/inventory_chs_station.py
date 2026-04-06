@@ -60,10 +60,22 @@ def inventory_chs_station(
 
     try:
         logger.info('Calling CHS service for inventory...')
-        data = get_chs_stations()
-    except urllib.error.HTTPError as ex:
+        data = get_chs_stations(
+            lon_min=lon1, lon_max=lon2,
+            lat_min=lat1, lat_max=lat2,
+        )
+    except (urllib.error.HTTPError, Exception) as ex:
         logger.error('CHS data download failed! Error: %s', ex)
         return None
+
+    if data.empty:
+        logger.info('No CHS stations found within bounding box')
+        return None
+
+    codes_per_station = data['timeSeries'].apply(
+        lambda ts_list: {ts['code'] for ts in ts_list}
+        if isinstance(ts_list, list) else set()
+    )
 
     inventory_chs = pd.DataFrame(
         {
@@ -72,16 +84,17 @@ def inventory_chs_station(
             'Y': data['latitude'],
             'Source': 'CHS',
             'Name': data['officialName'],
-            'has_wl': True,
-            'has_temp': False,
-            'has_salt': False,
-            'has_cu': False,
+            'has_wl': codes_per_station.apply(
+                lambda c: 'wlo' in c),
+            'has_temp': codes_per_station.apply(
+                lambda c: bool(c & {'wt1', 'wt2'})),
+            'has_salt': codes_per_station.apply(
+                lambda c: bool(c & {'ws1', 'ws2'})),
+            'has_cu': codes_per_station.apply(
+                lambda c: bool(c & {'wcs1', 'wcs2'})
+                and bool(c & {'wcd1', 'wcd2'})),
         }
     )
-    inventory_chs = inventory_chs[
-        inventory_chs['X'].between(lon1, lon2)]
-    inventory_chs = inventory_chs[
-        inventory_chs['Y'].between(lat1, lat2)]
 
     logger.info('inventory_chs_station.py ran successfully')
 
