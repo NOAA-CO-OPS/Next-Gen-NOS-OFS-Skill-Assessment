@@ -5,10 +5,12 @@
 """
 
 import argparse
+import copy
 import logging
 import logging.config
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -20,13 +22,19 @@ from ofs_skill.model_processing.get_node_ofs import get_node_ofs
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment import format_paired_one_d, make_skill_maps, metrics_paired_one_d
 
 
-def ofs_ctlfile_extract(prop, name_var, logger):
+def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     """
     Extract info from model control files. If control file does not exist,
     create it.
+
+    Parameters
+    ----------
+    model_dataset : xarray.Dataset or None
+        Pre-loaded model dataset to avoid redundant intake_model() calls.
     """
 
     if prop.ofsfiletype == 'fields':
@@ -37,7 +45,10 @@ def ofs_ctlfile_extract(prop, name_var, logger):
             )
             is False
         ):
-            get_node_ofs(prop, logger)
+            result = get_node_ofs(prop, logger,
+                                  model_dataset=model_dataset)
+            if result is not None:
+                prop._cached_model = result
     elif prop.ofsfiletype == 'stations':
         ctl_path = os.path.join(prop.control_files_path,
                             str(prop.ofs+'_'+name_var+'_model_station.ctl'))
@@ -46,7 +57,10 @@ def ofs_ctlfile_extract(prop, name_var, logger):
             )
             is False
         ):
-            get_node_ofs(prop, logger)
+            result = get_node_ofs(prop, logger,
+                                  model_dataset=model_dataset)
+            if result is not None:
+                prop._cached_model = result
 
     try:
         if (os.path.getsize(ctl_path) > 0):
@@ -165,7 +179,11 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                     'Calling OFS module for %s',
                     prop.whichcast,
                 )
-                get_node_ofs(prop, logger)
+                cached = getattr(prop, '_cached_model', None)
+                result = get_node_ofs(prop, logger,
+                                      model_dataset=cached)
+                if result is not None:
+                    prop._cached_model = result
 
             ofs_df = pd.read_csv(prd_path,
                 sep=r'\s+',
@@ -192,6 +210,122 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
     return formatted_series
 
 
+def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
+                          prop, name_var, logger):
+    """
+    Process a single station pair: match IDs, compute pairing + metrics,
+    and write the .int file.
+
+    Returns a dict with station_id, X, Y, obs_depth, mod_depth, node, skill
+    on success, or None on failure.
+    """
+    try:
+        # First, match rows using station ID between model and obs control
+        # files
+        try:
+            obs_row = [y[0] for y in read_station_ctl_file[0]].index(
+                read_ofs_ctl_file[-1][i]
+            )
+            if read_station_ctl_file[0][obs_row][0] != \
+                    read_ofs_ctl_file[-1][i]:
+                raise ValueError
+        except (ValueError, IndexError):
+            logger.error(
+                'Could not match station ID %s between control '
+                'file in get_node_ofs!', read_ofs_ctl_file[-1][i]
+            )
+            return None
+
+        # Now continue formatting paired series
+        formatted_series = prepare_series(
+            read_station_ctl_file, read_ofs_ctl_file, prop,
+            name_var, i, obs_row, logger
+        )
+        if (
+            formatted_series is not None
+            and formatted_series != 'NoDataFound'
+            and len(formatted_series[0]) > 1
+        ):
+            result = {
+                'station_id': read_station_ctl_file[0][obs_row][0],
+                'node': read_ofs_ctl_file[1][i],
+                'obs_depth': read_station_ctl_file[1][obs_row][-2],
+                'mod_depth': read_ofs_ctl_file[-2][i],
+                'Y': read_station_ctl_file[1][obs_row][0],
+            }
+
+            if name_var == 'cu':
+                logger.info('Start cu metrics for %s',
+                            read_station_ctl_file[0][obs_row][0])
+                result['X'] = read_station_ctl_file[1][obs_row][1]
+                result['skill'] = metrics_paired_one_d.skill_vector(
+                    formatted_series[-1], name_var, prop, logger
+                )
+            else:
+                logger.info('Start %s metrics for %s',
+                            name_var,
+                            read_station_ctl_file[0][obs_row][0])
+                temp_x = str(float(
+                    read_station_ctl_file[1][obs_row][1]))
+                result['X'] = temp_x
+                result['skill'] = metrics_paired_one_d.skill_scalar(
+                    formatted_series[-1], name_var, prop, logger
+                )
+
+            # Write the paired time series file
+            int_path = os.path.join(
+                prop.data_skill_1d_pair_path,
+                str(prop.ofs + '_' + name_var + '_'
+                    + read_station_ctl_file[0][obs_row][0]
+                    + '_' + str(read_ofs_ctl_file[1][i]) + '_'
+                    + prop.whichcast + '_' + prop.ofsfiletype
+                    + '_pair.int')
+            )
+            with open(int_path, 'w', encoding='utf-8') as output_2:
+                if name_var == 'cu':
+                    output_2.write(
+                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
+                        + 'HOUR ' + 'MINUTE ' + 'SPEED_OB '
+                        + 'SPEED_MODEL ' + 'BIAS_SPEED '
+                        + 'DIR_OB ' + 'DIR_MODEL ' + 'BIAS_DIR ' + '\n'
+                    )
+                else:
+                    output_2.write(
+                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
+                        + 'HOUR ' + 'MINUTE ' + 'VAL_OB '
+                        + 'VAL_MODEL ' + 'BIAS ' + '\n'
+                    )
+                for p_value in formatted_series[0]:
+                    p_value = str(p_value)
+                    p_value = p_value.replace(',', ' ')
+                    p_value = p_value.replace('[', '')
+                    p_value = p_value.replace(']', '')
+                    output_2.write(p_value + '\n')
+            logger.info(
+                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
+                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
+                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype
+            )
+            return result
+        else:
+            logger.error(
+                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
+                prop.ofs,
+                name_var,
+                read_station_ctl_file[0][obs_row][0],
+                read_ofs_ctl_file[1][i],
+                prop.whichcast,
+                prop.ofsfiletype
+            )
+            return None
+
+    except Exception:
+        logger.exception(
+            'Unexpected error processing station index %d', i
+        )
+        return None
+
+
 def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     """
     this function 1) writes the paired observation and model time series to
@@ -214,117 +348,23 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     if len(read_ofs_ctl_file[-1]) < data_length:
         data_length = len(read_ofs_ctl_file[-1])
 
-    for i in range(0, data_length):
-        # First, match rows using station ID between model and obs control
-        # files
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                index(read_ofs_ctl_file[-1][i])
-            if read_station_ctl_file[0][obs_row][0] != \
-                read_ofs_ctl_file[-1][i]:
-                raise Exception
-        except Exception:
-            logger.error('Could not match station ID %s between control '
-                         'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
-            sys.exit(-1)
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['skill_workers']
 
-        # Now continue formatting paired series
-        formatted_series = prepare_series(
-            read_station_ctl_file, read_ofs_ctl_file, prop,
-            name_var, i, obs_row, logger
-        )
-        if (
-            formatted_series is not None
-            and formatted_series != 'NoDataFound'
-            and len(formatted_series[0]) > 1
-        ):
-            if name_var == 'cu':
-                # stats = metrics_paired_one_d.skill_vector
-                # (formatted_series[-1])
-                logger.info('Start cu metrics for %s',
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                output['X'].append(
-                    read_station_ctl_file[1][obs_row][1])
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_vector(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
-
-            else:
-                # stats = metrics_paired_one_d.skill_scalar
-                # (formatted_series[-1])
-                logger.info('Start %s metrics for %s',
-                            name_var,
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                #temp_x = str(float(
-                    #read_station_ctl_file[1][i][1])+360)
-                temp_x = str(float(
-                    read_station_ctl_file[1][obs_row][1]))
-                output['X'].append(temp_x)
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_scalar(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
-
-            # This section writes the paired time series file with all the
-            # data found and formatted in the ctl_file list
-            # edited to add header for human readability - AJK
-            int_path = os.path.join(prop.data_skill_1d_pair_path,
-                        str(prop.ofs+'_'+name_var+'_'+read_station_ctl_file[0][obs_row][0]
-                        +'_'+str(read_ofs_ctl_file[1][i])+'_'+prop.whichcast+
-                        '_'+prop.ofsfiletype+'_pair.int'))
-            with open(int_path, 'w', encoding='utf-8') as output_2:
-                if  name_var == 'cu': #if cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'SPEED_OB '+'SPEED_MODEL '+'BIAS_SPEED '
-                        +'DIR_OB '+'DIR_MODEL '+'BIAS_DIR '+'\n')
-                else: #if not cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'VAL_OB '+'VAL_MODEL '+'BIAS '+'\n')
-                for p_value in formatted_series[0]:
-                    p_value = str(p_value)
-                    p_value = p_value.replace(',', ' ')
-                    p_value = p_value.replace('[', '')
-                    p_value = p_value.replace(']', '')
-                    output_2.write(p_value + '\n')
-            logger.info(
-                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
-                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype)
-        else:
-            logger.error(
-                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
-                prop.ofs,
-                name_var,
-                read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i],
-                prop.whichcast,
-                prop.ofsfiletype
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _process_station_pair, i, read_station_ctl_file,
+                read_ofs_ctl_file, prop, name_var, logger
             )
+            for i in range(data_length)
+        ]
+        # Iterate in submission order to preserve consistent CSV output
+        for future in futures:
+            result = future.result()
+            if result is not None:
+                for key in output:
+                    output[key].append(result[key])
 
     return output
 
@@ -491,8 +531,104 @@ def get_skill(prop, logger):
     # in the station ctl file and will try to download the data from TandC,
     # USGS, and NDBC based on the station data source
 
-    for variable in prop.var_list:
+    def _ensure_obs_files(read_station_ctl_file, p, name_var, logger_):
+        """Check for missing .obs files, download if needed."""
+        for i in range(0, len(read_station_ctl_file[0])):
+            obs_path = os.path.join(p.data_observations_1d_station_path,
+                    str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
+                        name_var+'_station.obs'))
+            if os.path.isfile(obs_path):
+                if os.path.getsize(obs_path) > 0:
+                    logger_.info(
+                        '%s/%s_%s_%s_station.obs found',
+                        p.data_observations_1d_station_path,
+                        read_station_ctl_file[0][i][0],
+                        p.ofs,
+                        name_var,
+                    )
+                else:
+                    logger_.error(
+                        '%s/%s_%s_%s_station.obs is empty',
+                        p.data_observations_1d_station_path,
+                        read_station_ctl_file[0][i][0],
+                        p.ofs,
+                        name_var,
+                    )
+            else:
+                logger_.error(
+                    '%s/%s_%s_%s_station.obs is missing, calling Obs Module',
+                    p.data_observations_1d_station_path,
+                    read_station_ctl_file[0][i][0],
+                    p.ofs,
+                    name_var,
+                )
+                get_station_observations(p, logger_)
+                break
 
+    def _ensure_prd_files(read_ofs_ctl_file, p, name_var, logger_,
+                          cached_model=None):
+        """Check for missing .prd files, extract if needed.
+        Returns the (possibly updated) cached model dataset."""
+        for i in range(0, len(read_ofs_ctl_file[-1])):
+            if p.whichcast == 'forecast_a':
+                if os.path.isfile(
+                    f'{p.data_model_1d_node_path}/'
+                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                    f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
+                ) is False:
+                    logger_.error(
+                        '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
+                        p.data_model_1d_node_path,
+                        read_ofs_ctl_file[-1][i],
+                        p.ofs,
+                        name_var,
+                        read_ofs_ctl_file[1][i],
+                        p.whichcast,
+                        p.forecast_hr,
+                        p.ofsfiletype
+                    )
+                    logger_.info(
+                        'Calling OFS module for %s',
+                        p.whichcast,
+                    )
+                    result = get_node_ofs(p, logger_,
+                                          model_dataset=cached_model)
+                    if result is not None:
+                        cached_model = result
+                    break
+            else:
+                if os.path.isfile(
+                    f'{p.data_model_1d_node_path}/'
+                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                    f'{p.ofsfiletype}_model.prd'
+                ) is False:
+                    logger_.info(
+                        '%s/%s_%s_%s_%s_%s_%s_model.prd is missing',
+                        p.data_model_1d_node_path,
+                        read_ofs_ctl_file[-1][i],
+                        p.ofs,
+                        name_var,
+                        read_ofs_ctl_file[1][i],
+                        p.whichcast,
+                        p.ofsfiletype
+                    )
+                    logger_.info(
+                        'Calling OFS module for %s',
+                        p.whichcast,
+                    )
+                    result = get_node_ofs(p, logger_,
+                                          model_dataset=cached_model)
+                    if result is not None:
+                        cached_model = result
+                    break
+        return cached_model
+
+    parallel_cfg = get_parallel_config(logger)
+
+    def _skill_for_variable(variable, p):
+        """Process skill assessment for a single variable."""
         name_var = name_convent(variable)
 
         # =================================================================
@@ -502,15 +638,15 @@ def get_skill(prop, logger):
         # get_station_observations.py
         # =================================================================
         logger.info('Searching for the %s %s station ctl files',
-                    prop.ofs, variable)
-        ctl_path = os.path.join(prop.control_files_path,str(prop.ofs+'_'+\
+                    p.ofs, variable)
+        ctl_path = os.path.join(p.control_files_path,str(p.ofs+'_'+\
                                 name_var+'_station.ctl'))
         if os.path.isfile(ctl_path) is False:
             logger.info(
                 'Station ctl file not found. Creating station '
                 'ctl file!. This might take a couple of minutes'
             )
-            get_station_observations(prop, logger)
+            get_station_observations(p, logger)
         read_station_ctl_file = \
             station_ctl_file_extract(ctl_path)
         if read_station_ctl_file is not None:
@@ -518,118 +654,58 @@ def get_skill(prop, logger):
                 'Station ctl file (%s_%s_station.ctl) found in "%s/". '
                 'If you instead want to create a new Inventory file, '
                 'please change the name/delete the current %s_%s_station.ctl',
-                prop.ofs,
+                p.ofs,
                 name_var,
-                prop.control_files_path,
-                prop.ofs,
+                p.control_files_path,
+                p.ofs,
                 name_var,
             )
-    ######## Checking for the .obs files:
-            for i in range(0, len(read_station_ctl_file[0])):
-                obs_path = os.path.join(prop.data_observations_1d_station_path,
-                        str(read_station_ctl_file[0][i][0]+'_'+prop.ofs+'_'+\
-                            name_var+'_station.obs'))
-                if os.path.isfile(obs_path):
-                    if os.path.getsize(obs_path)> 0:
-                        logger.info(
-                            '%s/%s_%s_%s_station.obs found',
-                            prop.data_observations_1d_station_path,
-                            read_station_ctl_file[0][i][0],
-                            prop.ofs,
-                            name_var,
-                        )
-                    else:
-                        logger.error(
-                            '%s/%s_%s_%s_station.obs is empty',
-                            prop.data_observations_1d_station_path,
-                            read_station_ctl_file[0][i][0],
-                            prop.ofs,
-                            name_var,
-                        )
-
-                else:
-                    logger.error(
-                        '%s/%s_%s_%s_station.obs is missing, calling Obs Module',
-                        prop.data_observations_1d_station_path,
-                        read_station_ctl_file[0][i][0],
-                        prop.ofs,
-                        name_var,
-                    )
-
-                    get_station_observations(
-                        prop, logger)
-                    break
-
         else:
             logger.info('Observation ctl file for %s and %s is empty.',
-            prop.ofs,
+            p.ofs,
             name_var)
-            continue
+            return
 
-
+        # Ensure model ctl file exists (depends on station ctl file)
         logger.info('Searching for the %s %s model control files',
-                    prop.ofs, variable)
+                    p.ofs, variable)
+        cached_model = getattr(p, '_cached_model', None)
         read_ofs_ctl_file = ofs_ctlfile_extract(
-            prop, name_var, logger
+            p, name_var, logger, model_dataset=cached_model
         )  # lines, nodes, depths, shifts, ids
-        if read_ofs_ctl_file is not None:
-            ######## Checking for the .prd files:
-            for i in range(0, len(read_ofs_ctl_file[-1])):
-                if prop.whichcast == 'forecast_a':
-                    if os.path.isfile(
-                        f'{prop.data_model_1d_node_path}/'
-                        f'{read_ofs_ctl_file[-1][i]}_{prop.ofs}_{name_var}_'
-                        f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                        f'{prop.forecast_hr}_{prop.ofsfiletype}_model.prd'
-                    ) is False:
-                        logger.error(
-                            '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
-                            prop.data_model_1d_node_path,
-                            read_ofs_ctl_file[-1][i],
-                            prop.ofs,
-                            name_var,
-                            read_ofs_ctl_file[1][i],
-                            prop.whichcast,
-                            prop.forecast_hr,
-                            prop.ofsfiletype
-                        )
-                        logger.info(
-                            'Calling OFS module for %s',
-                            prop.whichcast,
-                        )
-                        get_node_ofs(prop, logger)
-                        break
-                else:
-                    if os.path.isfile(
-                        f'{prop.data_model_1d_node_path}/'
-                        f'{read_ofs_ctl_file[-1][i]}_{prop.ofs}_{name_var}_'
-                        f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                        f'{prop.ofsfiletype}_model.prd'
-                    ) is False:
-                        logger.info(
-                            '%s/%s_%s_%s_%s_%s_%s_model.prd is missing',
-                            prop.data_model_1d_node_path,
-                            read_ofs_ctl_file[-1][i],
-                            prop.ofs,
-                            name_var,
-                            read_ofs_ctl_file[1][i],
-                            prop.whichcast,
-                            prop.ofsfiletype
-                        )
-                        logger.info(
-                            'Calling OFS module for %s',
-                            prop.whichcast,
-                        )
-                        get_node_ofs(prop, logger)
-                        break
-        else:
+        cached_model = getattr(p, '_cached_model', cached_model)
+
+        if read_ofs_ctl_file is None:
             logger.info('Model ctl file for %s and %s is empty.',
-            prop.ofs,
+            p.ofs,
             name_var)
+        elif (parallel_cfg.get('parallel_workflow')
+              and read_station_ctl_file is not None):
+            # Parallel: check obs files + prd files concurrently
+            logger.info('Running obs and model checks in parallel for %s',
+                        variable)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                obs_future = executor.submit(
+                    _ensure_obs_files, read_station_ctl_file,
+                    copy.copy(p), name_var, logger)
+                prd_future = executor.submit(
+                    _ensure_prd_files, read_ofs_ctl_file,
+                    copy.copy(p), name_var, logger, cached_model)
+                obs_future.result()
+                cached_model = prd_future.result()
+                if cached_model is not None:
+                    p._cached_model = cached_model
+        else:
+            # Sequential: check obs files, then prd files
+            _ensure_obs_files(read_station_ctl_file, p, name_var, logger)
+            cached_model = _ensure_prd_files(
+                read_ofs_ctl_file, p, name_var, logger, cached_model)
+            if cached_model is not None:
+                p._cached_model = cached_model
 
         if read_ofs_ctl_file is not None:
             skill_results = skill(
-                read_station_ctl_file, read_ofs_ctl_file, prop,
+                read_station_ctl_file, read_ofs_ctl_file, p,
                 name_var, logger
             )
 
@@ -644,10 +720,10 @@ def get_skill(prop, logger):
 
                 #Make overview maps and save them
                 make_skill_maps.make_skill_maps(skill_results,
-                                                prop, name_var,
+                                                p, name_var,
                                                 logger)
                 if name_var == 'wl':
-                    tabledatum = prop.datum
+                    tabledatum = p.datum
                 else:
                     tabledatum= None
 
@@ -673,19 +749,19 @@ def get_skill(prop, logger):
                         'datum': tabledatum,
                         'Y': skill_results['Y'],
                         'X': skill_results['X'],
-                        'start_date': prop.start_date_full,
-                        'end_date': prop.end_date_full,
+                        'start_date': p.start_date_full,
+                        'end_date': p.end_date_full,
                     }
                 ).to_csv(
-                    r'' + f'{prop.data_skill_1d_table_path}/'
-                          f'skill_{prop.ofs}_'
-                    f'{variable}_{prop.whichcast}_{prop.ofsfiletype}.csv'
+                    r'' + f'{p.data_skill_1d_table_path}/'
+                          f'skill_{p.ofs}_'
+                    f'{variable}_{p.whichcast}_{p.ofsfiletype}.csv'
                 )
 
                 logger.info(
                     'Summary skill table for prop.ofs %s and variable %s '
                     'is created successfully',
-                    prop.ofs,
+                    p.ofs,
                     variable,
                 )
 
@@ -693,19 +769,25 @@ def get_skill(prop, logger):
                 logger.error(
                     'Fail to create summary skill table for OFS: %s and '
                     'variable: %s',
-                    prop.ofs,
+                    p.ofs,
                     variable,
                 )
         else:
             logger.error(
                 'Fail to create summary skill table for OFS: %s and '
                 'variable: %s',
-                prop.ofs,
+                p.ofs,
                 variable,
             )
 
+    # Variable processing runs sequentially here. Variable parallelism
+    # is handled inside get_node_ofs (which loads the model once and
+    # dispatches variable extraction in parallel).
+    for variable in prop.var_list:
+        _skill_for_variable(variable, prop)
+
     # Now collect forecast horizon time series, if ya want!
-    if (prop.horizonskill == True and
+    if (prop.horizonskill and
         prop.whichcast == 'forecast_b'):
         # Get all model time series, and put them in a big 'ol CSV file
         # Check to see if this has already been done

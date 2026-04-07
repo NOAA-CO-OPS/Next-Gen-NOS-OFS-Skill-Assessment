@@ -427,7 +427,89 @@ A skill assessment module called `get_node_ofs.py` handles the processing of OFS
 
 Finally, in the section called [settings], there is an option for the skill assessment to produce static (.png) images of all plots in addition to the standard Plotly interactive plots, if you need graphics for a document or slideshow. The .png images will be saved to `/working_directory/data/model/1d_node/prd_plots/`.
 
-### 3.3.2 logging.conf
+### 3.3.2 Parallelization Settings
+
+The `[parallelization]` section of `ofs_dps.conf` controls how many concurrent workers the skill assessment uses at each pipeline stage. The defaults are tuned for a typical workstation (4-8 cores), but you can adjust them for your system.
+
+#### Quick start
+
+The simplest approach is to set every worker count to `auto`:
+
+```ini
+[parallelization]
+parallel_enabled=True
+obs_coops_workers=auto
+obs_usgs_workers=auto
+obs_ndbc_workers=auto
+obs_chs_workers=auto
+model_download_workers=auto
+skill_workers=auto
+ha_workers=auto
+plot_workers=auto
+parallel_variables=False
+```
+
+`auto` scales the worker count based on your system's available CPU cores:
+
+| Task type | How `auto` scales | Why |
+|---|---|---|
+| **I/O-bound** (obs retrieval, model download, plotting, skill metrics) | Up to 2x CPU count (capped at 8-12) | Threads mostly wait on network or disk, so more threads than cores is beneficial |
+| **CPU-bound** (harmonic analysis) | CPU count - 1 (capped at 8) | utide runs in separate processes that fully use a core each; leaving one core free keeps the system responsive |
+
+#### Choosing manual values
+
+You can also set any worker count to a specific integer. Some guidelines:
+
+- **2-4 cores (laptop/VM):** `auto` works well; all I/O pools will be 4-8 workers, HA will use 1-3 processes. If you notice the system becoming unresponsive, lower `obs_coops_workers` and `obs_ndbc_workers` to 4.
+- **8-16 cores (workstation):** `auto` is a good starting point. If you're running long assessments with many stations and want to maximize throughput, you can set `obs_coops_workers=12` and `skill_workers=8`.
+- **32+ cores (HPC node):** The `auto` caps prevent over-subscribing API endpoints, but you can raise `ha_workers` up to 16 for large tidal analysis runs. I/O workers beyond 12 rarely help since the bottleneck shifts to the remote API.
+- **Shared/CI systems:** Set `parallel_enabled=False` to force fully sequential execution (all workers = 1). This uses minimal resources and produces deterministic ordering.
+
+#### Memory considerations
+
+Each parallel worker consumes memory. The main concern is `ha_workers` (harmonic analysis), which runs in separate processes that each get a full copy of the station data. If you see out-of-memory errors during tidal analysis, reduce `ha_workers` to 2-4.
+
+For `parallel_variables=True` (experimental), the model dataset is shared across variable-processing threads, but each thread allocates its own output arrays. Only enable this if you have ample RAM (16+ GB free).
+
+#### Disabling parallelization
+
+To run everything sequentially:
+
+```ini
+parallel_enabled=False
+```
+
+This forces all worker counts to 1 regardless of their individual settings. Useful for debugging, reproducing issues, or running on constrained systems.
+
+#### Experimental flags
+
+The following boolean flags enable additional parallelism at different pipeline stages. They are disabled by default and should be considered experimental. Enable them one at a time and verify results match sequential output before relying on them in production.
+
+| Flag | Effect |
+|---|---|
+| `parallel_variables` | Process multiple variables (wl, temp, salt, cu) concurrently within a single pipeline stage |
+| `parallel_workflow` | Run observation download and model extraction concurrently |
+| `parallel_stations` | Process stations in parallel during model extraction |
+| `parallel_plotting` | Generate station plots in parallel |
+| `parallel_forecast_cycles` | Process forecast_a cycles concurrently |
+| `parallel_obs_variables` | Download observations for all variables concurrently |
+| `parallel_2d_interp` | Parallelize 2D interpolation |
+
+These flags require sufficient memory and may produce interleaved log output. If you encounter issues, disable the flag and retry.
+
+#### Performance benchmarks
+
+Benchmarks on a 16-core Linux system running the full 1D skill assessment pipeline (model processing + obs retrieval + pairing + plotting):
+
+| OFS | Model | Sequential | Auto | Speedup |
+|---|---|---|---|---|
+| CBOFS | ROMS | 142s | 70s | **2.0x** |
+| LOOFS2 | SCHISM | 88s | 69s | **1.28x** |
+| SFBOFS | FVCOM | 32s | 26s | **1.25x** |
+
+Speedup scales with the number of stations in the OFS. The observation retrieval stage alone shows up to 3.4x improvement; the overall pipeline speedup is diluted by stages that are inherently sequential (inventory retrieval, model loading). Setting worker counts higher than `auto` provides no benefit and can reduce performance due to API rate limiting.
+
+### 3.3.3 logging.conf
 
 The second file, 'logging.conf', determines how the skill assessment collects logging entries -- used mainly for debugging -- as the software runs. You can read more about logging in [Sections 3.6.7](#367-logging) and [5](#5-troubleshooting).
 
