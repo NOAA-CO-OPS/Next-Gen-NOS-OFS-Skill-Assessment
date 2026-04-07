@@ -36,6 +36,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -171,6 +172,16 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
         - SPoRT processing returns early after completion
     """
     [logger, outdir] = param_val(netcdf_file_sat, prop1)
+
+    # Check parallel config for variable interpolation
+    from ofs_skill.obs_retrieval.utils import get_parallel_config
+    parallel_cfg = get_parallel_config(logger)
+    use_parallel_interp = parallel_cfg.get('parallel_2d_interp', False)
+    if use_parallel_interp:
+        logger.info('Parallel 2D variable interpolation is ENABLED')
+    else:
+        logger.info('Parallel 2D variable interpolation is DISABLED '
+                     '(sequential mode)')
 
     # Read and process netcdf
     # logger.info("--- Reading NETCDF files ---")
@@ -361,6 +372,8 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
 
         try:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
+            # Build task list for all variables
+            daily_var_tasks = []
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -377,10 +390,20 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=True,
                 )
-                _process_and_write_variable(
-                    var_name, data_1d, lons_src, lats_src,
-                    lon_grid, lat_grid, output_file, logger, prop1,
+                daily_var_tasks.append(
+                    (var_name, data_1d, lons_src, lats_src, output_file),
                 )
+
+            if use_parallel_interp:
+                _process_variables_parallel(
+                    daily_var_tasks, lon_grid, lat_grid, logger, prop1,
+                )
+            else:
+                for var_name, data_1d, lons_src, lats_src, output_file in daily_var_tasks:
+                    _process_and_write_variable(
+                        var_name, data_1d, lons_src, lats_src,
+                        lon_grid, lat_grid, output_file, logger, prop1,
+                    )
         except Exception as e:
             logger.error('Problem writing daily averaged model JSON file: %s', e)
 
@@ -436,6 +459,8 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
             logger.warning('Model time not found for %s', dtime)
         else:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
+            # Build task list for all variables at this timestamp
+            hourly_var_tasks = []
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -452,10 +477,20 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=False,
                 )
-                _process_and_write_variable(
-                    var_name, data_1d, lons_src, lats_src,
-                    lon_grid, lat_grid, output_file, logger, prop1,
+                hourly_var_tasks.append(
+                    (var_name, data_1d, lons_src, lats_src, output_file),
                 )
+
+            if use_parallel_interp:
+                _process_variables_parallel(
+                    hourly_var_tasks, lon_grid, lat_grid, logger, prop1,
+                )
+            else:
+                for var_name, data_1d, lons_src, lats_src, output_file in hourly_var_tasks:
+                    _process_and_write_variable(
+                        var_name, data_1d, lons_src, lats_src,
+                        lon_grid, lat_grid, output_file, logger, prop1,
+                    )
 
         # Process satellite data (only if satellite data is available)
         if has_satellite_data:
@@ -654,6 +689,60 @@ def _process_and_write_variable(
     write_2d_arrays_to_json(
         lat_grid, lon_grid, np.round(interpolated, decimals=2), output_file,
     )
+
+
+def _process_variables_parallel(
+    var_tasks: list[tuple],
+    lon_grid: npt.NDArray,
+    lat_grid: npt.NDArray,
+    logger: Logger,
+    prop1,
+) -> None:
+    """
+    Process multiple model variables in parallel using ThreadPoolExecutor.
+
+    Each task is a tuple of (var_name, data_1d, lons_src, lats_src, output_file).
+    The interp_grid() function releases the GIL during numpy/scipy/pyinterp
+    C-level operations, so threads achieve real parallelism for IDW
+    interpolation.
+
+    Args:
+        var_tasks: List of (var_name, data_1d, lons_src, lats_src, output_file)
+        lon_grid: Target grid longitudes (2D meshgrid)
+        lat_grid: Target grid latitudes (2D meshgrid)
+        logger: Logger instance
+        prop1: Properties object with ofs attribute
+    """
+    max_workers = min(len(var_tasks), 4)
+    logger.info(
+        'Starting parallel variable interpolation: %d variables, '
+        'max_workers=%d',
+        len(var_tasks), max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for var_name, data_1d, lons_src, lats_src, output_file in var_tasks:
+            future = executor.submit(
+                _process_and_write_variable,
+                var_name, data_1d, lons_src, lats_src,
+                lon_grid, lat_grid, output_file, logger, prop1,
+            )
+            futures[future] = var_name
+
+        for future in as_completed(futures):
+            var_name = futures[future]
+            try:
+                future.result()
+                logger.info(
+                    'Parallel interpolation complete for variable: %s',
+                    var_name,
+                )
+            except Exception as e:
+                logger.error(
+                    'Parallel interpolation failed for variable %s: %s',
+                    var_name, e,
+                )
 
 
 def interp_grid(

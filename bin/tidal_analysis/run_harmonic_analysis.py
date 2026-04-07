@@ -74,6 +74,7 @@ Author Name: AJK       Creation Date: 02/26/2026
 """
 
 import argparse
+import copy
 import logging
 import logging.config
 import os
@@ -81,6 +82,7 @@ import sys
 import traceback
 import urllib.error
 import warnings
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +99,7 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
     retrieve_tidal_predictions,
 )
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
 from ofs_skill.tidal_analysis import (
     DEFAULT_AMP_THRESHOLD_M,
@@ -158,6 +161,69 @@ def ofs_ctlfile_read(prop, name_var, logger):
     return None
 
 
+def _run_ha_worker(work_item):
+    """
+    Top-level worker function for ProcessPoolExecutor.
+
+    Must be a module-level function (not nested/closure) so it is picklable.
+    Accepts a single dict with all data needed to run HA for one
+    station x cast combination.
+
+    Returns
+    -------
+    dict
+        ``{'station_id': ..., 'cast': ..., 'status': 'ok'}`` on success, or
+        ``{'station_id': ..., 'cast': ..., 'status': 'error', 'error': ...}``
+        on failure.
+    """
+    station_id = work_item['station_id']
+    cast = work_item['cast']
+
+    # Reconstruct a lightweight prop-like object from the serializable dict
+    prop = SimpleNamespace(**work_item['prop_dict'])
+
+    # Create a per-worker logger (logging.getLogger is safe in subprocesses)
+    logger = logging.getLogger(f'ha_worker.{station_id}.{cast}')
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+        )
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+    # Suppress utide warnings in the worker process
+    warnings.filterwarnings('ignore', module='utide')
+
+    try:
+        _run_ha_for_station(
+            work_item['paired_data'],
+            prop,
+            station_id,
+            work_item['node_id'],
+            work_item['latitude'],
+            work_item['variable'],
+            work_item['name_var'],
+            work_item['min_duration_days'],
+            work_item['do_predictions'],
+            work_item['amp_threshold'],
+            work_item['phase_threshold'],
+            work_item['vector_diff_threshold'],
+            cast,
+            logger,
+            config_file=work_item.get('config_file'),
+        )
+        return {'station_id': station_id, 'cast': cast, 'status': 'ok'}
+    except Exception as ex:
+        return {
+            'station_id': station_id,
+            'cast': cast,
+            'status': 'error',
+            'error': str(ex),
+            'traceback': traceback.format_exc(),
+        }
+
+
 def run_harmonic_analysis_station_loop(
     read_ofs_ctl_file, prop, var_info, min_duration_days, do_predictions,
     amp_threshold, phase_threshold, vector_diff_threshold, logger
@@ -205,6 +271,11 @@ def run_harmonic_analysis_station_loop(
     stations_skipped = 0
     skip_reasons = []
     get_skill_attempted = False
+
+    # ------------------------------------------------------------------
+    # Phase 1: Build work items (sequential — I/O bound, validates data)
+    # ------------------------------------------------------------------
+    work_items = []
 
     for i in range(len(read_ofs_ctl_file[1])):
         station_id = read_ofs_ctl_file[-1][i]
@@ -285,32 +356,89 @@ def run_harmonic_analysis_station_loop(
                 )
                 continue
 
-            # Set whichcast for this iteration (don't mutate prop.whichcast
-            # until we need it for _run_ha_for_station)
-            prop.whichcast = whichcast_lower
+            # Build a serializable prop dict for the worker
+            prop_dict = {
+                'ofs': prop.ofs,
+                'whichcast': whichcast_lower,
+                'start_date_full': prop.start_date_full,
+                'end_date_full': prop.end_date_full,
+                'datum': prop.datum,
+                'ofsfiletype': prop.ofsfiletype,
+                'tidal_analysis_path': prop.tidal_analysis_path,
+                'prediction_format': getattr(prop, 'prediction_format', 'consolidated'),
+            }
 
-            # Run harmonic analysis for this station/cast
-            try:
-                _run_ha_for_station(
-                    paired_data, prop, station_id, node_id, latitude,
-                    variable, name_var, min_duration_days, do_predictions,
-                    amp_threshold, phase_threshold, vector_diff_threshold,
-                    cast, logger, config_file=_conf,
-                )
-                logger.info(
-                    'HA completed for station %s (%s).', station_id, cast,
-                )
-                stations_processed += 1
-            except Exception as ex:
-                logger.error(
-                    'HA failed for station %s (%s): %s. Skipping.\n%s',
-                    station_id, cast, ex, traceback.format_exc(),
-                )
-                stations_skipped += 1
-                skip_reasons.append(f'{station_id}: HA error - {ex}')
+            work_items.append({
+                'paired_data': paired_data,
+                'prop_dict': prop_dict,
+                'station_id': station_id,
+                'node_id': node_id,
+                'latitude': latitude,
+                'variable': variable,
+                'name_var': name_var,
+                'min_duration_days': min_duration_days,
+                'do_predictions': do_predictions,
+                'amp_threshold': amp_threshold,
+                'phase_threshold': phase_threshold,
+                'vector_diff_threshold': vector_diff_threshold,
+                'cast': cast,
+                'config_file': _conf,
+            })
 
     # ------------------------------------------------------------------
-    # Summary
+    # Phase 2: Dispatch work items to ProcessPoolExecutor
+    # ------------------------------------------------------------------
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['ha_workers']
+
+    if work_items:
+        logger.info(
+            'Dispatching %d work items to ProcessPoolExecutor '
+            '(max_workers=%d).',
+            len(work_items), max_workers,
+        )
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_run_ha_worker, item): item
+                for item in work_items
+            }
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    result = future.result()
+                except Exception as ex:
+                    # Unexpected executor-level failure
+                    logger.error(
+                        'Executor error for station %s (%s): %s',
+                        item['station_id'], item['cast'], ex,
+                    )
+                    stations_skipped += 1
+                    skip_reasons.append(
+                        f"{item['station_id']}: executor error - {ex}"
+                    )
+                    continue
+
+                if result['status'] == 'ok':
+                    logger.info(
+                        'HA completed for station %s (%s).',
+                        result['station_id'], result['cast'],
+                    )
+                    stations_processed += 1
+                else:
+                    logger.error(
+                        'HA failed for station %s (%s): %s. Skipping.\n%s',
+                        result['station_id'], result['cast'],
+                        result.get('error', 'unknown'),
+                        result.get('traceback', ''),
+                    )
+                    stations_skipped += 1
+                    skip_reasons.append(
+                        f"{result['station_id']}: HA error - "
+                        f"{result.get('error', 'unknown')}"
+                    )
+
+    # ------------------------------------------------------------------
+    # Phase 3: Summary
     # ------------------------------------------------------------------
     logger.info('--- Harmonic Analysis Summary for %s ---', variable)
     logger.info('Stations processed: %d', stations_processed)
@@ -935,7 +1063,8 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 7. Variable loop
     # ------------------------------------------------------------------
-    for variable in prop.var_list:
+    def _ha_for_variable(variable, p):
+        """Run harmonic analysis for a single variable."""
         if variable == 'water_level':
             name_var = 'wl'
             list_of_headings = [
@@ -956,25 +1085,43 @@ def run_harmonic_analysis(prop, logger):
                 'Variable %s is not valid for harmonic analysis. Skipping.',
                 variable
             )
-            continue
+            return
 
         var_info = [variable, name_var, list_of_headings]
 
         # Read OFS model ctl files
-        read_ofs_ctl_file = ofs_ctlfile_read(prop, name_var, logger)
+        read_ofs_ctl_file = ofs_ctlfile_read(p, name_var, logger)
 
         if read_ofs_ctl_file is not None:
             run_harmonic_analysis_station_loop(
-                read_ofs_ctl_file, prop, var_info,
-                prop.min_duration_days, prop.do_predictions,
-                prop.amp_threshold, prop.phase_threshold,
-                prop.vector_diff_threshold, logger
+                read_ofs_ctl_file, p, var_info,
+                p.min_duration_days, p.do_predictions,
+                p.amp_threshold, p.phase_threshold,
+                p.vector_diff_threshold, logger
             )
         else:
             logger.error(
                 'Could not read/create control file for %s. '
                 'Skipping variable.', variable
             )
+
+    # Dispatch variable processing — parallel or sequential
+    parallel_cfg = get_parallel_config(logger)
+    ha_vars = [v for v in prop.var_list if v in ('water_level', 'currents')]
+    if parallel_cfg['parallel_variables'] and len(ha_vars) > 1:
+        logger.info('Processing %d HA variables in parallel', len(ha_vars))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = []
+            for variable in ha_vars:
+                prop_local = copy.deepcopy(prop)
+                prop_local.var_list = [variable]
+                futures.append(executor.submit(
+                    _ha_for_variable, variable, prop_local))
+            for f in futures:
+                f.result()
+    else:
+        for variable in prop.var_list:
+            _ha_for_variable(variable, prop)
 
     logger.info('--- Harmonic Analysis Process Complete ---')
     return logger

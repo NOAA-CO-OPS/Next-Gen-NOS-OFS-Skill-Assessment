@@ -11,15 +11,77 @@ automatic retry logic for temperature and salinity using backup URLs.
 
 import json
 import math
-import urllib.request
 from datetime import datetime, timedelta
 from logging import Logger
 from typing import Optional
 from urllib.error import HTTPError
 
 import pandas as pd
+import requests
+from requests.adapters import HTTPAdapter
 
 from ofs_skill.obs_retrieval import t_and_c_properties, utils
+
+# ---------------------------------------------------------------------------
+# Module-level HTTP session with connection pooling (Task 2)
+# ---------------------------------------------------------------------------
+_session = None
+
+
+def _get_session():
+    """Lazily create and return a shared requests.Session with connection pooling."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
+        _session.mount('https://', adapter)
+        _session.mount('http://', adapter)
+    return _session
+
+
+# ---------------------------------------------------------------------------
+# Module-level cache for station depth metadata (Task 3)
+# ---------------------------------------------------------------------------
+_depth_cache = {}  # station_id -> depth_data
+
+
+def _get_station_depth(station_id, mdapi_url, logger):
+    """Fetch station depth/bins metadata, returning cached result when available.
+
+    Parameters
+    ----------
+    station_id : str
+        CO-OPS station identifier.
+    mdapi_url : str
+        Base URL for the CO-OPS metadata API.
+    logger : Logger
+        Logger instance.
+
+    Returns
+    -------
+    dict or None
+        Parsed JSON response from the bins endpoint, or None on failure.
+    """
+    if station_id in _depth_cache:
+        logger.info(
+            'Using cached depth metadata for station %s.', station_id)
+        return _depth_cache[station_id]
+
+    url = f'{mdapi_url}/webapi/stations/{station_id}/bins.json?units=metric'
+    try:
+        response = _get_session().get(url, timeout=120)
+        response.raise_for_status()
+        depth_data = response.json()
+        logger.info(
+            'CO-OPS depth retrieval complete for station %s.', station_id)
+    except requests.exceptions.RequestException as ex:
+        logger.error(
+            'CO-OPS depth metadata retrieval failed for station %s: %s',
+            station_id, ex)
+        depth_data = None
+
+    _depth_cache[station_id] = depth_data
+    return depth_data
 
 
 def retrieve_t_and_c_station(
@@ -142,51 +204,49 @@ def retrieve_t_and_c_station(
 
         if variable in {'water_temperature', 'salinity'}:
             try:
-                with urllib.request.urlopen(t_c.station_url) as url:
-                    obs = json.load(url)
+                response = _get_session().get(t_c.station_url, timeout=120)
+                response.raise_for_status()
+                obs = response.json()
                 logger.info(
                     'CO-OPS station %s contacted for %s retrieval.',
                     retrieve_input.station, variable)
-            except HTTPError as ex_1:
-                error_msg = get_HTTP_error(ex_1)
+            except requests.exceptions.RequestException as ex_1:
                 logger.error(
                     'CO-OPS %s observation retrieval failed for station %s! '
-                    'HTTP %s %s\n%s',
-                    variable, retrieve_input.station, ex_1.code, ex_1.reason,
-                    error_msg
+                    '%s',
+                    variable, retrieve_input.station, ex_1
                 )
-                logger.error(f'Exception caught: {ex_1}')
+                logger.error('Exception caught: %s', ex_1)
                 try:
-                    with urllib.request.urlopen(t_c.station_url_2) as url_2:
-                        obs = json.load(url_2)
+                    response_2 = _get_session().get(
+                        t_c.station_url_2, timeout=120)
+                    response_2.raise_for_status()
+                    obs = response_2.json()
                     logger.info(
                         'CO-OPS backup station %s contacted for %s retrieval.',
                         retrieve_input.station, variable)
-                except HTTPError as ex_2:
-                    error_msg = get_HTTP_error(ex_2)
+                except requests.exceptions.RequestException as ex_2:
                     logger.error(
                         'Backup CO-OPS %s observation retrieval failed for '
-                        'station %s! HTTP %s %s\n%s',
-                        variable, retrieve_input.station, ex_2.code,
-                        ex_2.reason, error_msg
+                        'station %s! %s',
+                        variable, retrieve_input.station, ex_2
                     )
                     logger.error('Exception caught: %s', ex_2)
                     t_c.start_dt += t_c.delta
                     continue
         else:
             try:
-                with urllib.request.urlopen(t_c.station_url) as url:
-                    obs = json.load(url)
+                response = _get_session().get(t_c.station_url, timeout=120)
+                response.raise_for_status()
+                obs = response.json()
                 logger.info(
                     'CO-OPS station %s contacted for %s retrieval.',
                     retrieve_input.station, variable)
-            except HTTPError as ex:
-                error_msg = get_HTTP_error(ex)
+            except requests.exceptions.RequestException as ex:
                 logger.error(
                     'CO-OPS %s observation retrieval failed for station %s! '
-                    'HTTP %s %s\n%s',
-                    variable, retrieve_input.station, ex.code, ex.reason,
-                    error_msg
+                    '%s',
+                    variable, retrieve_input.station, ex
                 )
                 logger.error('Exception caught: %s', ex)
                 t_c.start_dt += t_c.delta
@@ -221,23 +281,10 @@ def retrieve_t_and_c_station(
 
         t_c.start_dt += t_c.delta
 
-    # Retrieve observation depth from metadata API
+    # Retrieve observation depth from metadata API (cached per station)
     t_c.depth = 0.0
-    t_c.depth_url = None
-    try:
-        t_c.station_url = (
-            f'{t_c.mdapi_url}/webapi/stations/{str(retrieve_input.station)}'
-            f'/bins.json'
-            f'?units=metric'
-        )
-        with urllib.request.urlopen(t_c.station_url) as url:
-            t_c.depth_url = json.load(url)
-            logger.info(
-                'CO-OPS %s depth retrieval complete for station %s.',
-                variable, retrieve_input.station)
-    except HTTPError as ex:
-        logger.error('CO-OPS %s observation retrieval failed!', variable)
-        logger.error('Exception caught: %s', ex)
+    t_c.depth_url = _get_station_depth(
+        str(retrieve_input.station), t_c.mdapi_url, logger)
 
     if (
         t_c.depth_url is not None
@@ -361,13 +408,14 @@ def retrieve_tidal_predictions(
         )
 
         try:
-            with urllib.request.urlopen(t_c.station_url) as url:
-                obs = json.load(url)
+            response = _get_session().get(t_c.station_url, timeout=120)
+            response.raise_for_status()
+            obs = response.json()
             logger.info(
                 'CO-OPS station %s contacted for tidal predictions.',
                 retrieve_input.station
             )
-        except HTTPError as ex:
+        except requests.exceptions.RequestException as ex:
             logger.warning(
                 'CO-OPS tidal predictions retrieval failed for %s: %s',
                 retrieve_input.station, ex
@@ -487,18 +535,17 @@ def retrieve_harmonic_constants(
     )
 
     try:
-        with urllib.request.urlopen(harcon_url, timeout=TIMEOUT_SEC) as url:
-            response = json.load(url)
+        resp = _get_session().get(harcon_url, timeout=TIMEOUT_SEC)
+        resp.raise_for_status()
+        response = resp.json()
         logger.info(
             'CO-OPS station %s contacted for harmonic constants retrieval.',
             station,
         )
-    except HTTPError as ex:
-        error_msg = get_HTTP_error(ex)
+    except requests.exceptions.RequestException as ex:
         logger.error(
-            'CO-OPS harmonic constants retrieval failed for station %s! '
-            'HTTP %s %s\n%s',
-            station, ex.code, ex.reason, error_msg,
+            'CO-OPS harmonic constants retrieval failed for station %s! %s',
+            station, ex,
         )
         return None
     except Exception as ex:
@@ -606,8 +653,9 @@ def find_nearest_tidal_stations(
     stations_url = f'{mdapi_url}/webapi/stations.json?type=tidepredictions'
 
     try:
-        with urllib.request.urlopen(stations_url) as url:
-            stations_data = json.load(url)
+        response = _get_session().get(stations_url, timeout=120)
+        response.raise_for_status()
+        stations_data = response.json()
     except Exception as ex:
         logger.warning('Could not retrieve CO-OPS tidal stations list: %s', ex)
         return []

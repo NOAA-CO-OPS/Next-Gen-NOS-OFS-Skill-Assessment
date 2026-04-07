@@ -12,6 +12,7 @@ import socket
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
@@ -20,6 +21,7 @@ import numpy as np
 
 from ofs_skill.model_processing import get_fcst_cycle, model_properties
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 
 TIMEOUT_SEC = 60  # default API timeout in seconds
 socket.setdefaulttimeout(TIMEOUT_SEC)
@@ -498,6 +500,80 @@ def list_of_urls(file_list, prop, logger):
     return url_list
 
 
+def _download_single_file(mod_dat, savepath, ofs, logger):
+    """
+    Download a single model output file from the NODD.
+
+    Handles stofs vs non-stofs path construction, skips files that already
+    exist locally, and retries up to 3 times on HTTP 503 errors with
+    exponential backoff.
+
+    Parameters
+    ----------
+    mod_dat : str
+        Full URL of the file to download.
+    savepath : str
+        Local base path for saving downloaded files.
+    ofs : str
+        OFS name (e.g. 'cbofs', 'stofs_3d_atl').
+    logger : logging.Logger
+        Logger instance.
+
+    Returns
+    -------
+    str or None
+        The local file path on success, None on failure.
+    """
+    max_retries = 3
+    backoff_seconds = 1
+
+    try:
+        # Build the local file path based on OFS type
+        if ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/')
+        elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/').replace(
+                'STOFS-3D-Atl/', 'stofs_3d_atl/',
+            )
+        else:
+            # stofs_2d_global or other future stofs variants
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/')
+
+        # Skip if file already exists
+        if os.path.isfile(local_path):
+            logger.info('File already exists, skipping: %s', local_path)
+            return local_path
+
+        logger.info('Downloading model data: %s', mod_dat)
+        url = mod_dat.replace('\\', '/')
+
+        # Retry loop for transient HTTP errors
+        for attempt in range(max_retries):
+            try:
+                urllib.request.urlretrieve(url, local_path)
+                return local_path
+            except HTTPError as e:
+                if e.code == 503 and attempt < max_retries - 1:
+                    wait = backoff_seconds * (2 ** attempt)
+                    logger.warning(
+                        'HTTP 503 for %s, retrying in %ds (attempt %d/%d)',
+                        mod_dat, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+
+    except Exception as ex:
+        logger.error('Error: %s. Download failed %s!', ex, mod_dat)
+        return None
+
+
 def download_data(prop, list_of_urls1, dir_list, logger):
     """
     This function gets the model output files from the NODD using the list
@@ -539,52 +615,19 @@ def download_data(prop, list_of_urls1, dir_list, logger):
         sys.exit(-1)
         # list_of_urls = list_of_urls2
 
-    for mod_dat in list_of_urls_main:
-        try:
-            logger.info(f'Downloading model data: {mod_dat}')
-            if prop.ofs not in (
-                'stofs_3d_atl', 'stofs_3d_pac',
-                'stofs_2d_glo',
-            ):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/')):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/'),
-                    )
-            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/').replace(
-                    'STOFS-3D-Atl/',
-                    'stofs_3d_atl/',
-                )):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/').replace(
-                            'STOFS-3D-Atl/',
-                            'stofs_3d_atl/',
-                        ),
-                    )
-            elif prop.ofs in ('stofs_2d_glo'):
-                if not os.path.isfile(
-                    (savepath + mod_dat.split('.com')[-1]).replace('//', '/')
-                ):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'),
-                        (savepath + mod_dat.split('.com')[-1]).replace('//', '/'),
-                    )
+    # Download remaining files in parallel
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['model_download_workers']
 
-        except (ValueError, HTTPError, Exception) as ex:
-            logger.error('Error: %s. Download failed %s!', ex, mod_dat)
-            # sys.exit(-1)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _download_single_file, mod_dat, savepath, prop.ofs, logger,
+            ): mod_dat
+            for mod_dat in list_of_urls_main
+        }
+        for future in as_completed(futures):
+            future.result()  # raise exceptions from worker if any
 
 
 def get_model_data(prop, logger):
