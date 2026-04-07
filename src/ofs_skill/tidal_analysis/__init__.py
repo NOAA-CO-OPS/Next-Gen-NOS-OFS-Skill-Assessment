@@ -14,7 +14,13 @@ Provides functionality for:
 """
 
 from ofs_skill.tidal_analysis.constituent_table import (
+    DEFAULT_AMP_THRESHOLD_M,
+    DEFAULT_PHASE_THRESHOLD_DEG,
+    DEFAULT_VECTOR_DIFF_THRESHOLD_M,
+    MAJOR_CONSTITUENTS,
     build_constituent_table,
+    compute_constituent_summary_stats,
+    flag_constituent_exceedances,
     write_constituent_table_csv,
 )
 from ofs_skill.tidal_analysis.constituents import (
@@ -37,7 +43,10 @@ from ofs_skill.tidal_analysis.filtering import (
     compute_nontidal_residual,
     fourier_lowpass_filter,
 )
-from ofs_skill.tidal_analysis.ha_comparison import compare_harmonic_constants
+from ofs_skill.tidal_analysis.ha_comparison import (
+    compare_harmonic_constants,
+    compute_prediction_verification,
+)
 from ofs_skill.tidal_analysis.harmonic_analysis import harmonic_analysis
 from ofs_skill.tidal_analysis.persistence import build_persistence_forecast
 from ofs_skill.tidal_analysis.preprocessing import to_equal_interval
@@ -77,4 +86,12 @@ __all__ = [
     # Constituent statistics table
     'build_constituent_table',
     'write_constituent_table_csv',
+    'compute_constituent_summary_stats',
+    'flag_constituent_exceedances',
+    'MAJOR_CONSTITUENTS',
+    'DEFAULT_AMP_THRESHOLD_M',
+    'DEFAULT_PHASE_THRESHOLD_DEG',
+    'DEFAULT_VECTOR_DIFF_THRESHOLD_M',
+    # Prediction verification
+    'compute_prediction_verification',
 ]

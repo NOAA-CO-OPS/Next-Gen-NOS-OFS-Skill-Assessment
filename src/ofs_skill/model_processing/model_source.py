@@ -52,6 +52,9 @@ def get_model_source(ofs: str) -> str:
 
     **SCHISM** - Semi-implicit Cross-scale Hydroscience Integrated System Model
     - Used by: STOFS_3D_ATL, STOFS_3D_PAC, LOOFS-NEXTGEN
+
+    **ADCIRC** - ADvanced CIRCulation Model
+    - Used by: STOFS_2D_GLO
     """
     ofs_lower = ofs.lower()
 
@@ -67,6 +70,9 @@ def get_model_source(ofs: str) -> str:
 
     elif ofs_lower in ('stofs_3d_atl', 'stofs_3d_pac', 'loofs2'):
         return 'schism'
+    
+    elif ofs_lower in ('stofs_2d_glo'):
+        return 'adcirc'
 
     else:
         raise ValueError(

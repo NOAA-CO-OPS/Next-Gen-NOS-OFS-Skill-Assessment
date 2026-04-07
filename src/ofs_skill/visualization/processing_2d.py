@@ -36,6 +36,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -176,6 +177,16 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
         - SPoRT processing returns early after completion
     """
     [logger, outdir] = param_val(netcdf_file_sat, prop1)
+
+    # Check parallel config for variable interpolation
+    from ofs_skill.obs_retrieval.utils import get_parallel_config
+    parallel_cfg = get_parallel_config(logger)
+    use_parallel_interp = parallel_cfg.get('parallel_2d_interp', False)
+    if use_parallel_interp:
+        logger.info('Parallel 2D variable interpolation is ENABLED')
+    else:
+        logger.info('Parallel 2D variable interpolation is DISABLED '
+                     '(sequential mode)')
 
     # Read and process netcdf
     # logger.info("--- Reading NETCDF files ---")
@@ -369,6 +380,8 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
         try:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
             daily_interp_cache = {}
+            # Build task list for all variables
+            daily_var_tasks = []
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -385,12 +398,22 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=True,
                 )
-                result = _process_and_write_variable(
-                    var_name, data_1d, lons_src, lats_src,
-                    lon_grid, lat_grid, output_file, logger, prop1,
+                daily_var_tasks.append(
+                    (var_name, data_1d, lons_src, lats_src, output_file),
                 )
-                if var_name in VELOCITY_VARS:
-                    daily_interp_cache[var_name] = result
+
+            if use_parallel_interp:
+                daily_interp_cache = _process_variables_parallel(
+                    daily_var_tasks, lon_grid, lat_grid, logger, prop1,
+                )
+            else:
+                for var_name, data_1d, lons_src, lats_src, output_file in daily_var_tasks:
+                    result = _process_and_write_variable(
+                        var_name, data_1d, lons_src, lats_src,
+                        lon_grid, lat_grid, output_file, logger, prop1,
+                    )
+                    if var_name in VELOCITY_VARS:
+                        daily_interp_cache[var_name] = result
 
             # Compute and write daily current magnitude/direction ASCII grids
             if 'ssu' in daily_interp_cache and 'ssv' in daily_interp_cache:
@@ -476,6 +499,8 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
         else:
             logger.info('--- Resampling %s grid ---', prop1.model_source.upper())
             interpolated_cache = {}
+            # Build task list for all variables at this timestamp
+            hourly_var_tasks = []
             for var_name in MODEL_VAR_NAMES:
                 lons_src, lats_src = _get_model_coords_for_var(
                     var_name, prop1.model_source, lons, lats,
@@ -492,12 +517,22 @@ def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
                     outdir[0], prop1.ofs, dtime, var_name,
                     prop1.whichcast, is_daily=False,
                 )
-                result = _process_and_write_variable(
-                    var_name, data_1d, lons_src, lats_src,
-                    lon_grid, lat_grid, output_file, logger, prop1,
+                hourly_var_tasks.append(
+                    (var_name, data_1d, lons_src, lats_src, output_file),
                 )
-                if var_name in VELOCITY_VARS:
-                    interpolated_cache[var_name] = result
+
+            if use_parallel_interp:
+                interpolated_cache = _process_variables_parallel(
+                    hourly_var_tasks, lon_grid, lat_grid, logger, prop1,
+                )
+            else:
+                for var_name, data_1d, lons_src, lats_src, output_file in hourly_var_tasks:
+                    result = _process_and_write_variable(
+                        var_name, data_1d, lons_src, lats_src,
+                        lon_grid, lat_grid, output_file, logger, prop1,
+                    )
+                    if var_name in VELOCITY_VARS:
+                        interpolated_cache[var_name] = result
 
             # Compute and write current magnitude/direction ASCII grids
             if 'ssu' in interpolated_cache and 'ssv' in interpolated_cache:
@@ -781,6 +816,67 @@ def _compute_current_mag_dir(
     magnitude = np.sqrt(ssu_grid**2 + ssv_grid**2)
     direction = np.degrees(np.arctan2(ssu_grid, ssv_grid)) % 360
     return magnitude, direction
+
+
+def _process_variables_parallel(
+    var_tasks: list[tuple],
+    lon_grid: npt.NDArray,
+    lat_grid: npt.NDArray,
+    logger: Logger,
+    prop1,
+) -> dict[str, npt.NDArray]:
+    """
+    Process multiple model variables in parallel using ThreadPoolExecutor.
+
+    Each task is a tuple of (var_name, data_1d, lons_src, lats_src, output_file).
+    The interp_grid() function releases the GIL during numpy/scipy/pyinterp
+    C-level operations, so threads achieve real parallelism for IDW
+    interpolation.
+
+    Args:
+        var_tasks: List of (var_name, data_1d, lons_src, lats_src, output_file)
+        lon_grid: Target grid longitudes (2D meshgrid)
+        lat_grid: Target grid latitudes (2D meshgrid)
+        logger: Logger instance
+        prop1: Properties object with ofs attribute
+
+    Returns:
+        Dict mapping velocity variable names to their interpolated grids.
+    """
+    max_workers = min(len(var_tasks), 4)
+    logger.info(
+        'Starting parallel variable interpolation: %d variables, '
+        'max_workers=%d',
+        len(var_tasks), max_workers,
+    )
+
+    velocity_cache: dict[str, npt.NDArray] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for var_name, data_1d, lons_src, lats_src, output_file in var_tasks:
+            future = executor.submit(
+                _process_and_write_variable,
+                var_name, data_1d, lons_src, lats_src,
+                lon_grid, lat_grid, output_file, logger, prop1,
+            )
+            futures[future] = var_name
+
+        for future in as_completed(futures):
+            var_name = futures[future]
+            try:
+                result = future.result()
+                if var_name in VELOCITY_VARS:
+                    velocity_cache[var_name] = result
+                logger.info(
+                    'Parallel interpolation complete for variable: %s',
+                    var_name,
+                )
+            except Exception as e:
+                logger.error(
+                    'Parallel interpolation failed for variable %s: %s',
+                    var_name, e,
+                )
+    return velocity_cache
 
 
 def interp_grid(

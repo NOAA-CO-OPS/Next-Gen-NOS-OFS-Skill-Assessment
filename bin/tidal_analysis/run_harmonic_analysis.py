@@ -73,13 +73,18 @@ Author Name: AJK       Creation Date: 02/26/2026
 """
 
 import argparse
+import copy
 import logging
 import logging.config
 import os
 import sys
+import traceback
+import urllib.error
 import warnings
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -88,12 +93,22 @@ from ofs_skill.model_processing import (
     parse_ofs_ctlfile,
 )
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
-from ofs_skill.obs_retrieval.retrieve_t_and_c_station import retrieve_harmonic_constants
+from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
+    retrieve_harmonic_constants,
+    retrieve_tidal_predictions,
+)
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
 from ofs_skill.tidal_analysis import (
+    DEFAULT_AMP_THRESHOLD_M,
+    DEFAULT_PHASE_THRESHOLD_DEG,
+    DEFAULT_VECTOR_DIFF_THRESHOLD_M,
     build_constituent_table,
+    compute_constituent_summary_stats,
     compute_nontidal_residual,
+    compute_prediction_verification,
+    flag_constituent_exceedances,
     harmonic_analysis,
     predict_tide,
     to_equal_interval,
@@ -145,8 +160,71 @@ def ofs_ctlfile_read(prop, name_var, logger):
     return None
 
 
+def _run_ha_worker(work_item):
+    """
+    Top-level worker function for ProcessPoolExecutor.
+
+    Must be a module-level function (not nested/closure) so it is picklable.
+    Accepts a single dict with all data needed to run HA for one
+    station x cast combination.
+
+    Returns
+    -------
+    dict
+        ``{'station_id': ..., 'cast': ..., 'status': 'ok'}`` on success, or
+        ``{'station_id': ..., 'cast': ..., 'status': 'error', 'error': ...}``
+        on failure.
+    """
+    station_id = work_item['station_id']
+    cast = work_item['cast']
+
+    # Reconstruct a lightweight prop-like object from the serializable dict
+    prop = SimpleNamespace(**work_item['prop_dict'])
+
+    # Create a per-worker logger (logging.getLogger is safe in subprocesses)
+    logger = logging.getLogger(f'ha_worker.{station_id}.{cast}')
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+        )
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+    # Suppress utide warnings in the worker process
+    warnings.filterwarnings('ignore', module='utide')
+
+    try:
+        _run_ha_for_station(
+            work_item['paired_data'],
+            prop,
+            station_id,
+            work_item['node_id'],
+            work_item['latitude'],
+            work_item['variable'],
+            work_item['name_var'],
+            work_item['min_duration_days'],
+            work_item['do_predictions'],
+            work_item['amp_threshold'],
+            work_item['phase_threshold'],
+            work_item['vector_diff_threshold'],
+            cast,
+            logger,
+        )
+        return {'station_id': station_id, 'cast': cast, 'status': 'ok'}
+    except Exception as ex:
+        return {
+            'station_id': station_id,
+            'cast': cast,
+            'status': 'error',
+            'error': str(ex),
+            'traceback': traceback.format_exc(),
+        }
+
+
 def run_harmonic_analysis_station_loop(
-    read_ofs_ctl_file, prop, var_info, min_duration_days, do_predictions, logger
+    read_ofs_ctl_file, prop, var_info, min_duration_days, do_predictions,
+    amp_threshold, phase_threshold, vector_diff_threshold, logger
 ):
     """
     Inner loop over stations: load paired data, run HA, write outputs.
@@ -191,6 +269,11 @@ def run_harmonic_analysis_station_loop(
     skip_reasons = []
     get_skill_attempted = False
 
+    # ------------------------------------------------------------------
+    # Phase 1: Build work items (sequential — I/O bound, validates data)
+    # ------------------------------------------------------------------
+    work_items = []
+
     for i in range(len(read_ofs_ctl_file[1])):
         station_id = read_ofs_ctl_file[-1][i]
         node_id = read_ofs_ctl_file[1][i]
@@ -213,12 +296,12 @@ def run_harmonic_analysis_station_loop(
         latitude = float(read_station_ctl_file[1][obs_row][0])
 
         for cast in prop.whichcasts:
-            prop.whichcast = cast.lower()
+            whichcast_lower = cast.lower()
 
             # Build paired data file path
             pair_filename = (
                 f'{prop.ofs}_{name_var}_{station_id}_{node_id}'
-                f'_{prop.whichcast}_{prop.ofsfiletype}_pair.int'
+                f'_{whichcast_lower}_{prop.ofsfiletype}_pair.int'
             )
             pair_filepath = os.path.join(prop.data_skill_1d_pair_path, pair_filename)
 
@@ -228,6 +311,7 @@ def run_harmonic_analysis_station_loop(
                     'Paired dataset %s not found. Calling get_skill to '
                     'generate all paired data for %s...', pair_filename, variable
                 )
+                prop.whichcast = whichcast_lower
                 if prop.ofsfiletype == 'fields' or node_id >= 0:
                     get_skill(prop, logger)
                 get_skill_attempted = True
@@ -269,24 +353,89 @@ def run_harmonic_analysis_station_loop(
                 )
                 continue
 
-            # Run harmonic analysis for this station
-            try:
-                _run_ha_for_station(
-                    paired_data, prop, station_id, node_id, latitude,
-                    variable, name_var, min_duration_days, do_predictions,
-                    cast, logger
-                )
-                stations_processed += 1
-            except Exception as ex:
-                logger.error(
-                    'HA failed for station %s (%s): %s. Skipping.',
-                    station_id, cast, ex
-                )
-                stations_skipped += 1
-                skip_reasons.append(f'{station_id}: HA error - {ex}')
-                continue
+            # Build a serializable prop dict for the worker
+            prop_dict = {
+                'ofs': prop.ofs,
+                'whichcast': whichcast_lower,
+                'start_date_full': prop.start_date_full,
+                'end_date_full': prop.end_date_full,
+                'datum': prop.datum,
+                'ofsfiletype': prop.ofsfiletype,
+                'tidal_analysis_path': prop.tidal_analysis_path,
+                'prediction_format': getattr(prop, 'prediction_format', 'consolidated'),
+            }
 
-    # Summary
+            work_items.append({
+                'paired_data': paired_data,
+                'prop_dict': prop_dict,
+                'station_id': station_id,
+                'node_id': node_id,
+                'latitude': latitude,
+                'variable': variable,
+                'name_var': name_var,
+                'min_duration_days': min_duration_days,
+                'do_predictions': do_predictions,
+                'amp_threshold': amp_threshold,
+                'phase_threshold': phase_threshold,
+                'vector_diff_threshold': vector_diff_threshold,
+                'cast': cast,
+            })
+
+    # ------------------------------------------------------------------
+    # Phase 2: Dispatch work items to ProcessPoolExecutor
+    # ------------------------------------------------------------------
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['ha_workers']
+
+    if work_items:
+        logger.info(
+            'Dispatching %d work items to ProcessPoolExecutor '
+            '(max_workers=%d).',
+            len(work_items), max_workers,
+        )
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_run_ha_worker, item): item
+                for item in work_items
+            }
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    result = future.result()
+                except Exception as ex:
+                    # Unexpected executor-level failure
+                    logger.error(
+                        'Executor error for station %s (%s): %s',
+                        item['station_id'], item['cast'], ex,
+                    )
+                    stations_skipped += 1
+                    skip_reasons.append(
+                        f"{item['station_id']}: executor error - {ex}"
+                    )
+                    continue
+
+                if result['status'] == 'ok':
+                    logger.info(
+                        'HA completed for station %s (%s).',
+                        result['station_id'], result['cast'],
+                    )
+                    stations_processed += 1
+                else:
+                    logger.error(
+                        'HA failed for station %s (%s): %s. Skipping.\n%s',
+                        result['station_id'], result['cast'],
+                        result.get('error', 'unknown'),
+                        result.get('traceback', ''),
+                    )
+                    stations_skipped += 1
+                    skip_reasons.append(
+                        f"{result['station_id']}: HA error - "
+                        f"{result.get('error', 'unknown')}"
+                    )
+
+    # ------------------------------------------------------------------
+    # Phase 3: Summary
+    # ------------------------------------------------------------------
     logger.info('--- Harmonic Analysis Summary for %s ---', variable)
     logger.info('Stations processed: %d', stations_processed)
     logger.info('Stations skipped:   %d', stations_skipped)
@@ -298,7 +447,9 @@ def run_harmonic_analysis_station_loop(
 
 def _run_ha_for_station(
     paired_data, prop, station_id, node_id, latitude,
-    variable, name_var, min_duration_days, do_predictions, cast, logger
+    variable, name_var, min_duration_days, do_predictions,
+    amp_threshold, phase_threshold, vector_diff_threshold,
+    cast, logger
 ):
     """
     Run harmonic analysis for a single station and write outputs.
@@ -323,6 +474,12 @@ def _run_ha_for_station(
         Minimum record length for HA.
     do_predictions : bool
         Whether to write prediction and residual CSVs.
+    amp_threshold : float
+        Amplitude difference threshold (metres) for exceedance flagging.
+    phase_threshold : float
+        Phase difference threshold (degrees) for exceedance flagging.
+    vector_diff_threshold : float
+        Vector difference threshold (metres) for exceedance flagging.
     cast : str
         Whichcast name.
     logger : logging.Logger
@@ -393,17 +550,19 @@ def _run_ha_for_station(
                 logger=logger,
             )
 
-        # Write constituent table
-        out_csv = os.path.join(
-            prop.tidal_analysis_path,
-            f'{out_prefix}_ha_constituents.csv'
+        # Summary stats and exceedance flagging
+        summary_stats = compute_constituent_summary_stats(table)
+        table = flag_constituent_exceedances(
+            table, amp_threshold, phase_threshold, vector_diff_threshold,
         )
-        write_constituent_table_csv(
-            table, out_csv, station_id, 'water_level',
-            metadata=metadata, logger=logger,
-        )
+        threshold_metadata = {
+            **metadata,
+            'Amp_Threshold_m': str(amp_threshold),
+            'Phase_Threshold_deg': str(phase_threshold),
+            'VD_Threshold_m': str(vector_diff_threshold),
+        }
 
-        # Optional: predictions and residuals
+        # Optional: predictions, residuals, and verification vs CO-OPS
         if do_predictions:
             # NOTE: build_constituent_table runs HA internally but does not
             # expose the coefficients.  This second HA call is needed for
@@ -434,28 +593,36 @@ def _run_ha_for_station(
                 residual = compute_nontidal_residual(
                     model_eq, prediction, logger=logger,
                 )
-                _write_timeseries_csv(
-                    model_time, prediction,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_tidal_prediction.csv'
-                    ),
-                    'Tidal_Prediction', metadata, logger,
+                _write_prediction_output(
+                    model_time, prediction, residual, out_prefix,
+                    prop.tidal_analysis_path, prop.prediction_format,
+                    metadata, logger,
                 )
-                _write_timeseries_csv(
-                    model_time, residual,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_nontidal_residual.csv'
-                    ),
-                    'Nontidal_Residual', metadata, logger,
-                )
+
+                # Prediction verification against CO-OPS official predictions
+                if harcon is not None:
+                    _verify_predictions_vs_coops(
+                        station_id, prop, model_time, prediction,
+                        summary_stats, logger,
+                    )
             else:
                 logger.warning(
                     'Station %s: no constituents with SNR >= 2. '
                     'Skipping prediction/residual output.',
                     station_id,
                 )
+
+        # Write constituent table
+        out_csv = os.path.join(
+            prop.tidal_analysis_path,
+            f'{out_prefix}_ha_constituents.csv'
+        )
+        write_constituent_table_csv(
+            table, out_csv, station_id, 'water_level',
+            metadata=threshold_metadata,
+            summary_stats=summary_stats,
+            logger=logger,
+        )
 
     elif variable == 'currents':
         obs_spd = paired_data['OBS_SPD'].values
@@ -478,13 +645,27 @@ def _run_ha_for_station(
             logger=logger,
         )
 
+        # Summary stats and exceedance flagging
+        summary_stats = compute_constituent_summary_stats(table)
+        table = flag_constituent_exceedances(
+            table, amp_threshold, phase_threshold, vector_diff_threshold,
+        )
+        threshold_metadata = {
+            **metadata,
+            'Amp_Threshold_m': str(amp_threshold),
+            'Phase_Threshold_deg': str(phase_threshold),
+            'VD_Threshold_m': str(vector_diff_threshold),
+        }
+
         out_csv = os.path.join(
             prop.tidal_analysis_path,
             f'{out_prefix}_ha_constituents.csv'
         )
         write_constituent_table_csv(
             table, out_csv, station_id, 'currents',
-            metadata=metadata, logger=logger,
+            metadata=threshold_metadata,
+            summary_stats=summary_stats,
+            logger=logger,
         )
 
         # Optional: predictions and residuals for current speed
@@ -515,21 +696,10 @@ def _run_ha_for_station(
                 residual = compute_nontidal_residual(
                     model_eq, prediction, logger=logger,
                 )
-                _write_timeseries_csv(
-                    model_time, prediction,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_tidal_prediction.csv'
-                    ),
-                    'Tidal_Prediction', metadata, logger,
-                )
-                _write_timeseries_csv(
-                    model_time, residual,
-                    os.path.join(
-                        prop.tidal_analysis_path,
-                        f'{out_prefix}_nontidal_residual.csv'
-                    ),
-                    'Nontidal_Residual', metadata, logger,
+                _write_prediction_output(
+                    model_time, prediction, residual, out_prefix,
+                    prop.tidal_analysis_path, prop.prediction_format,
+                    metadata, logger,
                 )
             else:
                 logger.warning(
@@ -540,7 +710,7 @@ def _run_ha_for_station(
 
 
 def _write_timeseries_csv(time, values, filepath, column_name, metadata, logger):
-    """Write a time series (prediction or residual) to CSV."""
+    """Write a single time series (prediction or residual) to CSV."""
     df = pd.DataFrame({
         'DateTime': time,
         column_name: values,
@@ -561,6 +731,141 @@ def _write_timeseries_csv(time, values, filepath, column_name, metadata, logger)
     logger.info('Time series written to %s.', path)
 
 
+def _write_prediction_residual_csv(time, prediction, residual, filepath, metadata, logger):
+    """Write combined tidal prediction and non-tidal residual to a single CSV."""
+    df = pd.DataFrame({
+        'DateTime': time,
+        'Tidal_Prediction': prediction,
+        'Nontidal_Residual': residual,
+    })
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    header_lines = []
+    if metadata:
+        for key, value in metadata.items():
+            header_lines.append(f'# {key}: {value}')
+
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        for line in header_lines:
+            f.write(line + '\n')
+        df.to_csv(f, index=False)
+
+    logger.info('Prediction and residual written to %s.', path)
+
+
+def _write_prediction_output(
+    time, prediction, residual, out_prefix, tidal_analysis_path,
+    prediction_format, metadata, logger,
+):
+    """
+    Write prediction/residual output in the requested format.
+
+    Parameters
+    ----------
+    prediction_format : str
+        ``"consolidated"`` writes a single ``_prediction_and_residual.csv``.
+        ``"fortran"`` writes separate ``_tidal_prediction.csv`` and
+        ``_nontidal_residual.csv`` files matching the legacy Fortran layout.
+    """
+    if prediction_format == 'fortran':
+        _write_timeseries_csv(
+            time, prediction,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_tidal_prediction.csv'
+            ),
+            'Tidal_Prediction', metadata, logger,
+        )
+        _write_timeseries_csv(
+            time, residual,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_nontidal_residual.csv'
+            ),
+            'Nontidal_Residual', metadata, logger,
+        )
+    else:
+        # TODO: add observed water levels column when obs data is threaded through
+        _write_prediction_residual_csv(
+            time, prediction, residual,
+            os.path.join(
+                tidal_analysis_path,
+                f'{out_prefix}_prediction_and_residual.csv'
+            ),
+            metadata, logger,
+        )
+
+
+def _verify_predictions_vs_coops(
+    station_id, prop, model_time, prediction, summary_stats, logger
+):
+    """
+    Fetch CO-OPS official predictions and compute verification stats.
+
+    Appends ``Prediction_RMSE_vs_COOPS`` to *summary_stats* in place.
+    Gracefully skips if the API is unavailable or station doesn't support
+    predictions.
+    """
+    try:
+        pred_input = SimpleNamespace(
+            station=station_id,
+            start_date=datetime.strptime(
+                prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ'
+            ).strftime('%Y%m%d%H%M%S'),
+            end_date=datetime.strptime(
+                prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'
+            ).strftime('%Y%m%d%H%M%S'),
+            datum=prop.datum,
+        )
+
+        official = retrieve_tidal_predictions(pred_input, logger)
+
+        if official is None or isinstance(official, bool):
+            logger.info(
+                'Station %s: CO-OPS predictions not available. '
+                'Skipping prediction verification.', station_id,
+            )
+            return
+
+        # Align by DateTime using tolerance-based merge (handles grids
+        # that are offset by up to 3 minutes)
+        model_df = pd.DataFrame({
+            'DateTime': model_time,
+            'Model_Pred': prediction,
+        }).sort_values('DateTime')
+        official['DateTime'] = pd.to_datetime(official['DateTime'])
+        official = official.sort_values('DateTime')
+
+        merged = pd.merge_asof(
+            model_df, official,
+            on='DateTime',
+            tolerance=pd.Timedelta('3min'),
+            direction='nearest',
+        )
+        merged = merged.dropna(subset=['Model_Pred', 'TIDE'])
+
+        if len(merged) == 0:
+            logger.warning(
+                'Station %s: no overlapping times with CO-OPS predictions.',
+                station_id,
+            )
+            return
+
+        verification = compute_prediction_verification(
+            merged['Model_Pred'].values,
+            merged['TIDE'].values,
+            logger=logger,
+        )
+        summary_stats['Prediction_RMSE_vs_COOPS'] = verification['rmse']
+
+    except (urllib.error.URLError, ValueError, KeyError, OSError) as ex:
+        logger.warning(
+            'Station %s: prediction verification failed: %s. Skipping.',
+            station_id, ex,
+        )
+
+
 def run_harmonic_analysis(prop, logger):
     """
     Main function for running harmonic analysis on paired datasets.
@@ -577,6 +882,14 @@ def run_harmonic_analysis(prop, logger):
     logging.Logger
         The logger used throughout the run.
     """
+    # ------------------------------------------------------------------
+    # 0. Defaults for attrs that are only set by the CLI
+    # ------------------------------------------------------------------
+    prop.prediction_format = getattr(prop, 'prediction_format', 'consolidated')
+    prop.amp_threshold = getattr(prop, 'amp_threshold', DEFAULT_AMP_THRESHOLD_M)
+    prop.phase_threshold = getattr(prop, 'phase_threshold', DEFAULT_PHASE_THRESHOLD_DEG)
+    prop.vector_diff_threshold = getattr(prop, 'vector_diff_threshold', DEFAULT_VECTOR_DIFF_THRESHOLD_M)
+
     # ------------------------------------------------------------------
     # 1. Logger setup
     # ------------------------------------------------------------------
@@ -744,7 +1057,8 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 7. Variable loop
     # ------------------------------------------------------------------
-    for variable in prop.var_list:
+    def _ha_for_variable(variable, p):
+        """Run harmonic analysis for a single variable."""
         if variable == 'water_level':
             name_var = 'wl'
             list_of_headings = [
@@ -765,23 +1079,43 @@ def run_harmonic_analysis(prop, logger):
                 'Variable %s is not valid for harmonic analysis. Skipping.',
                 variable
             )
-            continue
+            return
 
         var_info = [variable, name_var, list_of_headings]
 
         # Read OFS model ctl files
-        read_ofs_ctl_file = ofs_ctlfile_read(prop, name_var, logger)
+        read_ofs_ctl_file = ofs_ctlfile_read(p, name_var, logger)
 
         if read_ofs_ctl_file is not None:
             run_harmonic_analysis_station_loop(
-                read_ofs_ctl_file, prop, var_info,
-                prop.min_duration_days, prop.do_predictions, logger
+                read_ofs_ctl_file, p, var_info,
+                p.min_duration_days, p.do_predictions,
+                p.amp_threshold, p.phase_threshold,
+                p.vector_diff_threshold, logger
             )
         else:
             logger.error(
                 'Could not read/create control file for %s. '
                 'Skipping variable.', variable
             )
+
+    # Dispatch variable processing — parallel or sequential
+    parallel_cfg = get_parallel_config(logger)
+    ha_vars = [v for v in prop.var_list if v in ('water_level', 'currents')]
+    if parallel_cfg['parallel_variables'] and len(ha_vars) > 1:
+        logger.info('Processing %d HA variables in parallel', len(ha_vars))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = []
+            for variable in ha_vars:
+                prop_local = copy.deepcopy(prop)
+                prop_local.var_list = [variable]
+                futures.append(executor.submit(
+                    _ha_for_variable, variable, prop_local))
+            for f in futures:
+                f.result()
+    else:
+        for variable in prop.var_list:
+            _ha_for_variable(variable, prop)
 
     logger.info('--- Harmonic Analysis Process Complete ---')
     return logger
@@ -863,6 +1197,36 @@ def main():
         action='store_true',
         help='Also produce tidal prediction and non-tidal residual CSVs',
     )
+    parser.add_argument(
+        '--prediction-format',
+        choices=['consolidated', 'fortran'],
+        default='consolidated',
+        help="Output format for prediction CSVs: 'consolidated' writes a "
+             "single _prediction_and_residual.csv (default); 'fortran' writes "
+             'separate _tidal_prediction.csv and _nontidal_residual.csv files '
+             'matching the legacy Fortran layout',
+    )
+    parser.add_argument(
+        '--amp-threshold',
+        type=float,
+        default=None,
+        help='Amplitude difference threshold in metres for exceedance '
+             'flagging (default 0.05 = 5 cm)',
+    )
+    parser.add_argument(
+        '--phase-threshold',
+        type=float,
+        default=None,
+        help='Phase difference threshold in degrees for exceedance '
+             'flagging (default 10.0)',
+    )
+    parser.add_argument(
+        '--vector-diff-threshold',
+        type=float,
+        default=None,
+        help='Vector difference threshold in metres for exceedance '
+             'flagging (default 0.05 = 5 cm)',
+    )
 
     args = parser.parse_args()
 
@@ -878,6 +1242,28 @@ def main():
     prop.var_list = args.Var_Selection
     prop.min_duration_days = args.min_duration
     prop.do_predictions = args.predictions
+    prop.prediction_format = args.prediction_format
+    prop.amp_threshold = (
+        args.amp_threshold if args.amp_threshold is not None
+        else DEFAULT_AMP_THRESHOLD_M
+    )
+    prop.phase_threshold = (
+        args.phase_threshold if args.phase_threshold is not None
+        else DEFAULT_PHASE_THRESHOLD_DEG
+    )
+    prop.vector_diff_threshold = (
+        args.vector_diff_threshold if args.vector_diff_threshold is not None
+        else DEFAULT_VECTOR_DIFF_THRESHOLD_M
+    )
+    # Validate thresholds
+    for name, val in [
+        ('--amp-threshold', prop.amp_threshold),
+        ('--phase-threshold', prop.phase_threshold),
+        ('--vector-diff-threshold', prop.vector_diff_threshold),
+    ]:
+        if val <= 0:
+            parser.error(f'{name} must be positive (got {val})')
+
     prop.user_input_location = False
     prop.horizonskill = False
     prop.forecast_hr = None

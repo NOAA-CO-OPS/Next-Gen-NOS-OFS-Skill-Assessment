@@ -172,6 +172,25 @@ conda activate ofs_dps_env
 pip install -e .
 ```
 
+**Configure USGS API key (conda):** To raise the USGS API rate limit (see [Step 2a](#step-2a-configure-usgs-api-key) under Option 1), set the key in the `ofs_dps_env` environment:
+
+*bash:*
+```bash
+conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps_env
+conda deactivate
+conda activate ofs_dps_env
+echo $API_USGS_PAT
+```
+
+*Windows (Anaconda PowerShell):*
+```powershell
+conda activate ofs_dps_env
+conda env config vars set API_USGS_PAT=<your-api-key>
+conda deactivate
+conda activate ofs_dps_env
+echo $env:API_USGS_PAT
+```
+
 For detailed conda setup instructions for beginners, see [Section 3.2](#32-create-an-environment-with-miniconda).
 
 ### Package Organization
@@ -258,7 +277,7 @@ Each OFS runs at specific times each day. For example, the Chesapeake Bay OFS (C
 
 ![Model cycles](./readme_images/model_cycles_color.png)
 
-Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from two additional OFS: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), and the Northeast Coastal OFS (NECOFS). Note that NECOFS is still in development, and output is not yet publically available.
+Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from  additional OFSs: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), the Northeast Coastal OFS (NECOFS), and the 2D global Surge and Tide OFS (STOFS-2D-Global). Note that NECOFS is still in development, and output is not yet publically available.
 
 |OFS|Region|Daily model cycle hours (UTC)|Max forecast horizon (hours)|
 |:---|:---|:---|:---|
@@ -274,6 +293,7 @@ Different OFSs can have different model cycles times for each day, and different
 |NGOFS2|Northern Gulf of America|03, 09, 15, 21|48|
 |SFBOFS|San Francisco Bay|03, 09, 15, 21|48|
 |SSCOFS|Salish Sea & Columbia River|03, 09, 15, 21|72|
+|STOFS-2D-Global|Global|00, 06, 12, 18|180|
 |STOFS-3D-ATL|Atlantic Basin|12|96|
 |TBOFS|Tampa Bay|00, 06, 12, 18|48|
 |WCOFS|West Coast|03|72|
@@ -310,7 +330,7 @@ In terms of the skill assessment software, the functional differences between fi
 * **Field files** have 3D model output (latitude x longitude x depth) in a grid across the entire OFS domain, and can be matched with any observation station locations. But they are generally larger in file size and more cumbersome to work with -- the skill assessment runs more slowly with field files than with station files. Field files are required for 2D analysis in the skill assessment.
 * **Station files** have 1D time series output only at selected locations within an OFS, which cannot always be matched with all available observation station locations. However, station files are much smaller in size, more nimble to work with, and have a higher 6-minute time resolution. The 1D skill assessment can be run up to 10x faster with station files compared to field files. Station files cannot be used for 2D skill assessment.
 
-When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files.
+When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files, and STOFS-2D-Global, which currently only runs with station files.
 
 Note that OFS model data, depending on file type and 'cast', has specific data retention time periods, after which the data will no longer be available. Data retention times are listed below. The time periods are relative to today's date.
 
@@ -385,6 +405,12 @@ In the `working directory`, there is a sub-directory called 'conf'. In 'conf', t
 
 ### 3.3.1 ofs_dps.conf
 
+The repository ships a template configuration file at `conf/ofs_dps.conf.example`. Before running the skill assessment for the first time, copy it to create your local configuration:
+```
+cp conf/ofs_dps.conf.example conf/ofs_dps.conf
+```
+The local `conf/ofs_dps.conf` is git-ignored so that your machine-specific paths are never committed.
+
 'ofs_dps.conf' establishes the directory names and structure that the skill assessment uses to read inputs and write outputs, and sets several key options. By editing the conf file, you can:
 1) set your `working directory` (🚨required);
 2) provide a list of observation station IDs to assess;
@@ -401,7 +427,89 @@ A skill assessment module called `get_node_ofs.py` handles the processing of OFS
 
 Finally, in the section called [settings], there is an option for the skill assessment to produce static (.png) images of all plots in addition to the standard Plotly interactive plots, if you need graphics for a document or slideshow. The .png images will be saved to `/working_directory/data/model/1d_node/prd_plots/`.
 
-### 3.3.2 logging.conf
+### 3.3.2 Parallelization Settings
+
+The `[parallelization]` section of `ofs_dps.conf` controls how many concurrent workers the skill assessment uses at each pipeline stage. The defaults are tuned for a typical workstation (4-8 cores), but you can adjust them for your system.
+
+#### Quick start
+
+The simplest approach is to set every worker count to `auto`:
+
+```ini
+[parallelization]
+parallel_enabled=True
+obs_coops_workers=auto
+obs_usgs_workers=auto
+obs_ndbc_workers=auto
+obs_chs_workers=auto
+model_download_workers=auto
+skill_workers=auto
+ha_workers=auto
+plot_workers=auto
+parallel_variables=False
+```
+
+`auto` scales the worker count based on your system's available CPU cores:
+
+| Task type | How `auto` scales | Why |
+|---|---|---|
+| **I/O-bound** (obs retrieval, model download, plotting, skill metrics) | Up to 2x CPU count (capped at 8-12) | Threads mostly wait on network or disk, so more threads than cores is beneficial |
+| **CPU-bound** (harmonic analysis) | CPU count - 1 (capped at 8) | utide runs in separate processes that fully use a core each; leaving one core free keeps the system responsive |
+
+#### Choosing manual values
+
+You can also set any worker count to a specific integer. Some guidelines:
+
+- **2-4 cores (laptop/VM):** `auto` works well; all I/O pools will be 4-8 workers, HA will use 1-3 processes. If you notice the system becoming unresponsive, lower `obs_coops_workers` and `obs_ndbc_workers` to 4.
+- **8-16 cores (workstation):** `auto` is a good starting point. If you're running long assessments with many stations and want to maximize throughput, you can set `obs_coops_workers=12` and `skill_workers=8`.
+- **32+ cores (HPC node):** The `auto` caps prevent over-subscribing API endpoints, but you can raise `ha_workers` up to 16 for large tidal analysis runs. I/O workers beyond 12 rarely help since the bottleneck shifts to the remote API.
+- **Shared/CI systems:** Set `parallel_enabled=False` to force fully sequential execution (all workers = 1). This uses minimal resources and produces deterministic ordering.
+
+#### Memory considerations
+
+Each parallel worker consumes memory. The main concern is `ha_workers` (harmonic analysis), which runs in separate processes that each get a full copy of the station data. If you see out-of-memory errors during tidal analysis, reduce `ha_workers` to 2-4.
+
+For `parallel_variables=True` (experimental), the model dataset is shared across variable-processing threads, but each thread allocates its own output arrays. Only enable this if you have ample RAM (16+ GB free).
+
+#### Disabling parallelization
+
+To run everything sequentially:
+
+```ini
+parallel_enabled=False
+```
+
+This forces all worker counts to 1 regardless of their individual settings. Useful for debugging, reproducing issues, or running on constrained systems.
+
+#### Experimental flags
+
+The following boolean flags enable additional parallelism at different pipeline stages. They are disabled by default and should be considered experimental. Enable them one at a time and verify results match sequential output before relying on them in production.
+
+| Flag | Effect |
+|---|---|
+| `parallel_variables` | Process multiple variables (wl, temp, salt, cu) concurrently within a single pipeline stage |
+| `parallel_workflow` | Run observation download and model extraction concurrently |
+| `parallel_stations` | Process stations in parallel during model extraction |
+| `parallel_plotting` | Generate station plots in parallel |
+| `parallel_forecast_cycles` | Process forecast_a cycles concurrently |
+| `parallel_obs_variables` | Download observations for all variables concurrently |
+| `parallel_2d_interp` | Parallelize 2D interpolation |
+
+These flags require sufficient memory and may produce interleaved log output. If you encounter issues, disable the flag and retry.
+
+#### Performance benchmarks
+
+Benchmarks on a 16-core Linux system running the full 1D skill assessment pipeline (model processing + obs retrieval + pairing + plotting):
+
+| OFS | Model | Sequential | Auto | Speedup |
+|---|---|---|---|---|
+| CBOFS | ROMS | 142s | 70s | **2.0x** |
+| LOOFS2 | SCHISM | 88s | 69s | **1.28x** |
+| SFBOFS | FVCOM | 32s | 26s | **1.25x** |
+
+Speedup scales with the number of stations in the OFS. The observation retrieval stage alone shows up to 3.4x improvement; the overall pipeline speedup is diluted by stages that are inherently sequential (inventory retrieval, model loading). Setting worker counts higher than `auto` provides no benefit and can reduce performance due to API rate limiting.
+
+### 3.3.3 logging.conf
 
 The second file, 'logging.conf', determines how the skill assessment collects logging entries -- used mainly for debugging -- as the software runs. You can read more about logging in [Sections 3.6.7](#367-logging) and [5](#5-troubleshooting).
 
@@ -410,7 +518,7 @@ Here, you can choose whether to save logging entries to a text file or print the
 ![ofs_dps_conf](./readme_images/logging_conf.png)
 
 ## 3.4 Download OFS model data
-After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL but excluding NECOFS (which is in development).
+After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL and STOFS-2D-Global but excluding NECOFS (which is in development).
 
 The script will retrieve all OFS model files needed to run the skill assessment, and automatically organize them into a new `working directory` folder called `example_data`. __After OFS model data is downloaded, do not move or re-organize the files -- otherwise the skill assessment will not be able to find them.__
 

@@ -58,6 +58,7 @@ import os
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
@@ -583,159 +584,195 @@ def list_of_urls_sport(hours_range1, url_params):
     return url_sport_list
 
 
-def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
+def _resolve_sat_subdir(sat_dat):
     """
-    This function gets the satellite data from API,
-    drops all unecessary variables,
-    deletes the priginal file and saves the new .nc file
-    lastly it appends the path to the files saved
+    Determine the satellite-specific subdirectory name from a URL string.
 
+    Returns the subdirectory name (e.g. 'G16', 'SPoRT') or None if
+    no recognized satellite identifier is found.
     """
+    if 'G16' in sat_dat:
+        return 'G16'
+    elif 'G18' in sat_dat:
+        return 'G18'
+    elif 'G19' in sat_dat:
+        return 'G19'
+    elif 'n20' in sat_dat:
+        return 'N20'
+    elif 'n21' in sat_dat:
+        return 'N21'
+    elif 'npp' in sat_dat:
+        return 'NPP'
+    elif 'L3S' in sat_dat:
+        if 'OSPO' in sat_dat:
+            return 'L3S-OSPO'
+        elif 'STAR' in sat_dat:
+            return 'L3S-STAR'
+    elif 'SPoRT' in sat_dat:
+        return 'SPoRT'
+    return None
 
-    list_of_files = []
-    for sat_dat in list_of_urls:
-        sat_fname = os.path.join(Path.cwd(), Path(obs2d_dir))
 
-        if 'G16' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'G16')
+def _should_download(sat_fname, sat_type):
+    """
+    Determine whether a satellite file should be downloaded based on its
+    resolved output path and the current satellite type filter.
+    """
+    if sat_type == 'GOES':
+        return (sat_fname.find('G16') > -1
+                or sat_fname.find('G18') > -1
+                or sat_fname.find('G19') > -1)
+    else:
+        return sat_fname.find('SPoRT') > -1
 
-        elif 'G18' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'G18')
 
-        elif 'G19' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'G19')
+def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
+    """
+    Download, trim, and save a single satellite file.
 
-        elif 'n20' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'N20')
+    This is the per-file worker used by both the sequential fallback and
+    the parallel ThreadPoolExecutor path in ``get_sat()``.
 
-        elif 'n21' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'N21')
+    Returns the cleaned output path on success, or None on skip/failure.
+    """
+    sat_fname = os.path.join(Path.cwd(), Path(obs2d_dir))
 
-        elif 'npp' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'NPP')
+    subdir = _resolve_sat_subdir(sat_dat)
+    if subdir is not None:
+        sat_fname = os.path.join(sat_fname, subdir)
 
-        elif 'L3S' in sat_dat:
-            if 'OSPO' in sat_dat:
-                sat_fname = os.path.join(sat_fname, 'L3S-OSPO')
+    os.makedirs(sat_fname, exist_ok=True)
 
-            elif 'STAR' in sat_dat:
-                sat_fname = os.path.join(sat_fname, 'L3S-STAR')
+    sat_fname = os.path.join(
+        sat_fname, str(
+            f'{sat_dat}'.split('/')[-1].split('.')[0]
+            + '_sst.nc',
+        ),
+    )
 
-            else:
-                pass
-        # Temporarily commented out 6/11/25 to avoid filling up server disk
-        # space
-        elif 'SPoRT' in sat_dat:
-            sat_fname = os.path.join(sat_fname, 'SPoRT')
+    logger.info('Checking for %s', sat_fname)
 
-        else:
-            pass
+    # --- File already exists on disk ---
+    if os.path.exists(sat_fname):
+        logger.info('%s exists', sat_fname)
+        if _should_download(sat_fname, sat_type):
+            return sat_fname
+        return None
 
-        if not os.path.exists(sat_fname):
-            os.makedirs(sat_fname)
+    # --- Need to download ---
+    try:
+        if not _should_download(sat_fname, sat_type):
+            return None
 
-        sat_fname = os.path.join(
-            sat_fname, str(
-                f'{sat_dat}'.split('/')[-1].split('.')[0]
-                + '_sst.nc',
-            ),
+        logger.info('Downloading satellite data: %s', sat_dat)
+
+        raw_path = obs2d_dir + r'/' + f'{sat_dat}'.split('/')[-1]
+        urllib.request.urlretrieve(sat_dat, raw_path)
+
+        drop_variables = [
+            'quality_level',
+            'l2p_flags',
+            'or_number_of_pixels',
+            'dt_analysis',
+            'satellite_zenith_angle',
+            'sses_bias',
+            'sses_standard_deviation',
+            'wind_speed',
+            'sst_dtime',
+            'sst_gradient_magnitude',
+            'sst_front_position',
+        ]
+        data_set = xr.open_dataset(
+            raw_path,
+            drop_variables=drop_variables,
+            engine='netcdf4',
+            decode_times=False,
         )
 
-        logger.info(f'Checking for {sat_fname}')
+        data_set.to_netcdf(sat_fname, mode='w')
+        data_set.close()
+        os.remove(raw_path)
 
-        if os.path.exists(sat_fname):
-            logger.info(f'{sat_fname} exists')
+        return sat_fname
 
-            if sat_type == 'GOES':
-                if (sat_fname.find('G16') > -1 or sat_fname.find('G18') > -1
-                    or sat_fname.find('G19') > -1):
-                    list_of_files.append(sat_fname)
-
+    except (ValueError, HTTPError, Exception) as ex:
+        if 'G16' in sat_dat:
+            g16date = datetime.strptime(
+                sat_fname.split('-')[0][-14:-1],
+                '%Y%m%d%H%M%S',
+            )
+            g16end = datetime.strptime(
+                '20250407210000', '%Y%m%d%H%M%S')
+            if g16date > g16end:
+                error_message = (
+                    f'Error: {str(ex)}. '
+                    f'Oops! GOES-16 does not exist for '
+                    f'{sat_fname.split("-")[0][-14:-1]}. '
+                    f'It is replaced by GOES-19.'
+                )
+                logger.error(error_message)
             else:
-                if sat_fname.find('SPoRT') > -1:
-                    list_of_files.append(sat_fname)
+                error_message = (
+                    f'Error: {str(ex)}. '
+                    f'Failed downloading files {sat_dat}!!'
+                )
+                logger.error(error_message)
         else:
+            error_message = (
+                f'Error: {str(ex)}. '
+                f'Failed downloading files {sat_dat}!!'
+            )
+            logger.error(error_message)
+        return None
+
+
+def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
+    """
+    Download satellite data files, trim unnecessary variables, and return
+    the list of successfully saved file paths.
+
+    Downloads are executed in parallel using a ThreadPoolExecutor (capped
+    at 6 workers to avoid overwhelming the NESDIS server).  Individual
+    download failures are logged and do not crash the pipeline.
+    """
+    max_workers = 6
+    total = len(list_of_urls)
+    logger.info(
+        'Starting parallel satellite download: %d URLs, max_workers=%d',
+        total, max_workers,
+    )
+
+    list_of_files = []
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _download_single_file, url, obs2d_dir, logger, sat_type,
+            ): url
+            for url in list_of_urls
+        }
+        for future in as_completed(futures):
+            url = futures[future]
+            completed += 1
             try:
-                download_var = False
-
-                if sat_type == 'GOES':
-                    if (sat_fname.find('G16') > -1 or sat_fname.find('G18')
-                        > -1 or sat_fname.find('G19') > -1):
-                        download_var = True
-
-                else:
-                    if sat_fname.find('SPoRT') > -1:
-                        download_var = True
-
-                if download_var:
-                    logger.info(f'Downloading satellite data: {sat_dat}')
-
-                    urllib.request.urlretrieve(
-                        sat_dat, obs2d_dir + r'/' +
-                        f'{sat_dat}'.split('/')[-1],
+                result = future.result()
+                if result is not None:
+                    list_of_files.append(result)
+                if completed % 10 == 0 or completed == total:
+                    logger.info(
+                        'Satellite download progress: %d/%d complete',
+                        completed, total,
                     )
+            except Exception as e:
+                logger.warning(
+                    'Failed to download %s: %s', url, e,
+                )
 
-                    drop_variables = [
-                        'quality_level',
-                        'l2p_flags',
-                        'or_number_of_pixels',
-                        'dt_analysis',
-                        'satellite_zenith_angle',
-                        'sses_bias',
-                        'sses_standard_deviation',
-                        'wind_speed',
-                        'sst_dtime',
-                        'sst_gradient_magnitude',
-                        'sst_front_position',
-                    ]
-                    data_set = xr.open_dataset(
-                        obs2d_dir + r'/' + f'{sat_dat}'.split('/')[-1],
-                        drop_variables=drop_variables,
-                        engine='netcdf4',
-                        decode_times=False,
-                    )
-
-                    data_set.to_netcdf(
-                        sat_fname,
-                        # obs2d_dir
-                        # + r"/"
-                        # + f"{sat_dat}".split("/")[-1].split(".")[0]
-                        # + "_sst.nc",
-                        mode='w',
-                    )
-                    data_set.close()
-                    os.remove(obs2d_dir + r'/' + f'{sat_dat}'.split('/')[-1])
-
-                    list_of_files.append(sat_fname)
-
-                    # list_of_files.append(
-                    #     obs2d_dir + r"/" + f"{sat_dat}".split("/")[-1].
-                    #     split(".")[0] + "_sst.nc"
-                    # )
-
-            except (ValueError, HTTPError, Exception) as ex:
-                if 'G16' in sat_dat:
-                    g16date = datetime.strptime(
-                        sat_fname.split('-')[0][-14:-1],
-                        '%Y%m%d%H%M%S',
-                    )
-                    g16end = datetime.strptime(
-                        '20250407210000', '%Y%m%d%H%M%S')
-                    if g16date > g16end:
-                        error_message = f"""Error: {str (ex)}.
-                        Oops! GOES-16 does not exist for
-                        {sat_fname.split('-')[0][-14:-1]}. It is replaced by
-                        GOES-19."""
-                        logger.error(error_message)
-                    else:
-                        error_message = f"""Error: {str (ex)}.
-                        Failed downloading files {sat_dat}!!"""
-                        logger.error(error_message)
-                else:
-                    error_message = f"""Error: {str (ex)}.
-                    Failed downloading files {sat_dat}!!"""
-                    logger.error(error_message)
-
+    logger.info(
+        'Parallel satellite download finished: %d/%d files obtained',
+        len(list_of_files), total,
+    )
     return list_of_files
 
 
