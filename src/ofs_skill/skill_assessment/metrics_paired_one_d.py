@@ -121,7 +121,7 @@ def skill_scalar(
         # MDPO/MDNO
         mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
         mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)

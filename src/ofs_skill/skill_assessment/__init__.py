@@ -50,6 +50,9 @@ from ofs_skill.skill_assessment.nos_metrics import (
     rmse,
     standard_deviation,
 )
+from ofs_skill.tidal_analysis.extremes import (
+    extract_water_level_extrema
+)
 
 __all__ = [
     # Main skill assessment
@@ -82,4 +85,6 @@ __all__ = [
     'max_duration_negative_outliers',
     'check_nos_criteria',
     'get_error_threshold',
+    # Water level analysis
+    'extract_water_level_extrema',
 ]

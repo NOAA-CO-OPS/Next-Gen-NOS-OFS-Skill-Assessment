@@ -23,6 +23,7 @@ from ofs_skill.obs_retrieval.get_station_observations import get_station_observa
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.skill_assessment import format_paired_one_d, metrics_paired_one_d
 from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
+from ofs_skill.tidal_analysis.extremes import extract_water_level_extrema
 
 
 def ofs_ctlfile_extract(prop, name_var, logger):
@@ -196,190 +197,138 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
 
 def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     """
-    this function 1) writes the paired observation and model time series to
+    This function 1) writes the paired observation and model time series to
     file (.int), and 2) sends the paired time series to
-    metrics_paired_one_d to calculate skill stats, which returned from the
+    metrics_paired_one_d to calculate skill stats, which are returned from the
     function.
     """
 
-    output = {
-        'station_id': [],
-        'X': [],
-        'Y': [],
-        'obs_depth': [],
-        'mod_depth': [],
-        'node': [],
-        'skill': []
-              }
-    output_dir = {
-        'station_id': [],
-        'X': [],
-        'Y': [],
-        'obs_depth': [],
-        'mod_depth': [],
-        'node': [],
-        'skill': []
-              }
+    def _create_output_dict():
+        return {
+            'station_id': [], 'X': [], 'Y': [],
+            'obs_depth': [], 'mod_depth': [], 'node': [], 'skill': []
+        }
 
-    data_length = len(read_station_ctl_file[0])
-    if len(read_ofs_ctl_file[-1]) < data_length:
-        data_length = len(read_ofs_ctl_file[-1])
+    output = _create_output_dict()
+    output_dir = _create_output_dict()
+    output_hw = _create_output_dict()
+    output_lw = _create_output_dict()
 
-    for i in range(0, data_length):
-        # First, match rows using station ID between model and obs control
-        # files
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                index(read_ofs_ctl_file[-1][i])
-            if read_station_ctl_file[0][obs_row][0] != \
-                read_ofs_ctl_file[-1][i]:
-                raise Exception
-        except Exception:
-            logger.error('Could not match station ID %s between control '
-                         'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
+    data_length = min(len(read_station_ctl_file[0]), len(read_ofs_ctl_file[-1]))
+
+    # pre-compute station ID to index mapping for O(1) lookup
+    station_id_to_idx = {row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])}
+
+    # Helper function to reduce repetitive appending
+    def _append_metadata(target_dict, obs_idx, ofs_idx):
+        target_dict['station_id'].append(read_station_ctl_file[0][obs_idx][0])
+        target_dict['node'].append(read_ofs_ctl_file[1][ofs_idx])
+        target_dict['obs_depth'].append(read_station_ctl_file[1][obs_idx][-2])
+        target_dict['mod_depth'].append(read_ofs_ctl_file[-2][ofs_idx])
+        target_dict['X'].append(str(float(read_station_ctl_file[1][obs_idx][1])))
+        target_dict['Y'].append(read_station_ctl_file[1][obs_idx][0])
+
+    for i in range(data_length):
+        ofs_station_id = read_ofs_ctl_file[-1][i]
+
+        # Match rows using station ID between model and obs control files
+        if ofs_station_id not in station_id_to_idx:
+            logger.error(f"Could not match station ID {ofs_station_id} between control file in get_node_ofs!")
             sys.exit(-1)
 
-        # Now continue formatting paired series
+        obs_row = station_id_to_idx[ofs_station_id]
+        station_id = read_station_ctl_file[0][obs_row][0]
+
+        # Continue formatting paired series
         formatted_series = prepare_series(
             read_station_ctl_file, read_ofs_ctl_file, prop,
             name_var, i, obs_row, logger
         )
-        if (
-            formatted_series is not None
-            and formatted_series != 'NoDataFound'
-            and len(formatted_series[0]) > 1
-        ):
-            if name_var == 'cu':
-                series_df = formatted_series[-1]
-                series_df['DateTime'] = pd.to_datetime(
-                    dict(
-                        year=series_df[1],
-                        month=series_df[2],
-                        day=series_df[3],
-                        hour=series_df[4],
-                        minute=series_df[5],
-                    )
-                )
-                logger.info('Start cu metrics for %s',
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                output['X'].append(
-                    read_station_ctl_file[1][obs_row][1])
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_vector(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
-                logger.info('Start cu dir metrics for %s',
-                            read_station_ctl_file[0][obs_row][0])
-                output_dir['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output_dir['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output_dir['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output_dir['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                output_dir['X'].append(
-                    read_station_ctl_file[1][obs_row][1])
-                output_dir['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output_dir['skill'].append(
-                    metrics_paired_one_d.skill_vector_dir(
-                        formatted_series[-1], name_var,
-                        prop, logger
-                    )
-                )
 
-            else:
-                # stats = metrics_paired_one_d.skill_scalar
-                # (formatted_series[-1])
-                series_df = formatted_series[-1]
-                series_df['DateTime'] = pd.to_datetime(
-                    dict(
-                        year=series_df[1],
-                        month=series_df[2],
-                        day=series_df[3],
-                        hour=series_df[4],
-                        minute=series_df[5],
-                    )
-                )
-                logger.info('Start %s metrics for %s',
-                            name_var,
-                            read_station_ctl_file[0][obs_row][0])
-                output['station_id'].append(
-                    read_station_ctl_file[0][obs_row][0])
-                output['node'].append(
-                    read_ofs_ctl_file[1][i])
-                output['obs_depth'].append(
-                    read_station_ctl_file[1][obs_row][-2])
-                output['mod_depth'].append(
-                    read_ofs_ctl_file[-2][i])
-                #temp_x = str(float(
-                    #read_station_ctl_file[1][i][1])+360)
-                temp_x = str(float(
-                    read_station_ctl_file[1][obs_row][1]))
-                output['X'].append(temp_x)
-                output['Y'].append(
-                    read_station_ctl_file[1][obs_row][0])
-                output['skill'].append(
-                    metrics_paired_one_d.skill_scalar(
-                        series_df, name_var, read_station_ctl_file[0][obs_row][0],
-                        prop, logger
-                    )
-                )
-
-            # This section writes the paired time series file with all the
-            # data found and formatted in the ctl_file list
-            # edited to add header for human readability - AJK
-            int_path = os.path.join(prop.data_skill_1d_pair_path,
-                        str(prop.ofs+'_'+name_var+'_'+read_station_ctl_file[0][obs_row][0]
-                        +'_'+str(read_ofs_ctl_file[1][i])+'_'+prop.whichcast+
-                        '_'+prop.ofsfiletype+'_pair.int'))
-            with open(int_path, 'w', encoding='utf-8') as output_2:
-                if  name_var == 'cu': #if cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'SPEED_OB '+'SPEED_MODEL '+'BIAS_SPEED '
-                        +'DIR_OB '+'DIR_MODEL '+'BIAS_DIR '+'\n')
-                else: #if not cu file
-                    output_2.write('DNUM_JAN1 '+'YEAR '+'MONTH '+'DAY '
-                        +'HOUR '+'MINUTE '+'VAL_OB '+'VAL_MODEL '+'BIAS '+'\n')
-                for p_value in formatted_series[0]:
-                    p_value = str(p_value)
-                    p_value = p_value.replace(',', ' ')
-                    p_value = p_value.replace('[', '')
-                    p_value = p_value.replace(']', '')
-                    output_2.write(p_value + '\n')
-            logger.info(
-                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
-                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype)
-        else:
+        if not (formatted_series and formatted_series != 'NoDataFound' and len(formatted_series[0]) > 1):
             logger.error(
-                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
-                prop.ofs,
-                name_var,
-                read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i],
-                prop.whichcast,
-                prop.ofsfiletype
+                f"{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_"
+                f"{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully"
+            )
+            continue
+
+        series_df = formatted_series[-1]
+        series_df['DateTime'] = pd.to_datetime({
+            'year': series_df[1], 'month': series_df[2], 'day': series_df[3],
+            'hour': series_df[4], 'minute': series_df[5]
+        })
+
+        if name_var == 'cu':
+            logger.info(f"Start cu metrics for {station_id}")
+            _append_metadata(output, obs_row, i)
+            output['skill'].append(
+                metrics_paired_one_d.skill_vector(series_df, name_var, prop, logger)
             )
 
+            logger.info(f"Start cu dir metrics for {station_id}")
+            _append_metadata(output_dir, obs_row, i)
+            output_dir['skill'].append(
+                metrics_paired_one_d.skill_vector_dir(series_df, name_var, prop, logger)
+            )
+        else:
+            logger.info(f"Start {name_var} metrics for {station_id}")
+            _append_metadata(output, obs_row, i)
+            output['skill'].append(
+                metrics_paired_one_d.skill_scalar(series_df, name_var, station_id, prop, logger)
+            )
+
+        # Write the paired time series file (.int)
+        filename = f"{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_{prop.whichcast}_{prop.ofsfiletype}_pair.int"
+        int_path = os.path.join(prop.data_skill_1d_pair_path, filename)
+
+        with open(int_path, 'w', encoding='utf-8') as output_2:
+            if name_var == 'cu':
+                output_2.write('DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE SPEED_OB SPEED_MODEL BIAS_SPEED DIR_OB DIR_MODEL BIAS_DIR \n')
+            else:
+                output_2.write('DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE VAL_OB VAL_MODEL BIAS \n')
+
+            for p_value in formatted_series[0]:
+                cleaned_val = str(p_value).replace(',', ' ').replace('[', '').replace(']', '')
+                output_2.write(f"{cleaned_val}\n")
+
+        logger.info(f"{filename} is created successfully")
+
+        # Handle water level extrema
+        if name_var == 'wl':
+            extrema_output = extract_water_level_extrema(
+                np.asarray(series_df['DateTime']),
+                np.asarray(series_df['OFS']),
+                4,
+                logger
+            )
+            obs_arr = np.asarray(series_df['OBS'])
+
+            def _process_extrema(extrema_prefix, target_dict, log_label):
+                idx = extrema_output[f'{extrema_prefix}_index']
+                df_extrema = pd.DataFrame({
+                    "DateTime": extrema_output[f'{extrema_prefix}_times'],
+                    "OFS": extrema_output[f'{extrema_prefix}_amplitudes'],
+                    "OBS": obs_arr[idx]
+                })
+                # Note: Fixed a bug here where lw was originally using hw values
+                df_extrema['BIAS'] = df_extrema['OFS'] - df_extrema['OBS']
+
+                logger.info(f"Start {name_var} metrics for {station_id} {log_label}")
+                _append_metadata(target_dict, obs_row, i)
+                target_dict['skill'].append(
+                    metrics_paired_one_d.skill_scalar(df_extrema, name_var, station_id, prop, logger)
+                )
+
+            _process_extrema('high_water', output_hw, 'high water extrema')
+            _process_extrema('low_water', output_lw, 'low water extrema')
+
+    # Construct final output payload
     if name_var == 'cu' and len(output_dir['station_id']) > 0:
-        output = [output, output_dir]
-    else:
-        output = [output]
-    return output
+        return [output, output_dir]
+    elif name_var == 'wl' and len(output_hw['station_id']) > 0:
+        return [output, output_hw, output_lw]
+
+    return [output]
 
 
 def name_convent(variable):
@@ -713,10 +662,15 @@ def get_skill(prop, logger):
                 read_station_ctl_file, read_ofs_ctl_file, prop,
                 name_var, logger
             )
+            if name_var == 'cu':
+                skill_names = ['currents','currents_dir']
+            elif name_var == 'wl' and len(skill_results) > 1:
+                skill_names = ['water_level','water_level_hw','water_level_lw']
+            else:
+                skill_names = [variable]
 
             for i,skill_result in enumerate(skill_results):
-                if i == 1:
-                    variable = 'currents_dir'
+                variable = skill_names[i]
                 if (
                     len(skill_result.get('station_id')) != 0
                     and len(skill_result.get('node')) != 0
@@ -724,7 +678,6 @@ def get_skill(prop, logger):
                     and len(skill_result.get('Y')) != 0
                     and len(skill_result.get('skill')) != 0
                 ):
-
 
                     #Make overview maps and save them
                     make_skill_maps(skill_result,
