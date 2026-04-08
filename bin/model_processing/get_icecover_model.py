@@ -133,7 +133,7 @@ def get_icecover_model(prop, logger):
 
     # Validate model source.
     if prop.model_source.lower() == 'adcirc':
-        logger.error('ADCIRC does not have ice cover output!')
+        logger.error('Ice cover retrieval not implemented for ADCIRC.')
         raise NotImplementedError('Ice cover retrieval not implemented for ADCIRC.')
 
     # Reformat dates

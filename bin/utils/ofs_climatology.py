@@ -708,7 +708,7 @@ def ofs_climatology(prop1, logger, path_save, datagroup):
 
     # Validate model source.
     if prop1.model_source.lower() == 'adcirc':
-        logger.error('ADCIRC models not supported for climatology calculation.')
+        logger.error('Climatology calculation not implemented for ADCIRC models.')
         raise NotImplementedError('Climatology calculation not implemented for ADCIRC models.')
 
     dates = []
