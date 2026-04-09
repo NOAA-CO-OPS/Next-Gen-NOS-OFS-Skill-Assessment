@@ -43,7 +43,7 @@ import xarray as xr
 from coastalmodeling_vdatum import vdatum
 
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
+from ofs_skill.obs_retrieval import utils
 
 
 def is_number(n: Any) -> bool:
@@ -229,7 +229,7 @@ def report_datums(prop: Any, datum_offsets: list[list[Optional[float]]], logger:
                 if datum_offsets[1][i] == -9999:
                     reason_str = reason_str + ' Out of geographic range (model);'
                 if datum_offsets[1][i] == -9990:
-                    reason_str = reason_str + ' Error opening model vdatum netcdf on the fly;'
+                    reason_str = reason_str + ' No vdatum file found (S3 or local) — no datum shift applied, water level results may be invalid;'
                 if datum_offsets[1][i] == -9991:
                     reason_str = reason_str + ' Target datum is unavailable for model conversion;'
                 if datum_offsets[1][i] == -9992:
@@ -316,17 +316,25 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
             vdatums = xr.open_dataset(s3.open(url, 'rb'))
             return vdatums
         except FileNotFoundError:
-            logger.error('vdatum file not found on the S3 bucket, trying '
-                         'backup path...')
+            logger.warning('vdatum file not found on S3 bucket, trying '
+                           'local fallback...')
             try:
                 dir_params = utils.Utils().read_config_section('directories',
                                                                logger)
-                vdatum_backup_path = os.path.join(dir_params['local_vdatum'])
-                vdatums = xr.open_dataset(vdatum_backup_path)
-                logger.info('Found local vdatum file!')
+                local_vdatum = dir_params.get('local_vdatum')
+                if not local_vdatum:
+                    logger.warning(
+                        'No local_vdatum path configured in ofs_dps.conf. '
+                        'Cannot fall back to local vdatum file.')
+                    return -9990
+                vdatums = xr.open_dataset(local_vdatum)
+                logger.warning(
+                    'Using local vdatum fallback: %s — verify this file '
+                    'is current with the S3 version.', local_vdatum)
                 return vdatums
-            except FileNotFoundError:
-                logger.error('vdatum file not found locally, either.')
+            except Exception as e_x:
+                logger.warning(
+                    'Local vdatum fallback failed: %s', e_x)
                 return -9990
         except Exception as e_x:
             logger.error('Error opening vdatums on the fly!')
@@ -433,6 +441,11 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     if 'stofs' not in prop.ofs and 'loofs2' not in prop.ofs:
         vdatums = read_vdatum_from_bucket(prop, logger)
         if isinstance(vdatums, int):
+            logger.warning(
+                'WARNING: No vdatum file could be loaded for %s (S3 and '
+                'local fallback both failed). No datum shift will be '
+                'applied. Water level results should be viewed with '
+                'caution.', prop.ofs)
             return vdatums
     else:
         logger.info('Doing datum conversion for %s!', prop.ofs)
