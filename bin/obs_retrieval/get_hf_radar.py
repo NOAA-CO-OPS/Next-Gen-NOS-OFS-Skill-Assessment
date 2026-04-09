@@ -66,6 +66,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import Point, Polygon
 
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.visualization.plotting_2d import plot_2d_current_quiver_map
 from ofs_skill.visualization.processing_2d import (
     write_2d_array_to_ascii_grid,
     write_2d_arrays_to_json,
@@ -256,7 +257,8 @@ def _build_hfradar_output_paths(data_dir, ofs, date_str, timestamp=None):
     }
 
 
-def _write_leaflet_outputs(u_array, v_array, paths, log):
+def _write_leaflet_outputs(u_array, v_array, paths, log,
+                           static_plots=False, ofs='', title_tag=''):
     """Write JSON and ASCII grid txt files from u/v xarray DataArrays.
 
     Parameters
@@ -269,6 +271,12 @@ def _write_leaflet_outputs(u_array, v_array, paths, log):
         Output paths from _build_hfradar_output_paths().
     log : logging.Logger
         Logger instance.
+    static_plots : bool
+        If True, also generate a static cartopy PNG quiver map.
+    ofs : str
+        OFS name (used for plot titles).
+    title_tag : str
+        Date/time label for the plot title.
     """
     lats = u_array['lat'].values
     lons = u_array['lon'].values
@@ -310,6 +318,18 @@ def _write_leaflet_outputs(u_array, v_array, paths, log):
         lon_grid, lat_grid,
         str(paths['dir_txt']),
     )
+
+    # Generate static cartopy quiver map if enabled
+    if static_plots:
+        png_path = paths['ssu_json'].parent / (
+            paths['ssu_json'].stem.replace('_ssu_hfradar', '_hfradar_currents')
+            + '.png'
+        )
+        title = f'{ofs.upper()} HF Radar Currents - {title_tag}'
+        plot_2d_current_quiver_map(
+            lon_grid, lat_grid, u_values, v_values,
+            title, str(png_path), log,
+        )
 
 
 def clip_by_ofs(ds, gdf):
@@ -371,7 +391,8 @@ def check_for_overlap(
     ofs,
     mode,
     start_time=None,
-    end_time=None
+    end_time=None,
+    static_plots=False,
 ):
     """Check which HF radar sources intersect with an OFS boundary and process them.
 
@@ -439,7 +460,8 @@ def check_for_overlap(
             matching_files[hf_source] = ds
             logger.info("Added HF radar source '%s' with overlap of study area", hf_source)
 
-    process_files(matching_files, date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
+    process_files(matching_files, date_obj, data_dir, gdf, ofs, mode,
+                  start_time, end_time, static_plots=static_plots)
 
 
 def process_files(
@@ -450,13 +472,15 @@ def process_files(
     ofs,
     mode,
     start_time=None,
-    end_time=None
+    end_time=None,
+    static_plots=False,
 ):
     """Process HF radar data producing both hourly and daily-averaged outputs.
 
     For each HF radar source, produces:
     - Hourly .asc, .json, and .txt files for each timestep
     - Daily-averaged .asc, .json, and .txt files (requires >=13 valid hours)
+    - Static cartopy PNG quiver maps (if static_plots is True)
 
     Parameters
     ----------
@@ -476,6 +500,8 @@ def process_files(
         If provided with end_time, overrides the default 24-hour time window.
     end_time : datetime, optional
         If provided with start_time, overrides the default 24-hour time window.
+    static_plots : bool
+        If True, generate static cartopy PNG quiver maps alongside JSON/txt.
     """
     today = datetime.now(timezone.utc).date()
 
@@ -538,7 +564,10 @@ def process_files(
             hourly_paths = _build_hfradar_output_paths(
                 data_dir, ofs, date_str, timestamp,
             )
-            _write_leaflet_outputs(u_hour, v_hour, hourly_paths, logger)
+            _write_leaflet_outputs(
+                u_hour, v_hour, hourly_paths, logger,
+                static_plots=static_plots, ofs=ofs, title_tag=timestamp,
+            )
 
             logger.info('Finished writing hourly files for %s', timestamp)
 
@@ -573,7 +602,11 @@ def process_files(
 
         # Write daily JSON + ASCII grid txt
         daily_paths = _build_hfradar_output_paths(data_dir, ofs, date_str)
-        _write_leaflet_outputs(u_avg, v_avg, daily_paths, logger)
+        _write_leaflet_outputs(
+            u_avg, v_avg, daily_paths, logger,
+            static_plots=static_plots, ofs=ofs,
+            title_tag=f'{date_str} Daily Avg',
+        )
 
         logger.info('Finished writing daily average files')
 
@@ -688,4 +721,11 @@ if __name__ == '__main__':
 
     gdf = gpd.read_file(shapefile_path)
 
-    check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time)
+    # Read static_plots setting from config
+    conf_settings = utils.Utils().read_config_section('settings', logger)
+    static_plots = conf_settings.get(
+        'static_plots', 'False',
+    ).lower() in ('true', '1', 'yes')
+
+    check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time,
+                      static_plots=static_plots)
