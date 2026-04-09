@@ -42,6 +42,7 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
     retrieve_tidal_predictions,
 )
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
+from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 
 # Control file operations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
