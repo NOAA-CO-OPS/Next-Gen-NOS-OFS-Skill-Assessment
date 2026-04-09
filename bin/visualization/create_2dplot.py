@@ -411,8 +411,8 @@ if __name__ == '__main__':
     ''' Set up paths & assign to prop1, do date validation '''
     prop1, logger = validate_and_initialize_parameters(prop1)
 
-    try:
-        for i in prop1.whichcasts:
+    for i in prop1.whichcasts:
+        try:
             prop1.whichcast = i.lower()
             logger.info('Running scripts for whichcast = %s',i)
 
@@ -462,8 +462,13 @@ if __name__ == '__main__':
 
             logger.info('Finished 2D processing for %s', prop1.whichcast)
 
-    except Exception as e:
-        logger.error('Problem processing 2d files - ABORT')
-        logger.error('Exception: %s', e)
+        except SystemExit as e:
+            logger.error('2D processing for %s exited prematurely '
+                         '(exit code %s). Continuing to next whichcast.',
+                         i, e.code)
+        except Exception as e:
+            logger.error('Problem processing 2d files for %s - '
+                         'continuing to next whichcast.', i)
+            logger.error('Exception: %s', e)
 
     logger.info('Finished create_2d_plot.py!')
