@@ -131,6 +131,11 @@ def get_icecover_model(prop, logger):
     logger = _setup_logger(logger)
     logger.info('--- Starting OFS ice cover process ---')
 
+    # Validate model source.
+    if prop.model_source.lower() == 'adcirc':
+        logger.error('Ice cover retrieval not implemented for ADCIRC.')
+        raise NotImplementedError('Ice cover retrieval not implemented for ADCIRC.')
+
     # Reformat dates
     start_dt = datetime.strptime(prop.start_date_full.replace('-', '').replace('Z', '').replace('T', '-').split('-')[0], '%Y%m%d')
     end_dt = datetime.strptime(prop.end_date_full.replace('-', '').replace('Z', '').replace('T', '-').split('-')[0], '%Y%m%d')

@@ -114,6 +114,67 @@ station_ID_list = 8551910 8571421
 user_xy_path = path/to/filename.txt
 
 
+[parallelization]
+# -----------------------------------------------------------------------
+# Parallelization settings
+#
+# All worker count settings accept either a positive integer or "auto".
+# "auto" scales the worker count based on your system's CPU count:
+#   - I/O-bound tasks (obs retrieval, model download, plotting, skill):
+#     scales up to ~2x CPU count, since threads mostly wait on network/disk
+#   - CPU-bound tasks (harmonic analysis): uses cpu_count - 1, capped at 8
+#
+# Set parallel_enabled=False to disable all parallelization and run
+# everything sequentially (all worker counts forced to 1).
+# -----------------------------------------------------------------------
+
+parallel_enabled=True
+
+# Observation retrieval (ThreadPoolExecutor, I/O-bound)
+# CO-OPS and NDBC APIs handle concurrent requests well; USGS and CHS
+# are rate-limited, so fewer workers are recommended.
+obs_coops_workers=auto
+obs_usgs_workers=auto
+obs_ndbc_workers=auto
+obs_chs_workers=auto
+
+# Model file downloads from NODD S3 (ThreadPoolExecutor, I/O-bound)
+model_download_workers=auto
+
+# Skill assessment station pairing + metrics (ThreadPoolExecutor, I/O-bound)
+skill_workers=auto
+
+# Harmonic analysis (ProcessPoolExecutor, CPU-bound)
+# Uses separate processes for utide, which releases the GIL.
+ha_workers=auto
+
+# Station plot generation (ThreadPoolExecutor, I/O-bound)
+plot_workers=auto
+
+# Variable-level parallelism (experimental)
+# Process multiple variables (wl, temp, salt, cu) concurrently within
+# a single pipeline stage. Only enable if you have sufficient memory.
+parallel_variables=False
+
+# Workflow-level parallelism: run obs download + model extraction concurrently
+parallel_workflow=False
+
+# Station-level parallelism: process stations in parallel during model extraction
+parallel_stations=False
+
+# Plotting parallelism: generate station plots in parallel
+parallel_plotting=False
+
+# Forecast cycle parallelism: process forecast_a cycles concurrently
+parallel_forecast_cycles=False
+
+# Obs variable parallelism: download obs for all variables concurrently
+parallel_obs_variables=False
+
+# 2D interpolation parallelism: run IDW interpolation for variables in parallel
+parallel_2d_interp=False
+
+
 [settings]
 # Would you like to make static (.png) station plots in addition to
 # the interactive plotly plots?
