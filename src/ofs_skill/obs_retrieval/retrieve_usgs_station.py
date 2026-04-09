@@ -209,7 +209,7 @@ def retrieve_usgs_station(
     elif variable == 'salinity':
         if first_code in _SPECIFIC_CONDUCTANCE_CODES:
             logger.info(
-                'Station %s reports specific conductance (code %s) — '
+                'Station %s reports specific conductance at 25 Celsius (code %s) — '
                 'converting to salinity PSU', station, first_code
             )
             obs['OBS'] = obs['OBS'] * 0.00064
