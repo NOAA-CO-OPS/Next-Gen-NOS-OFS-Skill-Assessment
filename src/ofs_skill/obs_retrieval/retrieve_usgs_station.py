@@ -53,6 +53,12 @@ _KNOT_CODES = {'70232'}
 # Current codes in mph
 _MPH_CODES = {'72294', '72321'}
 
+# Specific conductance code requiring conversion to PSU
+_SPECIFIC_CONDUCTANCE_CODES = {'00095'}
+
+# Preferred salinity codes (actual salinity, not conductance)
+_PREFERRED_SALINITY_CODES = {'00480', '72401', '90860', '90862', '00096', '70305'}
+
 
 def retrieve_usgs_station(
     retrieve_input: object,
@@ -154,9 +160,28 @@ def retrieve_usgs_station(
     if data_filtered.empty:
         return None
 
+    # For salinity, prefer actual salinity codes over specific conductance
+    if variable == 'salinity':
+        preferred = data_filtered[data_filtered['code'].isin(_PREFERRED_SALINITY_CODES)]
+        if not preferred.empty:
+            data_filtered = preferred
+
     # Use the first available code that has data
     first_code = data_filtered['code'].iloc[0]
     data_for_code = data_filtered[data_filtered['code'] == first_code].copy()
+
+    # Filter to a single time series to avoid duplicate timestamps.
+    # The new Water Data API uses time_series_id to distinguish sensors;
+    # the legacy NWIS API used option. Try both.
+    if 'time_series_id' in data_for_code.columns:
+        first_ts = data_for_code['time_series_id'].iloc[0]
+        data_for_code = data_for_code[data_for_code['time_series_id'] == first_ts]
+    elif 'option' in data_for_code.columns:
+        first_option = data_for_code['option'].iloc[0]
+        data_for_code = data_for_code[data_for_code['option'] == first_option]
+
+    # Drop any remaining duplicate timestamps, keeping first value
+    data_for_code = data_for_code.drop_duplicates(subset='datetime', keep='first')
 
     # Build output DataFrame
     obs = pd.DataFrame({
@@ -180,6 +205,14 @@ def retrieve_usgs_station(
     elif variable == 'water_temperature':
         if first_code in _FAHRENHEIT_CODES:
             obs['OBS'] = (obs['OBS'] - 32) * (5 / 9)
+
+    elif variable == 'salinity':
+        if first_code in _SPECIFIC_CONDUCTANCE_CODES:
+            logger.info(
+                'Station %s reports specific conductance at 25 Celsius (code %s) — '
+                'converting to salinity PSU', station, first_code
+            )
+            obs['OBS'] = obs['OBS'] * 0.00064
 
     elif variable == 'currents':
         if first_code in _FT_PER_SEC_CODES:

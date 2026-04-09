@@ -1,25 +1,20 @@
 """
 Create inventory of USGS stream gauge stations.
 
-This module uses the modern USGS Water Data API (via dataretrieval) to
-discover water and atmospheric stations within specified geographic bounds.
-It replaces the decommissioned NWIS inventory endpoint.
-
-Parameter availability is checked via searvey to set accurate has_wl,
+Uses searvey's ``get_usgs_stations(bbox=...)`` fast-path to discover
+water and atmospheric stations within specified geographic bounds,
+then checks parameter availability via searvey to set accurate has_wl,
 has_temp, has_salt, has_cu flags, preventing unnecessary retrieval calls.
 """
 
 import os
 from logging import Logger
 
-import geopandas as gpd
 import pandas as pd
-from dataretrieval import waterdata
-from searvey.usgs import get_station_parameter_availability
+from searvey.usgs import get_station_parameter_availability, get_usgs_stations
 
 # Environment variable for USGS API key (same as searvey uses)
-_USGS_API_KEY_ENV = 'API_USGS_PAT'
-
+_USGS_API_KEY_ENV = 'API_USGS_PAT'  # pragma: allowlist secret
 
 # Site type codes for water-related monitoring locations
 WATER_SITE_TYPES = {
@@ -33,6 +28,7 @@ WATER_SITE_TYPES = {
 
 # Max stations per parameter availability API call.
 # Kept below 100 to avoid 403 "query exceeding server limits" errors.
+# searvey's get_station_parameter_availability does not chunk internally.
 _PARAM_AVAIL_CHUNK_SIZE = 80
 
 
@@ -83,14 +79,14 @@ def inventory_usgs_station(
     """
     Create inventory of USGS stations within geographic bounds.
 
-    Uses the modern USGS Water Data API via dataretrieval's
-    get_monitoring_locations() with bounding box query, then checks
-    parameter availability via searvey to set accurate variable flags.
+    Uses searvey's ``get_usgs_stations(bbox=...)`` direct API query for
+    fast station discovery, then checks parameter availability to set
+    accurate variable flags.
 
     Note:
         start_date and end_date are accepted for API compatibility with
         the caller (retrieving_inventories) but are not used by the
-        modern USGS Water Data API for station discovery.
+        USGS Water Data API for station discovery.
     """
     empty_df = pd.DataFrame(columns=[
         'ID', 'X', 'Y', 'Source', 'Name',
@@ -107,51 +103,43 @@ def inventory_usgs_station(
     logger.info('Calling USGS Water Data API for inventory...')
 
     try:
-        # Query monitoring locations by bounding box
-        # bbox format: [lon_min, lat_min, lon_max, lat_max]
-        sites, _ = waterdata.get_monitoring_locations(
+        stations = get_usgs_stations(
             bbox=[lon_1, lat_1, lon_2, lat_2],
         )
     except Exception as ex:
         logger.error('USGS station discovery failed: %s', str(ex))
         return empty_df
 
-    if sites.empty:
+    if stations.empty:
         logger.warning('No USGS stations found in bounding box.')
         return empty_df
 
     # Filter to water-related site types
-    stations = sites[sites['site_type_code'].isin(WATER_SITE_TYPES)].copy()
+    if 'site_type_code' in stations.columns:
+        stations = stations[
+            stations['site_type_code'].isin(WATER_SITE_TYPES)
+        ].copy()
+
     logger.info(
-        'Found %d water-related stations out of %d total in bounding box',
-        len(stations), len(sites)
+        'Found %d water-related stations in bounding box',
+        len(stations)
     )
 
     if stations.empty:
         logger.warning('No water-related USGS stations found.')
         return empty_df
 
-    # Extract lat/lon from geometry
-    if isinstance(stations, gpd.GeoDataFrame) and 'geometry' in stations.columns:
-        lons = stations.geometry.x.values
-        lats = stations.geometry.y.values
-    else:
-        logger.error('USGS stations missing geometry data.')
-        return empty_df
-
-    # Extract site_no from monitoring_location_id
-    # e.g., "USGS-01669850" -> "01669850"
-    site_nos = stations['monitoring_location_id'].str.replace(
-        'USGS-', '', regex=False
-    ).values
+    # searvey normalizes site_no, station_nm, and geometry (dec_long_va,
+    # dec_lat_va) from the raw waterdata API response.
+    site_nos = stations['site_no'].values
 
     # Build output DataFrame
     inventory = pd.DataFrame({
         'ID': site_nos,
-        'X': pd.to_numeric(lons),
-        'Y': pd.to_numeric(lats),
+        'X': pd.to_numeric(stations['dec_long_va'].values),
+        'Y': pd.to_numeric(stations['dec_lat_va'].values),
         'Source': 'USGS',
-        'Name': stations['monitoring_location_name'].values,
+        'Name': stations['station_nm'].values,
     })
 
     # Check if USGS API key is available for parameter availability queries.
