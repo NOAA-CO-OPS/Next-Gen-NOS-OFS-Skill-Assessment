@@ -61,7 +61,10 @@ visual_horizon_dir = horizon_visual
 om_dir = om_files
 tidal_analysis_dir = tidal_analysis
 model_historical_dir_backup=Add_model_historical_dir_backup
-
+# Local fallback path for the vertical datum NetCDF file. Only used if the
+# vdatum file cannot be read from the NODD S3 bucket (noaa-nos-ofs-pds).
+# Set this to the full path of a local copy of {ofs}_vdatums.nc.
+local_vdatum = Add_path_to/file.nc
 
 [urls]
 # Station URLs
