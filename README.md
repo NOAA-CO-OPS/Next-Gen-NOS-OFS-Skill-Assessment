@@ -347,7 +347,7 @@ For observed water levels, whenever possible, data is downloaded using an API th
 For modeled water levels, datum conversions are made on-the-fly using netCDF files that contain a 2D grid of conversion factors for a variety of datums including MLLW, MLW, MHW, NAVD88, and xgeoid20b. These netCDF files are available for every OFS (titled `{OFS}_vdatums.nc`) on the [NOAA Open Data Dissemination Amazon S3 bucket](https://noaa-nos-ofs-pds.s3.amazonaws.com/index.html#OFS_Grid_Datum/). Currently,
 
 ## 2.4 1D observation data sources
-The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, and NDBC observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all three. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
+The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, NDBC, and CHS (Canadian Hydrographic Service) observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all four. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
 
 ## 2.5 2D observation data sources
 Currently, the 2D skill assessment can handle sea surface temperature (SST) only. It automatically downloads hourly L3C SST satellite products for the user-defined OFS, including from GOES-16, and GOES-18/West, and/or GOES-19/East. GOES-16 was replaced by GOES-19/East in April 2025, and is only used for skill assessment runs prior to that date. Future updates will include analysis using additional remote sensing products, such as L4 NASA SPoRT, as well as support for current velocity, sea surface height, and salinity.
@@ -600,10 +600,10 @@ where
 * _-d_ is the vertical datum used to retrieve water level observations
 * _-ws_ is the mode (nowcast, forecast_a, and/or forecast_b)
 * _-t_ is the file format/type (stations or fields).
-* _-so_ is the observation station owner/provider (NDBC, USGS, and/or CO-OPS, OR a custom `list` of station IDs)
+* _-so_ is the observation station owner/provider (NDBC, USGS, CO-OPS, and/or CHS, OR a custom `list` of station IDs)
 * _-vs_ is variable selction (water_level, water_temperature, salinity, and/or currents)
 
-So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and forecast OFS output with station files (and 6-minute time resolution), with a vertical water level datum of mean lower low water, observation retrieval from CO-OPS, NDBC, and USGS stations, and all oceanographic variables selected. All possible input options and arguments are summarized in the table below.
+So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and forecast OFS output with station files (and 6-minute time resolution), with a vertical water level datum of mean lower low water, observation retrieval from CO-OPS, NDBC, USGS, and CHS stations, and all oceanographic variables selected. All possible input options and arguments are summarized in the table below.
 
 
 | Option explanation | Option syntax | Verbose syntax | Arguments | Required/optional |
@@ -617,11 +617,11 @@ So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and
 |Mode, or 'cast'|-ws|--WhichCast|nowcast, forecast_a, and/or forecast_b|required<br><sub>(can use one or all)</sub>|
 |OFS file format|-t|--FileType|stations OR fields|optional<br><sub>(Choose only one -- default is stations)</sub>|
 |Forecast cycle hour<br><sub>(for use only with forecast_a mode)</sub>|-f|--Forecast_Hr|e.g. '06hr', '12hr'|optional<br><sub>(default is '00hr', or closest cycle to '00hr')</sub>|
-|Observation station owner selection|-so|--Station_Owner|USGS, NDBC, and/or CO-OPS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS)</sub>|
+|Observation station owner selection|-so|--Station_Owner|USGS, NDBC, CO-OPS, CHS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS, CHS)</sub>|
 |Enable forecast horizon & model cycle skill|-hs|--Horizon_Skill|None, just include -hs|optional<br><sub>(default is False)</sub>|
 |Variable selection|-vs|--Var_Selection|water_level, water_temperature, salinity, currents|optional<br><sub>(default is all variables)</sub>|
 
-Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs`, and `stations` respectively. So the same run can be achieved using a shorter call:
+Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs,chs`, and `stations` respectively. So the same run can be achieved using a shorter call:
 
 ```
 python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2025-10-01T00:00:00Z -e 2025-10-02T00:00:00Z -d MLLW -ws nowcast,forecast_b

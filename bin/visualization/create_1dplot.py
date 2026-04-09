@@ -45,7 +45,7 @@ Arguments:
  -ws whichcast, --Whichcast"
                        'Nowcast', 'Forecast_A', 'Forecast_B'
  -so stationowner, --Station_Owner" [optional]
-                       'NDBC', 'CO-OPS', 'USGS'
+                       'NDBC', 'CO-OPS', 'USGS', 'CHS'
 Output:
 Output:
 Name                 Description
