@@ -60,6 +60,7 @@ def ofs_ctlfile_extract(prop, name_var, logger):
                 read_ofs_ctl_file = file.read()
 
                 lines = read_ofs_ctl_file.split('\n')
+                lines = [x for x in lines if x != '']
                 lines = [i.split(' ') for i in lines]
                 lines = [list(filter(None, i)) for i in lines]
 
