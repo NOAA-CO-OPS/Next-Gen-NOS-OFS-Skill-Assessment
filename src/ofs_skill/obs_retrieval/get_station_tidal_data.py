@@ -121,21 +121,6 @@ def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
                 tidal_station_distance = candidate_dist
                 break
 
-    # # # 8. Write tidal_data to file if it exists
-    # if tidal_data is not None:
-    #     try:
-    #         # Construct filename: e.g., output_path/8518750_tidal_predictions_MLLW.csv
-    #         output_dir = Path(prop.output_path)
-    #         output_dir.mkdir(parents=True, exist_ok=True)
-
-    #         filename = f"{tidal_station_id}_tidal_predictions_{used_datum}.csv"
-    #         file_path = output_dir / filename
-
-    #         tidal_data.to_csv(file_path, index=False)
-    #         logger.info('Successfully saved tidal data to %s', file_path)
-    #     except Exception as ex:
-    #         logger.error('Failed to write tidal data to file: %s', ex)
-
     tidal_info = {"tidal_station_id": tidal_station_id,
                   "tidal_station_name": tidal_station_name,
                   "tidal_station_distance": tidal_station_distance,

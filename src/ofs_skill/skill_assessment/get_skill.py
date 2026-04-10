@@ -63,20 +63,20 @@ def ofs_ctlfile_extract(prop, name_var, logger):
                 lines = [i.split(' ') for i in lines]
                 lines = [list(filter(None, i)) for i in lines]
 
-                nodes = np.array(lines[:-1])[:, 0]
+                nodes = np.array(lines)[:, 0]
                 nodes = [int(i) for i in nodes]
 
-                depths = np.array(lines[:-1])[:,1]
+                depths = np.array(lines)[:,1]
                 # this is the index of the nearest siglay to the
                 # observations station
                 depths = [int(i) for i in depths]
 
-                shifts = np.array(lines[:-1])[:, -1]
+                shifts = np.array(lines)[:, -1]
                 # this is the shift that can be applied to the ofs timeseries,
                 # for instance if there is a known bias in the model
                 shifts = [float(i) for i in shifts]
 
-                ids = np.array(lines[:-1])[:, -2]
+                ids = np.array(lines)[:, -2]
                 ids = [str(i) for i in ids]
 
                 return lines, nodes, depths, shifts, ids
@@ -240,6 +240,7 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         station_id = read_station_ctl_file[0][obs_row][0]
 
         # Continue formatting paired series
+        formatted_series = None
         formatted_series = prepare_series(
             read_station_ctl_file, read_ofs_ctl_file, prop,
             name_var, i, obs_row, logger

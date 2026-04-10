@@ -63,6 +63,12 @@ def skill_scalar(
         - pofpf: Positive outlier frequency pass/fail
         - nof: Negative outlier frequency
         - nofpf: Negative outlier frequency pass/fail
+        - mdpo: Max duration of positive outliers
+        - mdpopf: MDPO pass/fail
+        - mdno: Max duration of negative outliers
+        - mdnopf: MDNO pass/fail
+        - wof: worst-case outlier frequency
+        - wofpf: WOF pass/fail
         - stdev: Standard deviation of bias
         - X1: Error threshold
 
@@ -292,7 +298,7 @@ def skill_vector(
         # MDPO/MDNO
         mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
         mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)
@@ -447,7 +453,7 @@ def skill_vector_dir(
         # MDPO/MDNO
         mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
         mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = (df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
+        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)

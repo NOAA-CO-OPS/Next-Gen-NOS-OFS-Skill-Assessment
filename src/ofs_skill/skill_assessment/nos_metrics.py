@@ -223,16 +223,21 @@ def max_duration_negative_outliers(errors, threshold):
     return max(max_run, current)
 
 def worst_case_outlier_frequency(ofs, obs, tides, threshold):
-    """Longest consecutive run of negative outliers (errors <= -2*threshold).
+    """
+    Calculates the percentage of worst-case outliers between model and observation data.
 
-    Parameters
-    ----------
-    errors : array-like
-    threshold : float
+    A "worst-case outlier" is defined as a data point where both of the following conditions are met:
+    1. The model (`ofs`) and observation (`obs`) fall on opposite sides of the tidal baseline (`tides`).
+    2. The absolute difference between the forecast and observation is strictly greater than twice the specified error threshold.
 
-    Returns
-    -------
-    float (percentage)
+    Args:
+        ofs (numpy.ndarray): Array of forecast values (e.g., Ocean Forecast System data).
+        obs (numpy.ndarray): Array of observational data values. Must be the same length as `ofs`.
+        tides (numpy.ndarray): Array of tidal baseline values. Must be the same length as `ofs` and `obs`.
+        threshold (float or int): The baseline error threshold. The calculation checks for differences greater than 2x this value.
+
+    Returns:
+        float or None: The percentage (0.0 to 100.0) of valid (non-NaN) data points that are classified as worst-case outliers. Returns `None` if a `ValueError` is raised (e.g., due to array shape mismatches).
     """
 
     # ofs, obs, tides are numpy arrays of same length and
