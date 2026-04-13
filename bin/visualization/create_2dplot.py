@@ -131,7 +131,10 @@ def validate_and_initialize_parameters(prop):
             sys.exit(-1)
 
     if 'forecast_a' in prop.whichcasts and prop.forecast_hr is None:
-        logger.error('Forecast_Hr is required if Whichcast is forecast_a. Abort!')
+        logger.error(
+            'Forecast_Hr (e.g., "now", "06z", "12z") is required '
+            'if Whichcast is forecast_a. Abort!'
+        )
         sys.exit(-1)
 
     # Create necessary directories
