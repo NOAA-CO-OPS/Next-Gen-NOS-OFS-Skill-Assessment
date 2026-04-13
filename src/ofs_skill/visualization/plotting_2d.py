@@ -173,6 +173,7 @@ def json_to_numpy(files, logger):
     try:
         z_all = np.stack(z_all)
     except ValueError as e:
+        logger.error("Can't stack arrays with different shapes!")
         raise ValueError("Can't stack arrays with different shapes!") from e
 
     return x, y, z_all
@@ -519,6 +520,7 @@ def plot_2d(prop1,logger):
             mod_files = [mod_files[i] for i in mod_ind]
             # Check pairing again to make sure
             if set(sat_dates) != set(mod_dates):
+                logger.error('Cannot pair satellite and model data!')
                 raise ValueError('Cannot pair satellite and model data!')
 
         #
@@ -546,6 +548,7 @@ def plot_2d(prop1,logger):
             and (z_sat.shape[0] == len(sat_dates))):
             time_steps = len(sat_dates)
         else:
+            logger.error('Satellite and model arrays are different shapes!')
             raise ValueError(
                 'Satellite and model arrays are different shapes!'
             )

@@ -463,6 +463,8 @@ if __name__ == '__main__':
             logger.info('Finished 2D processing for %s', prop1.whichcast)
 
         except SystemExit as e:
+            # Catch sys.exit() calls from list_of_files, intake_model,
+            # and other functions in the call chain that still use sys.exit
             logger.error('2D processing for %s exited prematurely '
                          '(exit code %s). Continuing to next whichcast.',
                          i, e.code)
