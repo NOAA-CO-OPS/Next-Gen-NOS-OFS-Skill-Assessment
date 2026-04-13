@@ -551,6 +551,15 @@ def create_1dplot(prop, logger):
 
     logger.info('Starting parameter validation...')
 
+    # Validate whichcast values
+    valid_whichcasts = {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}
+    for wc in prop.whichcasts:
+        if wc.lower() not in valid_whichcasts:
+            logger.error("Invalid whichcast value: '%s'. "
+                         'Valid values: %s. Abort!',
+                         wc, sorted(valid_whichcasts))
+            sys.exit(-1)
+
     # Save original (user-supplied) start date before any forecast_a
     # adjustment.  _process_forecast_cycle uses this to independently
     # recompute dates for each cycle.
