@@ -349,6 +349,8 @@ For modeled water levels, datum conversions are made on-the-fly using netCDF fil
 ## 2.4 1D observation data sources
 The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, NDBC, and CHS (Canadian Hydrographic Service) observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all four. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
 
+CO-OPS ADCP currents stations report many vertical bins per sensor. The software retrieves every bin's time series, resolves an accurate depth for each (including side-looking / PICS ADCPs via the CO-OPS MDAPI `height_from_bottom` + model bathymetry), and emits one virtual station (`{parent}_b{NN}`) per bin through the entire pipeline (obs → model CTL → paired → plots). See the [CO-OPS ADCP current processing](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing) wiki page for the full workflow and the optional `-cb` flag that lets you pin specific bins and override depths from a CSV.
+
 ## 2.5 2D observation data sources
 Currently, the 2D skill assessment can handle sea surface temperature (SST) only. It automatically downloads hourly L3C SST satellite products for the user-defined OFS, including from GOES-16, and GOES-18/West, and/or GOES-19/East. GOES-16 was replaced by GOES-19/East in April 2025, and is only used for skill assessment runs prior to that date. Future updates will include analysis using additional remote sensing products, such as L4 NASA SPoRT, as well as support for current velocity, sea surface height, and salinity.
 
@@ -622,6 +624,7 @@ So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and
 |Observation station owner selection|-so|--Station_Owner|USGS, NDBC, CO-OPS, CHS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS, CHS)</sub>|
 |Enable forecast horizon & model cycle skill|-hs|--Horizon_Skill|None, just include -hs|optional<br><sub>(default is False)</sub>|
 |Variable selection|-vs|--Var_Selection|water_level, water_temperature, salinity, currents|optional<br><sub>(default is all variables)</sub>|
+|Currents-bins override CSV<br><sub>([wiki](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing))</sub>|-cb|--Currents_Bins_Csv|path to a CSV with columns `station_id,bin,depth,orientation,name`|optional<br><sub>(currents only; default processes all bins per ADCP)</sub>|
 
 Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs,chs`, and `stations` respectively. So the same run can be achieved using a shorter call:
 

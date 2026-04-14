@@ -121,26 +121,39 @@ def get_title(
     Generate formatted HTML plot title with station and run metadata.
 
     Creates a multi-line title including OFS name, station information,
-    node ID, NWS ID (for CO-OPS stations), and date range.
+    node ID, NWS ID (for CO-OPS water-level / temp / salt stations), and
+    date range. For currents plots (``name_var == 'cu'``) the title also
+    carries an ``Obs depth / Model depth`` annotation produced by
+    :func:`_build_depth_line`, with a ``Bin NN`` prefix for CO-OPS
+    per-bin ADCP virtual IDs.
 
     Args:
-        prop: Properties object containing run configuration
-              Must have: start_date_full, end_date_full, ofs
-        node: Model node identifier
-        station_id: Tuple of (station_number, station_name, source)
-        name_var: Variable name (used to exclude NWS lookup for currents)
-        logger: Logger instance for error messages
+        prop: Properties object containing run configuration.
+            Must have: ``start_date_full``, ``end_date_full``, ``ofs``,
+            and (for currents) ``control_files_path`` so the depth line
+            can resolve obs/model depths from the station and model
+            ctl files.
+        node: Model node identifier (integer index as string).
+        station_id: Tuple of (station_number, station_name, source).
+            For ADCP per-bin plots ``station_number`` is the virtual ID
+            ``{parent}_b{NN}``.
+        name_var: Variable name. Controls whether the NWS SHEF lookup
+            runs (wl/temp/salt) or the currents depth annotation runs
+            (cu).
+        logger: Logger instance for error messages.
 
     Returns:
-        HTML-formatted title string with bold headers and proper spacing
+        HTML-formatted title string with bold headers and proper spacing.
 
     Example:
-        >>> title = get_title(prop, '123', ('8454000', 'Providence', 'CO-OPS'), 'wl', logger)
+        >>> title = get_title(prop, '123',
+        ...     ('8454000', 'Providence', 'CO-OPS'), 'wl', logger)
 
     Notes:
-        - Handles both ISO format (YYYY-MM-DDTHH:MM:SSZ) and legacy format
-        - Retrieves NWS SHEF code from NOAA API for CO-OPS stations
-        - Uses non-breaking spaces (&nbsp;) for proper spacing in HTML
+        - Handles both ISO format (YYYY-MM-DDTHH:MM:SSZ) and legacy format.
+        - Retrieves NWS SHEF code from NOAA API for CO-OPS non-currents
+          stations.
+        - Uses non-breaking spaces (&nbsp;) for proper spacing in HTML.
     """
     # If incoming date format is YYYY-MM-DDTHH:MM:SSZ, remove 'Z' and 'T'
     if 'Z' in prop.start_date_full and 'Z' in prop.end_date_full:

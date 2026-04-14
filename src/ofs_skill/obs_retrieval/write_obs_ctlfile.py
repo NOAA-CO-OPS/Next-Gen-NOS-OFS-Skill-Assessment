@@ -782,8 +782,9 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
 
     ``currents_bins_csv`` is an optional path to a user-supplied CSV
     that pins which CO-OPS ADCP bins are processed and/or overrides
-    their depth/orientation/name. Schema + behaviour are documented in
-    ``issue_87_currents_bins_workflow.md``.
+    their depth/orientation/name. Schema + behaviour are documented on
+    the repo wiki under *CO-OPS ADCP current processing*:
+    https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing
     """
 
     start_dt = datetime.strptime( start_date , '%Y%m%d' )

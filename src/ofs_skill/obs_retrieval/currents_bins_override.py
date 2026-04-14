@@ -3,7 +3,11 @@ Parser for the optional currents-bins override CSV.
 
 Lets a user pin which ADCP bins are processed and override any of
 ``depth``, ``orientation``, or display ``name`` on a per-bin basis.
-See ``issue_87_currents_bins_workflow.md`` for end-user docs.
+Full end-user docs — schema, CLI usage, worked examples, and the
+behaviour matrix — live on the wiki under *CO-OPS ADCP current
+processing*:
+
+https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing
 
 CSV schema (header row required, column order flexible):
 
@@ -15,14 +19,20 @@ CSV schema (header row required, column order flexible):
   treated as "do not override".
 * Rows for the same ``station_id`` with the same ``bin`` replace each
   other — later wins.
+* Blank lines and lines whose first non-whitespace character is ``#``
+  are skipped, so a shipped example can carry inline comments.
 
 Behaviour at CTL-write time (see ``write_obs_ctlfile._process_coops_station``):
 
 * If a parent station has **any** rows in the CSV, **only** those bins
-  are emitted (filter mode).
+  are emitted (filter mode). The bin set is also passed into
+  :func:`~ofs_skill.obs_retrieval.retrieve_t_and_c_station.retrieve_t_and_c_station`
+  via ``only_bins`` so the CO-OPS datagetter is only called for pinned
+  bins.
 * For each surviving bin, any non-empty CSV field overrides the
-  MDAPI-derived value (depth/orientation) or appends to the display
-  name.
+  MDAPI-derived value. A user-supplied ``depth`` short-circuits the
+  side-looking ``water_depth - height_from_bottom`` resolver by
+  forcing ``hfb = 0.00`` in the obs station ctl.
 * If the CSV names a bin that the datagetter did not return, a WARNING
   is logged and the row is skipped.
 * Parent stations absent from the CSV keep the default "emit all bins"

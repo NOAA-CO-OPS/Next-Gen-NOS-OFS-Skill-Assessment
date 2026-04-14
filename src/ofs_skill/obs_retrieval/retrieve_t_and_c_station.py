@@ -7,6 +7,11 @@ stations, as well as tidal predictions and nearest station finding capabilities.
 
 The retrieval is performed in 30-day chunks to handle API limitations, with
 automatic retry logic for temperature and salinity using backup URLs.
+
+For ``variable == 'currents'`` the module fans out to one datagetter call per
+ADCP bin (``&bin=N``) and returns a ``dict[int, DataFrame]`` keyed by bin
+number — see :func:`_retrieve_currents_all_bins` and the wiki page
+"CO-OPS ADCP current processing" for the full flow.
 """
 
 import json
@@ -142,15 +147,22 @@ def retrieve_t_and_c_station(
                        'currents', 'salinity', 'wind', 'air_pressure')
             - datum: Vertical datum (for water_level)
         logger: Logger instance for logging messages
+        only_bins: Optional set of ADCP bin numbers to restrict the
+            currents retrieval to. Ignored for non-currents variables.
+            When supplied, the datagetter is only called for those
+            bins — used by ``write_obs_ctlfile`` to honour the user
+            currents-bins CSV without fetching every bin.
 
     Returns:
         For ``variable == 'currents'``:
             ``dict[int, pd.DataFrame]`` keyed by ADCP bin number. Each
             DataFrame carries per-bin depth via ``df.attrs['depth']`` (also
-            populated in the ``DEP01`` column) plus ``df.attrs['bin']`` and
-            ``df.attrs['orientation']``. If the bins endpoint is unavailable
-            the retrieval falls back to a single ``{1: DataFrame}`` using the
-            ``real_time_bin`` depth (legacy behavior).
+            populated in the ``DEP01`` column) plus ``df.attrs['bin']``,
+            ``df.attrs['orientation']``, and ``df.attrs['height_from_bottom']``
+            (the last used by the model-CTL writer to resolve depth for
+            side-looking PICS ADCPs). If the bins endpoint is unavailable
+            the retrieval falls back to a single ``{1: DataFrame}`` using
+            the ``real_time_bin`` depth (legacy behavior).
         For other variables:
             DataFrame with columns DateTime, DEP01, OBS (and DIR for wind).
         ``None`` if no data retrieved.
