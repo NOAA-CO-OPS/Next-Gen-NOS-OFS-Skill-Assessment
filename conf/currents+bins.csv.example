@@ -1,6 +1,7 @@
 station_id,bin,depth,orientation,name
 # Example currents-bins override CSV for issue #87.
-# See issue_87_currents_bins_workflow.md for the full schema + usage.
+# See the wiki for the full schema + usage:
+# https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing
 #
 # Lines starting with `#` are NOT valid CSV; remove them before use.
 # Only the `station_id` and `bin` columns are required; everything
@@ -8,7 +9,7 @@ station_id,bin,depth,orientation,name
 #
 # Example: process only 3 bins at cb1001, with a hand-picked depth for
 # the middle bin (model bathymetry is known to mis-resolve the LNG
-# berth here — see workflow doc).
+# berth here — see wiki).
 cb1001,1,3.5,up,
 cb1001,15,9.0,up,mid-column
 cb1001,30,13.5,up,near-surface

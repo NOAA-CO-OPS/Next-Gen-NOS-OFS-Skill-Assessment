@@ -41,6 +41,7 @@ from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_ex
 
 def _model_bathymetry_at_node(
     node_idx: Any, model: Any, model_source: str,
+    logger: Logger,
 ) -> float:
     """Return local water depth (positive, meters) at a given model node.
 
@@ -48,9 +49,13 @@ def _model_bathymetry_at_node(
     when the bathymetry field is unavailable or the node is invalid.
     """
     if node_idx is None:
+        logger.debug(
+            'Bathymetry lookup: node_idx is None; returning 0.0')
         return 0.0
     try:
         if isinstance(node_idx, float) and np.isnan(node_idx):
+            logger.debug(
+                'Bathymetry lookup: node_idx is NaN; returning 0.0')
             return 0.0
     except TypeError:
         pass
@@ -78,14 +83,35 @@ def _model_bathymetry_at_node(
                 return float(abs(z[-1, int(node_idx)]))
             return float(abs(z[int(node_idx)]))
         if model_source == 'schism':
+            # Some SCHISM outputs expose 'depth' as a per-level
+            # coordinate-axis array rather than nodal bathymetry, so
+            # validate rank before accepting 'depth' or 'h'.
             for key in ('depth', 'h', 'zcoords'):
-                if key in model:
-                    arr = np.asarray(model[key])
-                    if key == 'zcoords':
-                        return float(abs(arr[0, int(node_idx), -1]))
-                    return float(abs(arr.flat[int(node_idx)]))
-    except (KeyError, IndexError, ValueError, TypeError):
-        pass
+                if key not in model:
+                    continue
+                arr = np.asarray(model[key])
+                if key == 'zcoords':
+                    return float(abs(arr[0, int(node_idx), -1]))
+                if arr.ndim != 1:
+                    logger.debug(
+                        "Bathymetry lookup: SCHISM key %r is %d-D "
+                        "(expected 1-D nodal array); skipping",
+                        key, arr.ndim)
+                    continue
+                return float(abs(arr[int(node_idx)]))
+            logger.debug(
+                'Bathymetry lookup: SCHISM exhausted candidate keys '
+                '(depth, h, zcoords) without a valid nodal array; '
+                'returning 0.0')
+            return 0.0
+    except (KeyError, IndexError, ValueError, TypeError) as ex:
+        logger.debug(
+            'Bathymetry lookup for %s raised %s (%s); returning 0.0',
+            model_source, type(ex).__name__, ex)
+        return 0.0
+    logger.debug(
+        'Bathymetry lookup: no handler matched model_source=%r; '
+        'returning 0.0', model_source)
     return 0.0
 
 
@@ -125,7 +151,7 @@ def _resolve_side_looking_depths(
             continue
         node = list_of_nearest_node[idx]
         water_depth = _model_bathymetry_at_node(
-            node, model, prop.model_source)
+            node, model, prop.model_source, logger)
         if water_depth <= 0:
             continue
         resolved = max(0.0, water_depth - hfb)
@@ -136,9 +162,18 @@ def _resolve_side_looking_depths(
             station_id = info_rows[idx][0]
         except (IndexError, TypeError):
             station_id = f'idx={idx}'
-        logger.info(
-            'Side-looking ADCP %s: water_depth=%.2f m, hfb=%.2f m -> '
-            'obs_depth=%.2f m', station_id, water_depth, hfb, resolved)
+        if hfb > water_depth:
+            logger.warning(
+                'Station %s height_from_bottom %.2f m exceeds model '
+                'bathymetry %.2f m at nearest node %s — obs depth '
+                'clamped to 0.0 m; skill metrics for this station '
+                'may be meaningless.',
+                station_id, hfb, water_depth, node)
+        else:
+            logger.info(
+                'Side-looking ADCP %s: water_depth=%.2f m, hfb=%.2f m '
+                '-> obs_depth=%.2f m',
+                station_id, water_depth, hfb, resolved)
 
     if updated and control_file_path:
         try:

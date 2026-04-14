@@ -959,8 +959,8 @@ if __name__ == '__main__':
         default=None,
         help='Optional path to a CSV that pins which CO-OPS ADCP bins are '
              'processed and/or overrides their depth/orientation/name. '
-             'Columns: station_id,bin,depth,orientation,name. See '
-             'issue_87_currents_bins_workflow.md.')
+             'Columns: station_id,bin,depth,orientation,name. See the wiki: '
+             'https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing')
 
     args = parser.parse_args()
 
