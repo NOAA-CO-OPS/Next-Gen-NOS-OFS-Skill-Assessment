@@ -39,6 +39,124 @@ from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 
 
+def _model_bathymetry_at_node(
+    node_idx: Any, model: Any, model_source: str,
+) -> float:
+    """Return local water depth (positive, meters) at a given model node.
+
+    Uses model-source-specific conventions; safely falls back to 0.0
+    when the bathymetry field is unavailable or the node is invalid.
+    """
+    if node_idx is None:
+        return 0.0
+    try:
+        if isinstance(node_idx, float) and np.isnan(node_idx):
+            return 0.0
+    except TypeError:
+        pass
+    try:
+        if model_source == 'roms':
+            h = np.asarray(model['h'])
+            h = np.squeeze(h)
+            if h.ndim == 3:
+                h = h[0]
+            flat = h.ravel()
+            return float(abs(flat[int(node_idx)]))
+        if model_source == 'fvcom':
+            # Station-file FVCOM: ``z`` has shape (siglay, node, time) or
+            # similar. Take the deepest layer as the bathy proxy.
+            if 'h' in model:
+                h = np.asarray(model['h'])
+                h = np.squeeze(h)
+                if h.ndim >= 2:
+                    return float(abs(h.flat[int(node_idx)]))
+                return float(abs(h[int(node_idx)]))
+            z = np.asarray(model['z'])
+            if z.ndim == 3:
+                return float(abs(z[-1, int(node_idx), 0]))
+            if z.ndim == 2:
+                return float(abs(z[-1, int(node_idx)]))
+            return float(abs(z[int(node_idx)]))
+        if model_source == 'schism':
+            for key in ('depth', 'h', 'zcoords'):
+                if key in model:
+                    arr = np.asarray(model[key])
+                    if key == 'zcoords':
+                        return float(abs(arr[0, int(node_idx), -1]))
+                    return float(abs(arr.flat[int(node_idx)]))
+    except (KeyError, IndexError, ValueError, TypeError):
+        pass
+    return 0.0
+
+
+def _resolve_side_looking_depths(
+    prop: Any,
+    extract: Any,
+    list_of_nearest_node: list,
+    model: Any,
+    control_file_path: str,
+    logger: Logger,
+) -> None:
+    """Patch obs depths for side-looking ADCP bins in ``extract[-1]``.
+
+    The obs station ctl file carries a 6th field on each coord line
+    containing ``height_from_bottom`` (hfb, meters above channel
+    bottom) for CO-OPS ADCPs whose per-bin MDAPI ``depth`` is null.
+    When the 4th field (obs depth) is written as 0.0 for such a bin,
+    resolve it here as ``water_depth - hfb`` using model bathymetry
+    at the nearest node. Mutates ``extract[-1]`` in place and rewrites
+    the obs station.ctl file so downstream readers (index_nearest_depth,
+    the plot title code) see the corrected depth.
+    """
+    coord_rows = extract[-1]
+    info_rows = extract[0]
+    updated = 0
+    for idx, coords in enumerate(coord_rows):
+        if len(coords) < 6:
+            continue
+        try:
+            depth = float(coords[3])
+            hfb = float(coords[5])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if hfb <= 0 or depth > 0.01:
+            continue
+        if idx >= len(list_of_nearest_node):
+            continue
+        node = list_of_nearest_node[idx]
+        water_depth = _model_bathymetry_at_node(
+            node, model, prop.model_source)
+        if water_depth <= 0:
+            continue
+        resolved = max(0.0, water_depth - hfb)
+        # Mutate in place as a string to keep downstream parsers happy.
+        coords[3] = f'{resolved:.2f}'
+        updated += 1
+        try:
+            station_id = info_rows[idx][0]
+        except (IndexError, TypeError):
+            station_id = f'idx={idx}'
+        logger.info(
+            'Side-looking ADCP %s: water_depth=%.2f m, hfb=%.2f m -> '
+            'obs_depth=%.2f m', station_id, water_depth, hfb, resolved)
+
+    if updated and control_file_path:
+        try:
+            with open(control_file_path, 'w', encoding='utf-8') as fh:
+                for info, coords in zip(info_rows, coord_rows):
+                    fh.write(
+                        f'{info[0]} {info[1]} "{info[2]}"\n'
+                        f'  {" ".join(str(x) for x in coords)}\n'
+                    )
+            logger.info(
+                'Updated %d side-looking ADCP obs depths in %s',
+                updated, control_file_path)
+        except OSError as ex:
+            logger.warning(
+                'Could not rewrite obs ctl file with resolved depths: %s',
+                ex)
+
+
 def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
     """
     Extract user-provided XY locations from configuration file.
@@ -252,16 +370,6 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                             name_var,
                             logger,
                         )
-                    list_of_nearest_layer, list_of_depths = \
-                        indexing.index_nearest_depth(
-                            prop,
-                            list_of_nearest_node,
-                            model,
-                            extract[-1],
-                            prop.model_source,
-                            name_var,
-                            logger,
-                        )
                 elif prop.ofsfiletype == 'stations':
                     list_of_nearest_node = \
                         indexing.index_nearest_station(
@@ -273,16 +381,30 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         logger,
                         extract[0]
                     )
-                    list_of_nearest_layer, list_of_depths = \
-                        indexing.index_nearest_depth(
-                            prop,
-                            list_of_nearest_node,
-                            model,
-                            extract[-1],
-                            prop.model_source,
-                            name_var,
-                            logger,
-                        )
+
+                # For side-looking ADCPs (``height_from_bottom`` recorded
+                # in the 6th field of the station coord line, depth
+                # written as 0.0), resolve an accurate obs depth from
+                # the model bathymetry at the nearest node before the
+                # vertical-layer search runs.  Mutates ``extract[-1]``
+                # in place and back-writes the updated obs ctl file so
+                # plotting reads the same depth.
+                if name_var == 'cu':
+                    _resolve_side_looking_depths(
+                        prop, extract, list_of_nearest_node, model,
+                        control_file, logger,
+                    )
+
+                list_of_nearest_layer, list_of_depths = \
+                    indexing.index_nearest_depth(
+                        prop,
+                        list_of_nearest_node,
+                        model,
+                        extract[-1],
+                        prop.model_source,
+                        name_var,
+                        logger,
+                    )
 
                 logger.info('Extracting data found in the Model Control File')
 
@@ -448,7 +570,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
-                                
+
                 elif prop.model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
                         for i in range(length):
@@ -465,8 +587,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                 logger.info('No matching model station found for '
                                             'obs station %s.', station_id[i])
                     else:
-                        # STOFS-2D-Global is the only ADCIRC implemented, so it's 
-                        # not clear how someone would even get here, but we raise 
+                        # STOFS-2D-Global is the only ADCIRC implemented, so it's
+                        # not clear how someone would even get here, but we raise
                         # an exception just in case.
                         raise NotImplementedError('ADCIRC control file writing not yet implemented for models other than STOFS-2D-Global.')
 

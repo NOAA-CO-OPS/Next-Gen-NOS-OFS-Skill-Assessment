@@ -43,6 +43,10 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
 
 _COOPS_MAX_WORKERS = 6
+# Currents retrieval now fans out to many per-bin HTTP calls per station;
+# keep station-level parallelism low to avoid CO-OPS per-IP rate limiting
+# (403/429) that can otherwise drop bins.
+_COOPS_CURRENTS_MAX_WORKERS = 2
 _NDBC_MAX_WORKERS = 6
 _CHS_MAX_WORKERS = 1
 _USGS_MAX_WORKERS_WITH_KEY = 4
@@ -52,7 +56,13 @@ _USGS_MAX_WORKERS_NO_KEY = 2
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
                            datum, datum_list, ofs, logger):
-    """Process a single CO-OPS station. Returns CTL entry string or None."""
+    """Process a single CO-OPS station.
+
+    Returns a list of CTL entry strings. For most variables the list
+    contains at most one entry; for ``currents`` (ADCPs) one entry is
+    emitted per bin using the virtual-ID format ``{parent}_b{NN}``.
+    An empty list is returned on failure.
+    """
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
         retrieve_input.station = str( id_number )
@@ -186,11 +196,11 @@ def _process_coops_station(id_number, name, x_value, y_value,
                 'for station %s.', variable,
                 str(id_number)
                 )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_'
                 f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} {zdiff}  0.0  {datum_found}\n'
-                )
+                )]
         elif (variable in {'water_temperature',
                           'salinity'} and isinstance(
                 timeseries, pd.DataFrame) is True
@@ -200,39 +210,62 @@ def _process_coops_station(id_number, name, x_value, y_value,
                 'station %s.', variable,
                 str(id_number)
                 )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_'
                 f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
+                )]
+        elif variable == 'currents' and isinstance(timeseries, dict):
+            # ``retrieve_t_and_c_station`` returns dict[int, DataFrame]
+            # for currents — one DataFrame per ADCP bin. Emit one CTL
+            # entry per bin using virtual-ID {parent}_b{NN}.
+            #
+            # For side-looking (PICS) ADCPs the MDAPI leaves ``depth``
+            # null on every bin. We emit a 6th field on the coord line
+            # carrying ``height_from_bottom`` so that the model-CTL
+            # writer can later resolve an accurate obs depth from the
+            # model bathymetry (depth = h - height_from_bottom).
+            entries = []
+            for bin_num in sorted(timeseries.keys()):
+                bin_df = timeseries[bin_num]
+                depth = float(bin_df.attrs.get('depth', 0.0) or 0.0)
+                hfb_raw = bin_df.attrs.get('height_from_bottom')
+                try:
+                    hfb = float(hfb_raw) if hfb_raw is not None else 0.0
+                except (TypeError, ValueError):
+                    hfb = 0.0
+                virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
+                entries.append(
+                    f'{virt_id} {virt_id}_'
+                    f'{name_var}_{ofs}_CO-OPS '
+                    f'"{name} (bin {int(bin_num):02d})"\n  '
+                    f'{y_value:.3f} {x_value:.3f} 0.0  '
+                    f'{depth:.2f}  0.0  {hfb:.2f}\n'
                 )
-        elif (variable == 'currents' and isinstance(
-                timeseries, pd.DataFrame) is True
-            ):
             logger.info(
-                'CO-OPS %s data found for '
-                'station %s.', variable,
-                str(id_number)
-                )
-            return (
-                f'{str( id_number )} {str( id_number )}_'
-                f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
-                f'{x_value:.3f} 0.0  '
-                f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                )
+                'CO-OPS currents data found for station %s: '
+                '%d bin(s) emitted.', str(id_number), len(entries)
+            )
+            return entries
     except Exception as ex:
         logger.info(
             'CO-OPS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 
 def _process_usgs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single USGS station. Returns CTL entry string or None."""
+    """Process a single USGS station.
+
+    Returns a list of CTL entry strings (at most one for USGS). Empty
+    list on failure, preserving a uniform return shape with
+    ``_process_coops_station``.
+    """
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
         retrieve_input.station = str(id_number)
@@ -310,41 +343,45 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                     'please check control file',timeseries['Datum'][1],
                     datum
                     )
-                return (
+                return [(
                     f'{str( id_number )} '
                     f'{str( id_number )}_{name_var}_'
                     f'{ofs}_USGS "{name}"\n  {y_value:.3f} '
                     f'{x_value:.3f} '
                     f'{zdiff}  0.0  {str(timeseries["Datum"][1])}\n'
-                    )
+                    )]
 
             elif variable in ['water_temperature' , 'salinity']:
-                return (
+                return [(
                     f'{str( id_number )} {str( id_number )}_'
                     f'{name_var}_{ofs}_USGS "{name}"\n  '
                     f'{y_value:.3f} {x_value:.3f} 0.0  '
                     f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                    )
+                    )]
             elif variable == 'currents':
-                return (
+                return [(
                     f'{str( id_number )} {str( id_number )}_'
                     f'{name_var}_{ofs}_USGS "{name}"\n  '
                     f'{y_value:.3f} {x_value:.3f} 0.0  '
-                    f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                    )
+                    f'{timeseries ["DEP01"] [1]:.2f}  0.0  0.00\n'
+                    )]
     except Exception as ex:
         logger.info(
             'USGS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 
 def _process_ndbc_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single NDBC station. Returns CTL entry string or None."""
+    """Process a single NDBC station.
+
+    Returns a list of CTL entry strings (at most one). Empty list on
+    failure.
+    """
     try:
         data_station = retrieve_ndbc_station(
             start_date,
@@ -355,7 +392,7 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
             )
 
         if data_station is None:
-            return None
+            return []
 
         logger.info(
             'NDBC %s data found for '
@@ -396,46 +433,51 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
                 'please check control file',data_station['Datum'][1],
                 datum
                 )
-            return (
+            return [(
                 f'{str( id_number )} '
                 f'{str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} '
                 f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
-                )
+                )]
 
         elif variable in {'water_temperature','salinity'}:
             data_station ['DEP01'] = data_station [
                 'DEP01'].astype( float )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station ["DEP01"].mean():.2f}  '
                 f'0.0\n'
-                )
+                )]
         elif variable == 'currents':
             data_station ['DEP01'] = data_station[
                 'DEP01'].astype(float)
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station ["DEP01"].mean():.2f}  '
-                f'0.0\n'
-                )
+                f'0.0  0.00\n'
+                )]
     except Exception as ex:
         logger.info(
             'NDBC %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 def _process_chs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single CHS station. Returns CTL entry string or None."""
+    """Process a single CHS station.
+
+    Returns a list of CTL entry strings (at most one). Empty list on
+    failure, preserving a uniform return shape with
+    ``_process_coops_station``.
+    """
     try:
         data_station = retrieve_chs_station(
             start_date,
@@ -446,7 +488,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
             )
 
         if data_station is None:
-            return None
+            return []
 
         logger.info(
             'CHS %s data found for '
@@ -495,31 +537,42 @@ def _process_chs_station(id_number, name, x_value, y_value,
                     zdiff = 0 # No correction needed
                 else:
                     zdiff = 'UNKNOWN'
-            return (
+            return [(
                 f'{str( id_number )} '
                 f'{str( id_number )}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} '
                 f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
-                )
+                )]
 
         else:
             data_station['DEP01'] = data_station[
                 'DEP01'].astype(float)
-            return (
+            # Currents carry an extra 6th field (height_from_bottom) for
+            # uniformity with the CO-OPS ADCP per-bin CTL lines. Other
+            # variables use the legacy 5-field layout.
+            if variable == 'currents':
+                return [(
+                    f'{str( id_number )} {str( id_number )}_{name_var}_'
+                    f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
+                    f'{x_value:.3f} 0.0  '
+                    f'{data_station["DEP01"].mean():.2f}  '
+                    f'0.0  0.00\n'
+                    )]
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station["DEP01"].mean():.2f}  '
                 f'0.0\n'
-                )
+                )]
     except Exception as ex:
         logger.info(
             'CHS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
@@ -551,8 +604,12 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
     coops_stations = stations_with_var.loc[
         stations_with_var['Source'] == 'CO-OPS']
     if not coops_stations.empty:
+        coops_workers = (
+            _COOPS_CURRENTS_MAX_WORKERS if variable == 'currents'
+            else _COOPS_MAX_WORKERS
+        )
         futures = []
-        with ThreadPoolExecutor(max_workers=_COOPS_MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=coops_workers) as executor:
             for _, row in coops_stations.iterrows():
                 futures.append(executor.submit(
                     _process_coops_station,
@@ -562,8 +619,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # --- USGS stations (parallel) ---
     usgs_stations = stations_with_var.loc[
@@ -580,8 +637,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # --- NDBC stations (parallel) ---
     ndbc_stations = stations_with_var.loc[
@@ -598,8 +655,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
     # --- CHS stations (parallel) ---
     chs_stations = stations_with_var.loc[
         stations_with_var['Source'] == 'CHS']
@@ -615,8 +672,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # Write the .ctl file
     try:

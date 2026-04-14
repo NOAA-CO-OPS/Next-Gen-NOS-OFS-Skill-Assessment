@@ -95,11 +95,13 @@ import copy
 import logging
 import logging.config
 import os
+import re
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -194,6 +196,25 @@ def is_number(n):
     except ValueError:
         return False
     return True
+
+
+_VIRTUAL_CURRENTS_ID_RE = re.compile(r'^(.+)_b(\d+)$')
+
+
+def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
+    """Split a CO-OPS currents virtual ID ``{parent}_b{NN}`` into parts.
+
+    Returns ``(parent_id, bin_num)`` for virtual IDs and ``(sid, None)``
+    for legacy (non-virtual) IDs — allowing the CO-OPS currents path to
+    transparently handle both.
+    """
+    m = _VIRTUAL_CURRENTS_ID_RE.match(str(sid))
+    if not m:
+        return str(sid), None
+    try:
+        return m.group(1), int(m.group(2))
+    except (TypeError, ValueError):
+        return str(sid), None
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
@@ -381,7 +402,14 @@ def _fetch_and_format_station(
 
         if source in ('TC', 'TAC', 'COOPS', 'CO-OPS'):
             try:
-                retrieve_input.station = str(station_id)
+                # For CO-OPS currents, the CTL station ID may be a
+                # virtual bin ID ``{parent}_b{NN}``. Retrieve against
+                # the parent station and select the matching bin.
+                parent_id, bin_num = (
+                    _split_virtual_currents_id(station_id)
+                    if variable == 'currents' else (str(station_id), None)
+                )
+                retrieve_input.station = parent_id
                 retrieve_input.start_date = start_date
                 retrieve_input.end_date = end_date
                 retrieve_input.variable = variable
@@ -389,6 +417,23 @@ def _fetch_and_format_station(
 
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger)
+
+                if variable == 'currents' and isinstance(timeseries, dict):
+                    # Pick out the requested bin. When no bin suffix was
+                    # encoded (legacy inventory) fall back to the first
+                    # available bin so the pipeline keeps producing data.
+                    if bin_num is not None and bin_num in timeseries:
+                        timeseries = timeseries[bin_num]
+                    elif timeseries:
+                        fallback_key = sorted(timeseries.keys())[0]
+                        logger.warning(
+                            'CO-OPS currents bin %s not found for station '
+                            '%s (available: %s); using bin %s.',
+                            bin_num, station_id,
+                            sorted(timeseries.keys()), fallback_key)
+                        timeseries = timeseries[fallback_key]
+                    else:
+                        timeseries = None
 
                 if timeseries is None:
                     logger.info(
@@ -679,12 +724,22 @@ def _process_variable_obs(
         # Read parallel config for worker counts
         parallel_cfg = get_parallel_config(logger)
 
+        # Currents retrieval now issues one HTTP call per ADCP bin per
+        # station, so it is orders of magnitude more request-dense than
+        # scalar variables. Cap CO-OPS currents concurrency hard to stay
+        # under the per-IP rate limit.
+        coops_workers = (
+            min(parallel_cfg['obs_coops_workers'], 2)
+            if variable == 'currents'
+            else parallel_cfg['obs_coops_workers']
+        )
+
         # Map source names to worker counts
         source_worker_map = {
-            'TC': parallel_cfg['obs_coops_workers'],
-            'TAC': parallel_cfg['obs_coops_workers'],
-            'COOPS': parallel_cfg['obs_coops_workers'],
-            'CO-OPS': parallel_cfg['obs_coops_workers'],
+            'TC': coops_workers,
+            'TAC': coops_workers,
+            'COOPS': coops_workers,
+            'CO-OPS': coops_workers,
             'USGS': parallel_cfg['obs_usgs_workers'],
             'NDBC': parallel_cfg['obs_ndbc_workers'],
             'CHS': parallel_cfg['obs_chs_workers'],
