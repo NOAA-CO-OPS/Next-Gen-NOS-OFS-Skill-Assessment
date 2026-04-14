@@ -4,7 +4,6 @@
  respective data and creates the paired (.int) datasets and skill table.
 """
 
-import argparse
 import logging
 import logging.config
 import os
@@ -15,10 +14,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ofs_skill.model_processing import do_horizon_skill, model_properties
-from ofs_skill.model_processing.get_node_ofs import get_node_ofs
+from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
-from ofs_skill.obs_retrieval import utils, parse_arguments_to_list
+from ofs_skill.model_processing.get_node_ofs import get_node_ofs
+from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.skill_assessment import format_paired_one_d, metrics_paired_one_d
@@ -234,8 +233,8 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
 
         # Match rows using station ID between model and obs control files
         if ofs_station_id not in station_id_to_idx:
-            logger.error(f"Could not match station ID {ofs_station_id} between control file in get_node_ofs!")
-            sys.exit(-1)
+            logger.error(f'Could not match station ID {ofs_station_id} between control file in get_node_ofs!')
+            continue
 
         obs_row = station_id_to_idx[ofs_station_id]
         station_id = read_station_ctl_file[0][obs_row][0]
@@ -249,8 +248,8 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
 
         if not (formatted_series and formatted_series != 'NoDataFound' and len(formatted_series[0]) > 1):
             logger.error(
-                f"{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_"
-                f"{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully"
+                f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_'
+                f'{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully'
             )
             continue
 
@@ -261,26 +260,26 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         })
 
         if name_var == 'cu':
-            logger.info(f"Start cu metrics for {station_id}")
+            logger.info(f'Start cu metrics for {station_id}')
             _append_metadata(output, obs_row, i)
             output['skill'].append(
                 metrics_paired_one_d.skill_vector(series_df, name_var, prop, logger)
             )
 
-            logger.info(f"Start cu dir metrics for {station_id}")
+            logger.info(f'Start cu dir metrics for {station_id}')
             _append_metadata(output_dir, obs_row, i)
             output_dir['skill'].append(
                 metrics_paired_one_d.skill_vector_dir(series_df, name_var, prop, logger)
             )
         else:
-            logger.info(f"Start {name_var} metrics for {station_id}")
+            logger.info(f'Start {name_var} metrics for {station_id}')
             _append_metadata(output, obs_row, i)
             output['skill'].append(
                 metrics_paired_one_d.skill_scalar(series_df, name_var, station_id, prop, logger)
             )
 
         # Write the paired time series file (.int)
-        filename = f"{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_{prop.whichcast}_{prop.ofsfiletype}_pair.int"
+        filename = f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_{prop.whichcast}_{prop.ofsfiletype}_pair.int'
         int_path = os.path.join(prop.data_skill_1d_pair_path, filename)
 
         with open(int_path, 'w', encoding='utf-8') as output_2:
@@ -291,9 +290,9 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
 
             for p_value in formatted_series[0]:
                 cleaned_val = str(p_value).replace(',', ' ').replace('[', '').replace(']', '')
-                output_2.write(f"{cleaned_val}\n")
+                output_2.write(f'{cleaned_val}\n')
 
-        logger.info(f"{filename} is created successfully")
+        logger.info(f'{filename} is created successfully')
 
         # Handle water level extrema
         if name_var == 'wl':
@@ -308,14 +307,14 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
             def _process_extrema(extrema_prefix, target_dict, log_label):
                 idx = extrema_output[f'{extrema_prefix}_index']
                 df_extrema = pd.DataFrame({
-                    "DateTime": extrema_output[f'{extrema_prefix}_times'],
-                    "OFS": extrema_output[f'{extrema_prefix}_amplitudes'],
-                    "OBS": obs_arr[idx]
+                    'DateTime': extrema_output[f'{extrema_prefix}_times'],
+                    'OFS': extrema_output[f'{extrema_prefix}_amplitudes'],
+                    'OBS': obs_arr[idx]
                 })
                 # Note: Fixed a bug here where lw was originally using hw values
                 df_extrema['BIAS'] = df_extrema['OFS'] - df_extrema['OBS']
 
-                logger.info(f"Start {name_var} metrics for {station_id} {log_label}")
+                logger.info(f'Start {name_var} metrics for {station_id} {log_label}')
                 _append_metadata(target_dict, obs_row, i)
                 target_dict['skill'].append(
                     metrics_paired_one_d.skill_scalar(df_extrema, name_var, station_id, prop, logger)
@@ -431,7 +430,7 @@ def get_skill(prop, logger):
     ) > datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
         error_message = (
             f'End Date {prop.end_date_full} '
-            f'is before Start Date {prop.end_date_full}. Abort!'
+            f'is before Start Date {prop.start_date_full}. Abort!'
         )
         logger.error(error_message)
         sys.exit(-1)
@@ -765,100 +764,3 @@ def get_skill(prop, logger):
                          'calling it from get_skill. Error: %s', e_x)
         prop.horizonskill = False
         logger.info('Completed forecast horizon skill!')
-
-
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(
-        prog='python get_skill.py', usage='%(prog)s',
-        description='Run skill assessment'
-    )
-
-    parser.add_argument(
-        '-o',
-        '--OFS',
-        required=True,
-        help='Choose from the list on the prop.ofs_Extents folder, '
-        'you can also create your own shapefile, add it to the '
-        'prop.ofs_Extents folder and call it here',
-    )
-    parser.add_argument(
-        '-p',
-        '--Path',
-        required=False,
-        help='Use /home as the default. User can specify path',
-    )
-    parser.add_argument(
-        '-s',
-        '--StartDate_full',
-        required=True,
-        help="Start Date YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'",
-    )
-    parser.add_argument(
-        '-e',
-        '--EndDate_full',
-        required=True,
-        help="End Date YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'",
-    )
-    parser.add_argument(
-        '-w',
-        '--Whichcast',
-        required=False,
-        help='nowcast, forecast_a, '
-             'forecast_b(it is the forecast between cycles)',
-    )
-    parser.add_argument(
-        '-d',
-        '--Datum',
-        required=True,
-        help="datum: 'MHHW', 'MHW', 'MLW', 'MLLW', 'NAVD88', 'XGEOID20B', 'IGLD85','LWD'"
-    )
-    parser.add_argument(
-        '-f',
-        '--Forecast_Hr',
-        required=False,
-        help="'02z', '06z', '12z', '24z' ... ",
-    )
-    parser.add_argument(
-        '-t', '--FileType', required=True,
-        help="OFS output file type to use: 'fields' or 'stations'", )
-    parser.add_argument(
-        '-so',
-        '--Station_Owner',
-        required=False,
-        default='co-ops,ndbc,usgs,chs',
-        help='Input station provider to use in skill assessment: '
-        "'CO-OPS', 'NDBC', 'USGS', 'CHS',", )
-    parser.add_argument(
-        '-vs',
-        '--Var_Selection',
-        required=False,
-        default='water_level,water_temperature,salinity,currents',
-        help='Which variables do you want to skill assess? Options are: '
-            'water_level, water_temperature, salinity, and currents. Choose '
-            'any combination. Default (no argument) is all variables.')
-    parser.add_argument(
-        '-hs',
-        '--Horizon_Skill',
-        action='store_true',
-        help='Use all available forecast horizons between the '
-        'start and end dates? True or False (boolean)')
-
-    args = parser.parse_args()
-    prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.OFS
-    prop1.path = args.Path
-    prop1.start_date_full = args.StartDate_full
-    prop1.end_date_full = args.EndDate_full
-    prop1.whichcast = args.Whichcast
-    prop1.datum = args.Datum.upper()
-    prop1.ofsfiletype = args.FileType.lower()
-    prop1.stationowner = args.Station_Owner
-    prop1.var_list = args.Var_Selection
-    prop1.horizonskill = args.Horizon_Skill
-
-    prop1.forecast_hr = None
-    if prop1.whichcast == 'forecast_a':
-        prop1.forecast_hr = args.Forecast_Hr
-
-    get_skill(prop1, None)
