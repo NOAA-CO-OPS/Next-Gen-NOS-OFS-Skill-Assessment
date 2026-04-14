@@ -863,7 +863,7 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        help="'CO-OPS', 'NDBC', 'USGS',", )
+        help="'CO-OPS', 'NDBC', 'USGS', 'CHS'", )
 
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()

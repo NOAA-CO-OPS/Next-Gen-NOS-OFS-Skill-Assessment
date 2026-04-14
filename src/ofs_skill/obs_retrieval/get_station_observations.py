@@ -10,7 +10,7 @@ Technical Contact(s): Name:  FC
 Abstract:
 
    This is the final station observation data function.
-   This function calls the Tides and Currents, NDBC, and USGS retrieval
+   This function calls the Tides and Currents, NDBC, USGS, and CHS retrieval
    function in loop for all stations found in the
    ofs_inventory_stations(OFS, Start_Date, End_Date, Path) and variables
    ['water_level', 'water_temperature', 'salinity', 'currents'].

@@ -45,7 +45,7 @@ Arguments:
  -ws whichcast, --Whichcast"
                        'Nowcast', 'Forecast_A', 'Forecast_B'
  -so stationowner, --Station_Owner" [optional]
-                       'NDBC', 'CO-OPS', 'USGS'
+                       'NDBC', 'CO-OPS', 'USGS', 'CHS'
 Output:
 Output:
 Name                 Description
@@ -240,7 +240,8 @@ def _process_station_plot(
                     now_fores_paired, var_info[1],
                     [station_id_val,
                      read_station_ctl_file[0][obs_row][2],
-                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
                     read_ofs_ctl_file[1][i],
                     station_prop, logger)
             elif var_info[1] == 'cu':
@@ -254,7 +255,8 @@ def _process_station_plot(
                     now_fores_paired, var_info[1],
                     [station_id_val,
                      read_station_ctl_file[0][obs_row][2],
-                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
                     read_ofs_ctl_file[1][i],
                     station_prop, logger)
 
@@ -270,7 +272,8 @@ def _process_station_plot(
                     var_info[1],
                     [station_id_val,
                      read_station_ctl_file[0][obs_row][2],
-                     read_station_ctl_file[0][obs_row][1].split('_')[-1]],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
                     read_ofs_ctl_file[1][i],
                     station_prop, logger)
                 if deltat <= -1:
@@ -285,7 +288,8 @@ def _process_station_plot(
                         [station_id_val,
                          read_station_ctl_file[0][obs_row][2],
                          read_station_ctl_file[0][obs_row][1].split(
-                             '_')[-1]],
+                             '_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
                         read_ofs_ctl_file[1][i],
                         station_prop, logger)
                     logger.info(
@@ -300,7 +304,8 @@ def _process_station_plot(
                         [station_id_val,
                          read_station_ctl_file[0][obs_row][2],
                          read_station_ctl_file[0][obs_row][1].split(
-                             '_')[-1]],
+                             '_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
                         read_ofs_ctl_file[1][i],
                         station_prop, logger)
         except Exception as ex:
