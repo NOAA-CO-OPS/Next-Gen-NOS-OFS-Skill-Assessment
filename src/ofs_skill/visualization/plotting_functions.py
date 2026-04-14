@@ -26,16 +26,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import urllib.request
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import requests
 import seaborn as sns
 
-from ofs_skill.obs_retrieval.retrieve_t_and_c_station import _get_station_depth
+from ofs_skill.obs_retrieval.currents_bins_override import (
+    split_virtual_currents_id,
+)
+from ofs_skill.obs_retrieval.retrieve_t_and_c_station import get_station_depth
 from ofs_skill.skill_assessment import nos_metrics
 
 if TYPE_CHECKING:
@@ -204,7 +207,6 @@ def get_title(
             f'{end_date}<b>'
 
 
-_VIRTUAL_BIN_RE = re.compile(r'^(.+)_b(\d+)$')
 _COOPS_MDAPI_URL = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/'
 
 # Cache parsed model_station.ctl lookups keyed by file path so we read
@@ -300,18 +302,12 @@ def _lookup_obs_depth(
     Returns ``None`` when no depth can be resolved from either source.
     For non-virtual IDs, ``bin_num`` is ``None``.
     """
-    parent_id: str | None = None
-    bin_num: int | None = None
     orientation = ''
 
     # Try virtual-ID parse first.
-    m = _VIRTUAL_BIN_RE.match(str(station_id_tuple[0]))
-    if m:
-        parent_id = m.group(1)
-        try:
-            bin_num = int(m.group(2))
-        except (TypeError, ValueError):
-            bin_num = None
+    parent_id, bin_num = split_virtual_currents_id(station_id_tuple[0])
+    if bin_num is None:
+        parent_id = None
 
     # Preferred source for CO-OPS ADCPs: the MDAPI bins endpoint —
     # but only when it has an explicit per-bin ``depth``. Side-looking
@@ -323,9 +319,10 @@ def _lookup_obs_depth(
         and station_id_tuple[2] == 'CO-OPS'
     ):
         try:
-            payload = _get_station_depth(
+            payload = get_station_depth(
                 parent_id, _COOPS_MDAPI_URL, logger)
-        except Exception as exc:
+        except (requests.exceptions.RequestException,
+                ValueError, KeyError, TypeError) as exc:
             logger.warning(
                 'Bin metadata lookup failed for %s: %s',
                 station_id_tuple[0], exc)

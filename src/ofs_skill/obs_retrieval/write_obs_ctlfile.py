@@ -35,7 +35,6 @@ from coastalmodeling_vdatum import vdatum
 
 from ofs_skill.obs_retrieval import retrieve_properties, utils
 from ofs_skill.obs_retrieval.currents_bins_override import (
-    BinSpec,
     bin_spec_lookup,
     load_currents_bins_csv,
 )
@@ -56,6 +55,88 @@ _NDBC_MAX_WORKERS = 6
 _CHS_MAX_WORKERS = 1
 _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
+
+
+def _emit_coops_currents_entries(
+    id_number, name, x_value, y_value, ofs, name_var,
+    timeseries, bin_overrides, logger,
+):
+    """Emit CTL entries for each ADCP bin returned by retrieve_t_and_c_station.
+
+    ``retrieve_t_and_c_station`` returns ``dict[int, DataFrame]`` for
+    currents — one DataFrame per ADCP bin. Emit one CTL entry per bin
+    using virtual-ID ``{parent}_b{NN}``.
+
+    For side-looking (PICS) ADCPs the MDAPI leaves ``depth`` null on
+    every bin. We emit a 6th field on the coord line carrying
+    ``height_from_bottom`` so that the model-CTL writer can later
+    resolve an accurate obs depth from the model bathymetry
+    (``depth = h - height_from_bottom``).
+
+    When ``bin_overrides`` is a ``dict[int, BinSpec]``, only bins listed
+    in the user CSV are emitted; any per-row depth/orientation/name
+    values replace the MDAPI-derived ones. Bins the CSV names but the
+    datagetter did not return are logged as a WARNING and skipped.
+
+    Returns a list of CTL entry strings (possibly empty).
+    """
+    if bin_overrides is not None:
+        requested = set(bin_overrides.keys())
+        available = set(timeseries.keys())
+        missing = sorted(requested - available)
+        if missing:
+            logger.warning(
+                'Currents bins CSV lists bin(s) %s for station '
+                '%s but the CO-OPS datagetter did not return '
+                'them; skipping those rows.', missing,
+                str(id_number))
+        selected_bins = sorted(requested & available)
+    else:
+        selected_bins = sorted(timeseries.keys())
+
+    entries = []
+    for bin_num in selected_bins:
+        bin_df = timeseries[bin_num]
+        depth = float(bin_df.attrs.get('depth', 0.0) or 0.0)
+        hfb_raw = bin_df.attrs.get('height_from_bottom')
+        try:
+            hfb = float(hfb_raw) if hfb_raw is not None else 0.0
+        except (TypeError, ValueError):
+            hfb = 0.0
+        suffix = f'bin {int(bin_num):02d}'
+
+        override = (
+            bin_overrides.get(bin_num)
+            if bin_overrides is not None else None
+        )
+        if override is not None:
+            if override.depth is not None:
+                depth = float(override.depth)
+                # User-specified depth supersedes the
+                # height_from_bottom side-looking path.
+                hfb = 0.0
+            if override.name:
+                suffix = f'bin {int(bin_num):02d} / {override.name}'
+
+        virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
+        entries.append(
+            f'{virt_id} {virt_id}_'
+            f'{name_var}_{ofs}_CO-OPS '
+            f'"{name} ({suffix})"\n  '
+            f'{y_value:.3f} {x_value:.3f} 0.0  '
+            f'{depth:.2f}  0.0  {hfb:.2f}\n'
+        )
+    if bin_overrides is not None:
+        logger.info(
+            'CO-OPS currents data found for station %s: '
+            '%d of %d CSV-requested bin(s) emitted.',
+            str(id_number), len(entries), len(bin_overrides))
+    else:
+        logger.info(
+            'CO-OPS currents data found for station %s: '
+            '%d bin(s) emitted.', str(id_number), len(entries)
+        )
+    return entries
 
 
 def _process_coops_station(id_number, name, x_value, y_value,
@@ -235,78 +316,10 @@ def _process_coops_station(id_number, name, x_value, y_value,
                 f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
                 )]
         elif variable == 'currents' and isinstance(timeseries, dict):
-            # ``retrieve_t_and_c_station`` returns dict[int, DataFrame]
-            # for currents — one DataFrame per ADCP bin. Emit one CTL
-            # entry per bin using virtual-ID {parent}_b{NN}.
-            #
-            # For side-looking (PICS) ADCPs the MDAPI leaves ``depth``
-            # null on every bin. We emit a 6th field on the coord line
-            # carrying ``height_from_bottom`` so that the model-CTL
-            # writer can later resolve an accurate obs depth from the
-            # model bathymetry (depth = h - height_from_bottom).
-            #
-            # When ``bin_overrides`` is provided, only bins listed in
-            # the user CSV are emitted; any per-row depth/orientation/
-            # name values replace the MDAPI-derived ones. Bins the CSV
-            # names but the datagetter did not return are logged.
-            if bin_overrides is not None:
-                requested = set(bin_overrides.keys())
-                available = set(timeseries.keys())
-                missing = sorted(requested - available)
-                if missing:
-                    logger.warning(
-                        'Currents bins CSV lists bin(s) %s for station '
-                        '%s but the CO-OPS datagetter did not return '
-                        'them; skipping those rows.', missing,
-                        str(id_number))
-                selected_bins = sorted(requested & available)
-            else:
-                selected_bins = sorted(timeseries.keys())
-
-            entries = []
-            for bin_num in selected_bins:
-                bin_df = timeseries[bin_num]
-                depth = float(bin_df.attrs.get('depth', 0.0) or 0.0)
-                hfb_raw = bin_df.attrs.get('height_from_bottom')
-                try:
-                    hfb = float(hfb_raw) if hfb_raw is not None else 0.0
-                except (TypeError, ValueError):
-                    hfb = 0.0
-                suffix = f'bin {int(bin_num):02d}'
-
-                # Apply CSV overrides for this bin.
-                override = (
-                    bin_overrides.get(bin_num)
-                    if bin_overrides is not None else None
-                )
-                if override is not None:
-                    if override.depth is not None:
-                        depth = float(override.depth)
-                        # User-specified depth supersedes the
-                        # height_from_bottom side-looking path.
-                        hfb = 0.0
-                    if override.name:
-                        suffix = f'bin {int(bin_num):02d} / {override.name}'
-
-                virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
-                entries.append(
-                    f'{virt_id} {virt_id}_'
-                    f'{name_var}_{ofs}_CO-OPS '
-                    f'"{name} ({suffix})"\n  '
-                    f'{y_value:.3f} {x_value:.3f} 0.0  '
-                    f'{depth:.2f}  0.0  {hfb:.2f}\n'
-                )
-            if bin_overrides is not None:
-                logger.info(
-                    'CO-OPS currents data found for station %s: '
-                    '%d of %d CSV-requested bin(s) emitted.',
-                    str(id_number), len(entries), len(bin_overrides))
-            else:
-                logger.info(
-                    'CO-OPS currents data found for station %s: '
-                    '%d bin(s) emitted.', str(id_number), len(entries)
-                )
-            return entries
+            return _emit_coops_currents_entries(
+                id_number, name, x_value, y_value, ofs, name_var,
+                timeseries, bin_overrides, logger,
+            )
     except Exception as ex:
         logger.info(
             'CO-OPS %s data not found for '

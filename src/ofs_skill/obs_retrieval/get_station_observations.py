@@ -95,7 +95,6 @@ import copy
 import logging
 import logging.config
 import os
-import re
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -110,6 +109,9 @@ from ofs_skill.obs_retrieval import (
     scalar,
     utils,
     vector,
+)
+from ofs_skill.obs_retrieval.currents_bins_override import (
+    split_virtual_currents_id,
 )
 from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
@@ -198,23 +200,13 @@ def is_number(n):
     return True
 
 
-_VIRTUAL_CURRENTS_ID_RE = re.compile(r'^(.+)_b(\d+)$')
-
-
 def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
-    """Split a CO-OPS currents virtual ID ``{parent}_b{NN}`` into parts.
+    """Backwards-compat shim around :func:`split_virtual_currents_id`.
 
-    Returns ``(parent_id, bin_num)`` for virtual IDs and ``(sid, None)``
-    for legacy (non-virtual) IDs — allowing the CO-OPS currents path to
-    transparently handle both.
+    Existing tests import this private name; the canonical helper now
+    lives in ``currents_bins_override`` alongside the virtual-ID grammar.
     """
-    m = _VIRTUAL_CURRENTS_ID_RE.match(str(sid))
-    if not m:
-        return str(sid), None
-    try:
-        return m.group(1), int(m.group(2))
-    except (TypeError, ValueError):
-        return str(sid), None
+    return split_virtual_currents_id(sid)
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,

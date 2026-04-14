@@ -42,10 +42,32 @@ Behaviour at CTL-write time (see ``write_obs_ctlfile._process_coops_station``):
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
 from typing import Optional
+
+# Shared regex + helper for the ``{parent}_b{NN}`` virtual-ID format used
+# throughout the per-bin currents pipeline. Lives here rather than in each
+# consumer so the two modules that split these IDs agree on the grammar.
+VIRTUAL_CURRENTS_ID_RE = re.compile(r'^(.+)_b(\d+)$')
+
+
+def split_virtual_currents_id(station_id: str) -> tuple[str, Optional[int]]:
+    """Split a CO-OPS currents virtual ID ``{parent}_b{NN}`` into parts.
+
+    Returns ``(parent_id, bin_num)`` for virtual IDs and ``(sid, None)``
+    for legacy (non-virtual) IDs — letting the CO-OPS currents path
+    transparently handle both.
+    """
+    m = VIRTUAL_CURRENTS_ID_RE.match(str(station_id))
+    if not m:
+        return str(station_id), None
+    try:
+        return m.group(1), int(m.group(2))
+    except (TypeError, ValueError):
+        return str(station_id), None
 
 
 @dataclass
@@ -58,9 +80,11 @@ class BinSpec:
 
 
 def _clean(value: Optional[str]) -> Optional[str]:
+    # Strip CR/LF and swap " -> ' so a hostile or typo'd cell cannot
+    # split the 2-lines-per-station CTL record or close a quoted label.
     if value is None:
         return None
-    s = str(value).strip()
+    s = str(value).strip().replace('\r', '').replace('\n', '').replace('"', "'")
     return s if s else None
 
 

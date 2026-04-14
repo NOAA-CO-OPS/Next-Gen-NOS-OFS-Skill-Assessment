@@ -117,6 +117,31 @@ def test_load_csv_duplicate_bin_last_wins(tmp_path, logger):
     assert overrides['cb1001'][0].depth == 9.9
 
 
+def test_load_csv_sanitizes_name_and_orientation(tmp_path, logger):
+    """CSV rows with embedded newlines or quotes in name/orientation
+    must not be able to split the 2-lines-per-station CTL layout."""
+    from ofs_skill.obs_retrieval.currents_bins_override import (
+        load_currents_bins_csv,
+    )
+    # Use csv.writer so the embedded newline + quote are written as
+    # proper quoted fields rather than raw characters that would break
+    # the CSV format before even reaching our sanitizer.
+    import csv as _csv
+    path = tmp_path / 'overrides.csv'
+    with open(path, 'w', encoding='utf-8', newline='') as fh:
+        w = _csv.writer(fh)
+        w.writerow(['station_id', 'bin', 'depth', 'orientation', 'name'])
+        w.writerow(['cb1001', '5', '6.0', 'has"quote', 'mid\nchannel'])
+    overrides = load_currents_bins_csv(str(path), logger)
+    spec = overrides['cb1001'][0]
+    assert '\n' not in (spec.name or '')
+    assert '\r' not in (spec.name or '')
+    assert '"' not in (spec.name or '')
+    assert '"' not in (spec.orientation or '')
+    assert spec.name == "midchannel"
+    assert spec.orientation == "has'quote"
+
+
 def test_bin_spec_lookup(tmp_path, logger):
     from ofs_skill.obs_retrieval.currents_bins_override import (
         bin_spec_lookup, load_currents_bins_csv,
