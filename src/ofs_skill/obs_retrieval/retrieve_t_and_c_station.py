@@ -52,11 +52,11 @@ def _get_session():
 _depth_cache = {}  # station_id -> depth_data
 
 # Cache station-level metadata (``height_from_bottom`` etc.) keyed by
-# station_id. Populated via ``_get_station_info``.
+# station_id. Populated via ``get_station_info``.
 _station_info_cache: dict[str, Optional[dict]] = {}
 
 
-def _get_station_depth(station_id, mdapi_url, logger):
+def get_station_depth(station_id, mdapi_url, logger):
     """Fetch station depth/bins metadata, returning cached result when available.
 
     Parameters
@@ -95,7 +95,7 @@ def _get_station_depth(station_id, mdapi_url, logger):
     return depth_data
 
 
-def _get_station_info(
+def get_station_info(
     station_id: str, mdapi_url: str, logger: Logger,
 ) -> Optional[dict]:
     """Fetch station-level metadata (cached) from the MDAPI station endpoint.
@@ -123,6 +123,13 @@ def _get_station_info(
     info = stations[0] if stations else None
     _station_info_cache[station_id] = info
     return info
+
+
+# Backward-compat aliases: these used to be leading-underscore "private"
+# symbols but are imported by ``plotting_functions.py`` across module
+# boundaries, so keep the old names working for any external caller.
+_get_station_depth = get_station_depth
+_get_station_info = get_station_info
 
 
 def retrieve_t_and_c_station(
@@ -434,12 +441,12 @@ def _retrieve_currents_all_bins(
     start_dt_0 = datetime.strptime(start_date, '%Y%m%d')
     end_dt_0 = datetime.strptime(end_date, '%Y%m%d')
 
-    bins_payload = _get_station_depth(station_id, mdapi_url, logger)
+    bins_payload = get_station_depth(station_id, mdapi_url, logger)
     bin_records = _extract_bin_records(bins_payload)
     # Station-level info provides ``height_from_bottom`` — needed to
     # compute depth for side-looking ADCPs whose per-bin ``depth`` is
     # null on the MDAPI bins endpoint.
-    station_info = _get_station_info(station_id, mdapi_url, logger)
+    station_info = get_station_info(station_id, mdapi_url, logger)
     hfb: Optional[float] = None
     if station_info is not None:
         hfb_raw = station_info.get('height_from_bottom')
@@ -450,13 +457,44 @@ def _retrieve_currents_all_bins(
                 hfb = None
 
     # Determine bin numbers to iterate. If metadata is unavailable, fall
-    # back to the single real_time_bin by issuing an unfiltered datagetter
-    # call (legacy behavior) so obs are still produced for that station.
+    # back to a single unfiltered datagetter call. Resolve the bin number
+    # from station_info (``deployments[0].real_time_bin``) or the bins
+    # payload (``real_time_bin``) if available — otherwise default to 1
+    # only as a last resort. The station's true sensor depth is unknown
+    # in this path, so flag it via ``df.attrs['depth_unknown']`` instead
+    # of silently claiming a surface measurement.
     if not bin_records:
+        fallback_bin = None
+        if station_info is not None:
+            deployments = station_info.get('deployments') or []
+            if deployments:
+                try:
+                    rtb = deployments[0].get('real_time_bin')
+                except AttributeError:
+                    rtb = None
+                if rtb is not None:
+                    try:
+                        fallback_bin = int(rtb)
+                    except (TypeError, ValueError):
+                        fallback_bin = None
+        if fallback_bin is None and isinstance(bins_payload, dict):
+            rtb = bins_payload.get('real_time_bin')
+            if rtb is not None:
+                try:
+                    fallback_bin = int(rtb)
+                except (TypeError, ValueError):
+                    fallback_bin = None
+        if fallback_bin is None:
+            fallback_bin = 1
+
         logger.warning(
-            'CO-OPS bins metadata unavailable for station %s; '
-            'falling back to a single unfiltered datagetter request '
-            '(real-time bin only).', station_id)
+            'CO-OPS bins metadata unavailable for station %s: DEPTH '
+            'UNKNOWN — falling back to unfiltered datagetter for '
+            'bin=%s. The measurement will be paired with the model '
+            "surface layer and flagged via df.attrs['depth_unknown']="
+            'True; downstream consumers should treat this as suspect.',
+            station_id, fallback_bin)
+
         legacy = _fetch_currents_chunked(
             station_id=station_id,
             bin_num=None,
@@ -467,13 +505,16 @@ def _retrieve_currents_all_bins(
         )
         if legacy is None:
             return None
-        legacy.attrs['bin'] = 1
+        legacy.attrs['bin'] = fallback_bin
         legacy.attrs['depth'] = 0.0
+        legacy.attrs['depth_unknown'] = True
         legacy.attrs['orientation'] = ''
-        logger.info(
+        legacy.attrs['height_from_bottom'] = hfb
+        logger.warning(
             'CO-OPS currents retrieval for station %s returned 1 bin '
-            '(legacy fallback).', station_id)
-        return {1: legacy}
+            '(legacy fallback, bin=%s, depth UNKNOWN).',
+            station_id, fallback_bin)
+        return {fallback_bin: legacy}
 
     result: dict[int, pd.DataFrame] = {}
     missing_depth: list[int] = []
@@ -537,6 +578,7 @@ def _retrieve_currents_all_bins(
 _RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
 _RETRY_MAX_ATTEMPTS = 6
 _RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
+_RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
 
 
 def _get_with_retry(
@@ -557,7 +599,7 @@ def _get_with_retry(
             status = response.status_code
             if status in _RETRY_STATUSES and attempt < _RETRY_MAX_ATTEMPTS:
                 delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                delay += random.uniform(0, 0.5)
+                delay += random.uniform(0, _RETRY_JITTER_MAX)
                 logger.warning(
                     'CO-OPS %s bin=%s HTTP %d (attempt %d/%d); retrying '
                     'in %.1fs', station_id, bin_num, status, attempt,
@@ -570,7 +612,7 @@ def _get_with_retry(
             last_exc = ex
             if attempt < _RETRY_MAX_ATTEMPTS:
                 delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                delay += random.uniform(0, 0.5)
+                delay += random.uniform(0, _RETRY_JITTER_MAX)
                 logger.warning(
                     'CO-OPS %s bin=%s request error (attempt %d/%d): %s; '
                     'retrying in %.1fs', station_id, bin_num, attempt,
@@ -618,6 +660,23 @@ def _fetch_currents_chunked(
             continue
 
         for row in obs.get('data', []) or []:
+            # Defend against upstream API regressions: if the server
+            # echoes a bin number that doesn't match what we requested,
+            # skip the row rather than silently mis-pair it with the
+            # wrong bin's depth.
+            if bin_num is not None:
+                row_bin_raw = row.get('b')
+                if row_bin_raw is not None:
+                    try:
+                        row_bin = int(row_bin_raw)
+                    except (TypeError, ValueError):
+                        row_bin = None
+                    if row_bin is not None and row_bin != bin_num:
+                        logger.warning(
+                            'CO-OPS datagetter returned bin=%s for '
+                            'request bin=%s, skipping row',
+                            row_bin, bin_num)
+                        continue
             try:
                 speed_m = float(row['s']) / 100  # cm/s → m/s
             except (TypeError, ValueError, KeyError):

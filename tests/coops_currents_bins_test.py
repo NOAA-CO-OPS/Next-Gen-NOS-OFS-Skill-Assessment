@@ -4,7 +4,7 @@ Tests for per-bin CO-OPS currents retrieval and CTL emission (Issue #87).
 Covers the Phase 1 + Phase 2 behavior defined in
 ``issue_87_currents_bins_plan.md``:
 
-- ``_get_station_depth`` caches and parses the bins endpoint.
+- ``get_station_depth`` caches and parses the bins endpoint.
 - ``retrieve_t_and_c_station`` returns one DataFrame per ADCP bin for
   ``variable='currents'``, with bin/depth/orientation stamped onto
   ``df.attrs``.
@@ -104,7 +104,7 @@ class _FakeResponse:
 
 
 # ---------------------------------------------------------------------------
-# _get_station_depth
+# get_station_depth
 # ---------------------------------------------------------------------------
 
 def test_get_station_depth_parses_bins(bins_payload, logger):
@@ -117,14 +117,14 @@ def test_get_station_depth_parses_bins(bins_payload, logger):
     fake = _FakeResponse(bins_payload)
     with patch.object(rtc, '_get_session') as mock_session:
         mock_session.return_value.get.return_value = fake
-        result = rtc._get_station_depth(
+        result = rtc.get_station_depth(
             '8454000', 'https://api.example/mdapi/prod/', logger)
 
     assert result == bins_payload
     assert len(result['bins']) == 3
     # Cache hit: no second HTTP call.
     with patch.object(rtc, '_get_session') as mock_session:
-        rtc._get_station_depth(
+        rtc.get_station_depth(
             '8454000', 'https://api.example/mdapi/prod/', logger)
         mock_session.assert_not_called()
 
