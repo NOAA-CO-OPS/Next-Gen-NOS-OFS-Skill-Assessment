@@ -4,6 +4,16 @@ End-to-end workflow for retrieving every ADCP bin's observation data and
 resolving an accurate vertical depth for each, including side-looking
 (PICS) ADCPs. Covers the implementation landed under issue #87.
 
+## Contents
+
+1. [Data sources (CO-OPS APIs)](#data-sources-co-ops-apis)
+2. [Depth-resolution decision tree](#depth-resolution-decision-tree)
+3. [Stage-by-stage pipeline](#stage-by-stage-pipeline)
+4. [Worked examples (2026-03-27 nowcast run)](#worked-examples-2026-03-27-nowcast-run)
+5. [User override: currents-bins CSV](#user-override-currents-bins-csv)
+6. [File inventory (issue #87 implementation)](#file-inventory-issue-87-implementation)
+7. [Operational notes](#operational-notes)
+
 ---
 
 ## Data sources (CO-OPS APIs)
@@ -183,6 +193,129 @@ prefix and shows only `Obs depth — Model depth`.
 
 ---
 
+## User override: currents-bins CSV
+
+The default pipeline retrieves every bin reported by the MDAPI bins
+endpoint for each CO-OPS ADCP station. For a 48-bin station (e.g.
+`cb1401`) that's 96 plots (timeseries + rose) per OFS per run. Often
+you only want a representative subset, or you need to correct a depth
+the model can't resolve (e.g. `cb1001` where `height_from_bottom`
+exceeds the model bathymetry at the nearest node).
+
+The `--Currents_Bins_Csv` / `-cb` CLI flag takes a path to a user CSV
+that does two things at once:
+
+1. **Filter** — only bins listed in the CSV for a given parent station
+   are processed; all other bins are dropped.
+2. **Override** — any non-empty `depth` / `orientation` / `name` cell
+   replaces the MDAPI-derived value for that bin.
+
+Stations **not** listed in the CSV keep their default "emit all bins"
+behaviour.
+
+### CSV schema
+
+Header row is required. Column order is flexible; extra columns are
+ignored. Blank lines and `#` comment lines are skipped.
+
+| Column        | Required | Description                                                                                 |
+|---------------|----------|---------------------------------------------------------------------------------------------|
+| `station_id`  | yes      | Parent CO-OPS station ID (e.g. `cb1001`), **not** the `{parent}_b{NN}` virtual ID.          |
+| `bin`         | yes      | Integer bin number as reported by the MDAPI bins endpoint.                                  |
+| `depth`       | no       | Obs depth in metres (positive, below surface). Overrides MDAPI `depth` **and** bypasses the side-looking `water_depth - height_from_bottom` resolver. |
+| `orientation` | no       | Free-text label (`up`, `down`, `side`, …). Purely advisory — shown in the plot title.       |
+| `name`        | no       | Free-text tag appended to the plot's station display label (e.g. `mid-column`).             |
+
+A malformed row is logged as a WARNING and skipped; the rest of the
+file continues. Rows for the same `(station_id, bin)` replace each
+other — **last one wins**.
+
+### Example
+
+`conf/currents_bins_example.csv` in this repo:
+
+```csv
+station_id,bin,depth,orientation,name
+# Keep 3 bins at Cove Point, with a hand-picked depth for the middle
+# one (model bathymetry mis-resolves the LNG berth here).
+cb1001,1,3.5,up,
+cb1001,15,9.0,up,mid-column
+cb1001,30,13.5,up,near-surface
+
+# Keep 1 representative bin at Chesapeake City (all 23 bins are at
+# roughly the same depth anyway — it's side-looking).
+cb1301,10,,,near-bottom
+```
+
+### Usage
+
+```bash
+# Works on both the obs-retrieval CLI...
+python bin/obs_retrieval/get_station_observations_cli.py \
+    -o cbofs -p ./ -s '2026-03-27T00:00:00Z' -e '2026-03-28T00:00:00Z' \
+    -d MLLW -so co-ops -vs currents \
+    -cb conf/currents_bins_example.csv
+
+# ...and the full 1D pipeline:
+python bin/visualization/create_1dplot.py \
+    -o cbofs -p ./ -s '2026-03-27T00:00:00Z' -e '2026-03-28T00:00:00Z' \
+    -d MLLW -ws nowcast -t stations -vs currents -so co-ops \
+    -cb conf/currents_bins_example.csv
+```
+
+### What changes in the output
+
+Given the CSV above, `cbofs_cu_station.ctl` now contains exactly **4
+entries** instead of 129:
+
+```
+cb1001_b01 cb1001_b01_cu_cbofs_CO-OPS "Cove Point LNG Pier (SL-ADP) (bin 01)"
+  38.403 -76.384 0.0  3.50  0.0  0.00
+cb1001_b15 cb1001_b15_cu_cbofs_CO-OPS "Cove Point LNG Pier (SL-ADP) (bin 15 / mid-column)"
+  38.403 -76.384 0.0  9.00  0.0  0.00
+cb1001_b30 cb1001_b30_cu_cbofs_CO-OPS "Cove Point LNG Pier (SL-ADP) (bin 30 / near-surface)"
+  38.403 -76.384 0.0  13.50  0.0  0.00
+cb1301_b10 cb1301_b10_cu_cbofs_CO-OPS "Chesapeake City (bin 10 / near-bottom)"
+  39.531 -75.828 0.0  0.00  0.0  0.18
+```
+
+Notes on what the depth column reflects:
+
+- `cb1001_b01` → `3.50` (user-supplied; `hfb` column reset to `0.00`
+  because an explicit depth bypasses the side-looking resolver).
+- `cb1001_b15` → `9.00` (user-supplied, same handling).
+- `cb1301_b10` → `0.00` with `hfb = 0.18` — no depth was supplied in
+  the CSV, so the normal side-looking resolver runs at model-CTL time
+  and back-patches the depth to `water_depth - 0.18 m`.
+
+### Behaviour matrix
+
+| CSV row for this bin   | Depth source               | Side-looking resolver (`hfb`) |
+|------------------------|----------------------------|-------------------------------|
+| absent                 | MDAPI `bin.depth` if present; else `_resolve_side_looking_depths(model_h - hfb)` at model-CTL time | runs |
+| present, `depth` empty | same as default (MDAPI / resolver) | runs |
+| present, `depth` set   | **user value** (4th column of `station.ctl` verbatim) | skipped (`hfb` written as `0.00` so the resolver early-exits) |
+
+Plots inherit the new annotation automatically — the title reads
+`Bin NN / mid-column — Obs depth -X.X m — Model depth -Y.Y m` for
+rows with a `name` override, or the standard `Bin NN — …` line for
+rows without.
+
+### Caveats
+
+- The CSV is **not** evaluated against the obs inventory before
+  retrieval runs. If you name a bin the datagetter doesn't return
+  (e.g. because the ADCP was offline during the window), a WARNING is
+  logged and that row is skipped — no CTL entry is emitted.
+- The filter only applies to CO-OPS ADCP (virtual-ID) stations.
+  NDBC / USGS / CHS currents stations ignore the CSV.
+- A user-supplied `depth` short-circuits the side-looking resolver. If
+  your goal is to *correct* only specific bins while letting the
+  resolver handle the rest of a station, leave the `depth` column
+  empty on those rows and only fill it on the bins you want to pin.
+
+---
+
 ## File inventory (issue #87 implementation)
 
 ```
@@ -191,14 +324,19 @@ src/ofs_skill/obs_retrieval/retrieve_t_and_c_station.py
     _retrieve_currents_all_bins, _fetch_currents_chunked, _get_with_retry
 
 src/ofs_skill/obs_retrieval/write_obs_ctlfile.py
-    _process_coops_station (6-field coord line with hfb)
+    _process_coops_station (6-field coord line with hfb, bin_overrides)
     _process_usgs_station / _process_ndbc_station / _process_chs_station
         (6-field coord line for cu; hfb = 0.00 placeholder)
     _COOPS_CURRENTS_MAX_WORKERS = 2
+    write_obs_ctlfile(..., currents_bins_csv=None)
+
+src/ofs_skill/obs_retrieval/currents_bins_override.py
+    BinSpec, load_currents_bins_csv, bin_spec_lookup
 
 src/ofs_skill/obs_retrieval/get_station_observations.py
     _split_virtual_currents_id (parses {parent}_b{NN})
     obs_coops_workers capped at 2 when variable == 'currents'
+    forwards prop.currents_bins_csv into write_obs_ctlfile
 
 src/ofs_skill/model_processing/write_ofs_ctlfile.py
     _model_bathymetry_at_node, _resolve_side_looking_depths
@@ -210,7 +348,15 @@ src/ofs_skill/visualization/plotting_functions.py
     _build_depth_line, _lookup_obs_depth,
     _load_obs_station_depths, _load_model_station_depths
 
-tests/coops_currents_bins_test.py        # 10 tests, all passing
+bin/obs_retrieval/get_station_observations_cli.py
+bin/visualization/create_1dplot.py
+    new `-cb / --Currents_Bins_Csv` CLI flag → prop.currents_bins_csv
+
+conf/currents_bins_example.csv
+    reference CSV with commented examples
+
+tests/coops_currents_bins_test.py         # 10 tests, all passing
+tests/currents_bins_override_test.py      # 9 tests, all passing
 ```
 
 ---

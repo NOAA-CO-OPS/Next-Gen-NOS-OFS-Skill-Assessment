@@ -682,7 +682,9 @@ def _process_variable_obs(
             )
             write_obs_ctlfile(
                 start_date, end_date, datum, path, ofs,
-                stationowner, var_list, logger
+                stationowner, var_list, logger,
+                currents_bins_csv=getattr(
+                    prop, 'currents_bins_csv', None),
             )
             read_station_ctl_file = (
                 station_ctl_file_extract(

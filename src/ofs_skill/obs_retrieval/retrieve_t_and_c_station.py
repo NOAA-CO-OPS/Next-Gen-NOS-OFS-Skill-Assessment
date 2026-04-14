@@ -122,7 +122,8 @@ def _get_station_info(
 
 def retrieve_t_and_c_station(
     retrieve_input: object,
-    logger: Logger
+    logger: Logger,
+    only_bins: Optional[set[int]] = None,
 ) -> Optional[Union[pd.DataFrame, dict[int, pd.DataFrame]]]:
     """
     Retrieve time series observations from NOAA Tides and Currents station.
@@ -179,6 +180,7 @@ def retrieve_t_and_c_station(
             api_url=t_c.api_url,
             mdapi_url=t_c.mdapi_url,
             logger=logger,
+            only_bins=only_bins,
         )
 
     t_c.start_dt = datetime.strptime(retrieve_input.start_date, '%Y%m%d')
@@ -397,6 +399,7 @@ def _retrieve_currents_all_bins(
     api_url: str,
     mdapi_url: str,
     logger: Logger,
+    only_bins: Optional[set[int]] = None,
 ) -> Optional[dict[int, pd.DataFrame]]:
     """Retrieve CO-OPS currents data for every bin of an ADCP station.
 
@@ -407,6 +410,11 @@ def _retrieve_currents_all_bins(
          ``&bin=N`` to pull that bin's full time series.
       3. Assemble a DataFrame per bin (DateTime, DEP01, DIR, OBS), with
          ``df.attrs['bin'/'depth'/'orientation']`` stamped on.
+
+    When ``only_bins`` is provided, the bin iteration is restricted to
+    that set — which short-circuits the CO-OPS HTTP traffic when a
+    user has supplied a currents-bins override CSV listing only a
+    handful of bins per station.
 
     Returns ``dict[int, DataFrame]`` keyed by bin number, or ``None`` if
     no bin yielded any in-window data.
@@ -461,6 +469,12 @@ def _retrieve_currents_all_bins(
         try:
             bin_num = int(entry.get('num', entry.get('bin')))
         except (KeyError, TypeError, ValueError):
+            continue
+
+        # Restrict to CSV-requested bins when provided. Skips both the
+        # datagetter HTTP call and any downstream processing for bins
+        # the user did not pin.
+        if only_bins is not None and bin_num not in only_bins:
             continue
 
         depth = _bin_depth_from_record(entry)
