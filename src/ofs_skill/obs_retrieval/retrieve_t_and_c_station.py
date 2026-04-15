@@ -581,18 +581,27 @@ _RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
 _RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
 
 
+def _backoff_delay(attempt: int) -> float:
+    """Return seconds to sleep before the next retry attempt."""
+    return (_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            + random.uniform(0, _RETRY_JITTER_MAX))
+
+
 def _get_with_retry(
     url: str,
     station_id: str,
-    bin_num: Optional[int],
+    context: str,
     logger: Logger,
 ) -> Optional[dict]:
     """GET ``url`` with retries for transient CO-OPS errors.
 
     Retries only on network-level failures (ConnectionError, Timeout) or
     HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
-    as 400 (bad station/date combo — CO-OPS "no data") or 404 fail
+    as 400 (bad station/date combo - CO-OPS "no data") or 404 fail
     immediately without burning the retry budget.
+
+    ``context`` is a free-form label (bin number, variable name, etc.)
+    included in log messages so parallel workers can be disambiguated.
 
     Returns the parsed JSON payload on success, ``None`` when the call
     hits a non-retryable error or all retries are exhausted.
@@ -605,53 +614,58 @@ def _get_with_retry(
                 requests.exceptions.Timeout) as ex:
             last_exc = ex
             if attempt < _RETRY_MAX_ATTEMPTS:
-                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                delay += random.uniform(0, _RETRY_JITTER_MAX)
+                delay = _backoff_delay(attempt)
                 logger.warning(
-                    'CO-OPS %s bin=%s network error (attempt %d/%d): %s; '
-                    'retrying in %.1fs', station_id, bin_num, attempt,
-                    _RETRY_MAX_ATTEMPTS, ex, delay)
+                    'CO-OPS %s station=%s network error (attempt %d/%d): '
+                    '%s; retrying in %.1fs', context, station_id,
+                    attempt, _RETRY_MAX_ATTEMPTS, ex, delay)
                 time.sleep(delay)
                 continue
             break
         except requests.exceptions.RequestException as ex:
             logger.warning(
-                'CO-OPS %s bin=%s non-retryable request error: %s',
-                station_id, bin_num, ex)
+                'CO-OPS %s station=%s non-retryable request error: %s',
+                context, station_id, ex)
             return None
 
         status = response.status_code
-        if status in _RETRY_STATUSES and attempt < _RETRY_MAX_ATTEMPTS:
-            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            delay += random.uniform(0, _RETRY_JITTER_MAX)
-            logger.warning(
-                'CO-OPS %s bin=%s HTTP %d (attempt %d/%d); retrying '
-                'in %.1fs', station_id, bin_num, status, attempt,
-                _RETRY_MAX_ATTEMPTS, delay)
-            time.sleep(delay)
-            continue
+        if status in _RETRY_STATUSES:
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    'CO-OPS %s station=%s HTTP %d (attempt %d/%d); '
+                    'retrying in %.1fs', context, station_id, status,
+                    attempt, _RETRY_MAX_ATTEMPTS, delay)
+                time.sleep(delay)
+                continue
+            logger.error(
+                'CO-OPS %s station=%s HTTP %d - retries exhausted '
+                'after %d attempts; dropping chunk',
+                context, station_id, status, _RETRY_MAX_ATTEMPTS)
+            return None
 
         if status >= 400:
-            # Non-retryable 4xx/5xx (400, 401, 404, etc.) or exhausted
-            # retries on retryable codes: fail fast rather than burn
-            # more attempts. CO-OPS returns 400 with "No data was
-            # found" for stations with no data in the requested window.
-            logger.info(
-                'CO-OPS %s bin=%s HTTP %d — not retrying',
-                station_id, bin_num, status)
+            # Non-retryable 4xx/5xx (400, 401, 404, etc.) - fail fast.
+            # CO-OPS returns 400 "No data was found" for stations with
+            # no observations in the requested window; retrying won't
+            # change that. Logged at WARNING because the chunk is
+            # dropped silently and operators should notice.
+            logger.warning(
+                'CO-OPS %s station=%s HTTP %d - not retrying '
+                '(dropping chunk)', context, station_id, status)
             return None
 
         try:
             return response.json()
         except ValueError as ex:
             logger.warning(
-                'CO-OPS %s bin=%s returned non-JSON body: %s',
-                station_id, bin_num, ex)
+                'CO-OPS %s station=%s returned non-JSON body: %s',
+                context, station_id, ex)
             return None
 
     logger.error(
-        'CO-OPS currents retrieval failed for station %s (bin=%s) after '
-        '%d attempts: %s', station_id, bin_num, _RETRY_MAX_ATTEMPTS,
+        'CO-OPS currents retrieval failed for station %s (%s) after '
+        '%d attempts: %s', station_id, context, _RETRY_MAX_ATTEMPTS,
         last_exc)
     return None
 
@@ -684,7 +698,9 @@ def _fetch_currents_chunked(
             f'&station={station_id}&product=currents{bin_qs}'
             f'&time_zone=gmt&units=metric&format=json'
         )
-        obs = _get_with_retry(url, station_id, bin_num, logger)
+        context = (f'currents bin={bin_num}' if bin_num is not None
+                   else 'currents')
+        obs = _get_with_retry(url, station_id, context, logger)
         if obs is None:
             cur += delta
             continue
