@@ -11,6 +11,8 @@ automatic retry logic for temperature and salinity using backup URLs.
 
 import json
 import math
+import random
+import time
 from datetime import datetime, timedelta
 from logging import Logger
 from typing import Optional
@@ -82,6 +84,94 @@ def _get_station_depth(station_id, mdapi_url, logger):
 
     _depth_cache[station_id] = depth_data
     return depth_data
+
+
+# CO-OPS occasionally rate-limits or returns transient 5xx when a long
+# historical window forces many 30-day chunk requests per station; retry
+# a small number of times with exponential backoff + jitter before giving
+# up. Kept in sync with the per-bin retry helper on issue-87-currents-bins
+# so both paths share the same backoff profile.
+_RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
+_RETRY_MAX_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
+_RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
+
+
+def _get_with_retry(
+    url: str,
+    station_id: str,
+    variable: str,
+    logger: Logger,
+) -> Optional[dict]:
+    """GET ``url`` with retries for transient CO-OPS errors.
+
+    Retries only on network-level failures (ConnectionError, Timeout) or
+    HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
+    as 400 (bad station/date combo — CO-OPS "no data") or 404 fail
+    immediately without burning the retry budget.
+
+    Returns the parsed JSON payload on success, ``None`` when the call
+    hits a non-retryable error or all retries are exhausted.
+    """
+    last_exc = None
+    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        try:
+            response = _get_session().get(url, timeout=120)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as ex:
+            # Network-level failure: retry.
+            last_exc = ex
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                delay += random.uniform(0, _RETRY_JITTER_MAX)
+                logger.warning(
+                    'CO-OPS %s station=%s network error (attempt %d/%d): '
+                    '%s; retrying in %.1fs', variable, station_id,
+                    attempt, _RETRY_MAX_ATTEMPTS, ex, delay)
+                time.sleep(delay)
+                continue
+            break
+        except requests.exceptions.RequestException as ex:
+            # Some other non-retryable request-layer error.
+            logger.warning(
+                'CO-OPS %s station=%s non-retryable request error: %s',
+                variable, station_id, ex)
+            return None
+
+        status = response.status_code
+        if status in _RETRY_STATUSES and attempt < _RETRY_MAX_ATTEMPTS:
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            delay += random.uniform(0, _RETRY_JITTER_MAX)
+            logger.warning(
+                'CO-OPS %s station=%s HTTP %d (attempt %d/%d); '
+                'retrying in %.1fs', variable, station_id, status,
+                attempt, _RETRY_MAX_ATTEMPTS, delay)
+            time.sleep(delay)
+            continue
+
+        if status >= 400:
+            # Non-retryable 4xx/5xx (400, 401, 404, etc.) or exhausted
+            # retries on retryable codes: fail without consuming more
+            # attempts. CO-OPS returns 400 with "No data was found" for
+            # stations that have no observations in the requested window
+            # — retrying won't change that.
+            logger.info(
+                'CO-OPS %s station=%s HTTP %d — not retrying',
+                variable, station_id, status)
+            return None
+
+        try:
+            return response.json()
+        except ValueError as ex:
+            logger.warning(
+                'CO-OPS %s station=%s returned non-JSON body: %s',
+                variable, station_id, ex)
+            return None
+
+    logger.error(
+        'CO-OPS %s retrieval failed for station %s after %d attempts: %s',
+        variable, station_id, _RETRY_MAX_ATTEMPTS, last_exc)
+    return None
 
 
 def retrieve_t_and_c_station(
@@ -202,54 +292,34 @@ def retrieve_t_and_c_station(
             )
 
         if variable in {'water_temperature', 'salinity'}:
-            try:
-                response = _get_session().get(t_c.station_url, timeout=120)
-                response.raise_for_status()
-                obs = response.json()
+            obs = _get_with_retry(
+                t_c.station_url, str(retrieve_input.station), variable,
+                logger)
+            if obs is not None:
                 logger.info(
                     'CO-OPS station %s contacted for %s retrieval.',
                     retrieve_input.station, variable)
-            except requests.exceptions.RequestException as ex_1:
-                logger.error(
-                    'CO-OPS %s observation retrieval failed for station %s! '
-                    '%s',
-                    variable, retrieve_input.station, ex_1
-                )
-                logger.error('Exception caught: %s', ex_1)
-                try:
-                    response_2 = _get_session().get(
-                        t_c.station_url_2, timeout=120)
-                    response_2.raise_for_status()
-                    obs = response_2.json()
+            else:
+                obs = _get_with_retry(
+                    t_c.station_url_2, str(retrieve_input.station),
+                    variable, logger)
+                if obs is not None:
                     logger.info(
-                        'CO-OPS backup station %s contacted for %s retrieval.',
-                        retrieve_input.station, variable)
-                except requests.exceptions.RequestException as ex_2:
-                    logger.error(
-                        'Backup CO-OPS %s observation retrieval failed for '
-                        'station %s! %s',
-                        variable, retrieve_input.station, ex_2
-                    )
-                    logger.error('Exception caught: %s', ex_2)
+                        'CO-OPS backup station %s contacted for %s '
+                        'retrieval.', retrieve_input.station, variable)
+                else:
                     t_c.start_dt += t_c.delta
                     continue
         else:
-            try:
-                response = _get_session().get(t_c.station_url, timeout=120)
-                response.raise_for_status()
-                obs = response.json()
-                logger.info(
-                    'CO-OPS station %s contacted for %s retrieval.',
-                    retrieve_input.station, variable)
-            except requests.exceptions.RequestException as ex:
-                logger.error(
-                    'CO-OPS %s observation retrieval failed for station %s! '
-                    '%s',
-                    variable, retrieve_input.station, ex
-                )
-                logger.error('Exception caught: %s', ex)
+            obs = _get_with_retry(
+                t_c.station_url, str(retrieve_input.station), variable,
+                logger)
+            if obs is None:
                 t_c.start_dt += t_c.delta
                 continue
+            logger.info(
+                'CO-OPS station %s contacted for %s retrieval.',
+                retrieve_input.station, variable)
 
         t_c.date, t_c.var, t_c.drt = [], [], []
         if 'data' in obs.keys():
