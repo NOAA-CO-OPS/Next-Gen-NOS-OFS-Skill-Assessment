@@ -396,6 +396,7 @@ def _fetch_and_format_station(
                         'CO-OPS %s data for '
                         'station %s', variable,
                         str(station_id))
+                    return None
                 else:
                     timeseries = timeseries[timeseries['OBS'].notna()]
 

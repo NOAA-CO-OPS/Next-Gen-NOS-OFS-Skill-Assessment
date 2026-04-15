@@ -64,6 +64,7 @@ def _process_coops_station(id_number, name, x_value, y_value,
             retrieve_t_and_c_station(
                 retrieve_input,logger)
         if variable == 'water_level':
+            datum_found = None
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
                 all_datums = ['NAVD','MSL','MLLW',
@@ -125,6 +126,15 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             ) from ex
             else:
                 datum_found = datum
+            if not datum_found:
+                logger.info(
+                    'After trying multiple '
+                    'datums, no water '
+                    'level data found for '
+                    'station %s.',
+                    str(id_number)
+                    )
+                return None
             if ofs not in [
                     'leofs',
                     'lmhofs',
@@ -137,6 +147,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                       str(datum_found).upper() in
                       datum_list):
                     ldatum = datum.lower()
+                    if ldatum == 'navd':
+                        ldatum = 'navd88'
                     dummyval = 10
                     _,_,z = vdatum.convert(
                         str(datum_found).lower(),
@@ -272,6 +284,8 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                             ) == 'NAVD88' and
                             datum != 'NAVD88'):
                         ldatum = datum.lower()
+                        if ldatum == 'navd':
+                            ldatum = 'navd88'
                         dummyval = 10
                         _,_,z = vdatum.convert(
                             timeseries['Datum'][1].lower(),
@@ -371,6 +385,8 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
                     ) == 'MLLW' and
                     datum != 'MLLW'):
                 ldatum = datum.lower()
+                if ldatum == 'navd':
+                    ldatum = 'navd88'
                 dummyval = 10
                 _,_,z = vdatum.convert(
                     data_station['Datum'][1].lower(),
@@ -468,6 +484,8 @@ def _process_chs_station(id_number, name, x_value, y_value,
                     zdiff = 0
                 else:
                     ldatum = datum.lower()
+                    if ldatum == 'navd':
+                        ldatum = 'navd88'
                     dummyval = 10
                     _,_,z = vdatum.convert(
                         data_station['Datum'][1].lower(),
