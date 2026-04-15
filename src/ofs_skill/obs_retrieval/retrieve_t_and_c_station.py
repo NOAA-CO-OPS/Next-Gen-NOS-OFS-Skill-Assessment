@@ -589,36 +589,66 @@ def _get_with_retry(
 ) -> Optional[dict]:
     """GET ``url`` with retries for transient CO-OPS errors.
 
-    Returns the parsed JSON payload on success, ``None`` when all
-    attempts fail.
+    Retries only on network-level failures (ConnectionError, Timeout) or
+    HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
+    as 400 (bad station/date combo — CO-OPS "no data") or 404 fail
+    immediately without burning the retry budget.
+
+    Returns the parsed JSON payload on success, ``None`` when the call
+    hits a non-retryable error or all retries are exhausted.
     """
     last_exc = None
     for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
         try:
             response = _get_session().get(url, timeout=120)
-            status = response.status_code
-            if status in _RETRY_STATUSES and attempt < _RETRY_MAX_ATTEMPTS:
-                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                delay += random.uniform(0, _RETRY_JITTER_MAX)
-                logger.warning(
-                    'CO-OPS %s bin=%s HTTP %d (attempt %d/%d); retrying '
-                    'in %.1fs', station_id, bin_num, status, attempt,
-                    _RETRY_MAX_ATTEMPTS, delay)
-                time.sleep(delay)
-                continue
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as ex:
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as ex:
             last_exc = ex
             if attempt < _RETRY_MAX_ATTEMPTS:
                 delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
                 delay += random.uniform(0, _RETRY_JITTER_MAX)
                 logger.warning(
-                    'CO-OPS %s bin=%s request error (attempt %d/%d): %s; '
+                    'CO-OPS %s bin=%s network error (attempt %d/%d): %s; '
                     'retrying in %.1fs', station_id, bin_num, attempt,
                     _RETRY_MAX_ATTEMPTS, ex, delay)
                 time.sleep(delay)
                 continue
+            break
+        except requests.exceptions.RequestException as ex:
+            logger.warning(
+                'CO-OPS %s bin=%s non-retryable request error: %s',
+                station_id, bin_num, ex)
+            return None
+
+        status = response.status_code
+        if status in _RETRY_STATUSES and attempt < _RETRY_MAX_ATTEMPTS:
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            delay += random.uniform(0, _RETRY_JITTER_MAX)
+            logger.warning(
+                'CO-OPS %s bin=%s HTTP %d (attempt %d/%d); retrying '
+                'in %.1fs', station_id, bin_num, status, attempt,
+                _RETRY_MAX_ATTEMPTS, delay)
+            time.sleep(delay)
+            continue
+
+        if status >= 400:
+            # Non-retryable 4xx/5xx (400, 401, 404, etc.) or exhausted
+            # retries on retryable codes: fail fast rather than burn
+            # more attempts. CO-OPS returns 400 with "No data was
+            # found" for stations with no data in the requested window.
+            logger.info(
+                'CO-OPS %s bin=%s HTTP %d — not retrying',
+                station_id, bin_num, status)
+            return None
+
+        try:
+            return response.json()
+        except ValueError as ex:
+            logger.warning(
+                'CO-OPS %s bin=%s returned non-JSON body: %s',
+                station_id, bin_num, ex)
+            return None
+
     logger.error(
         'CO-OPS currents retrieval failed for station %s (bin=%s) after '
         '%d attempts: %s', station_id, bin_num, _RETRY_MAX_ATTEMPTS,
