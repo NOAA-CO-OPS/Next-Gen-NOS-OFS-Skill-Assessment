@@ -195,13 +195,18 @@ def get_title(
     depth_line = _build_depth_line(
         prop, station_id, name_var, logger
     )
+    # Below the depth line: ADCP orientation / type (Side-Looking,
+    # Upward-Looking, …) for CO-OPS currents stations only.
+    adcp_type_line = _build_adcp_type_line(
+        prop, station_id, name_var, logger
+    )
 
     return f'<b>NOAA/NOS OFS Skill Assessment<br>' \
             f'{station_id[2]} station:&nbsp;{station_id[1]} ' \
             f'({station_id[0]})<br>' \
             f'OFS:&nbsp;{prop.ofs.upper()}&nbsp;&nbsp;&nbsp;Node ID:&nbsp;' \
             f'{node}&nbsp;&nbsp;&nbsp;' \
-            + nwsline + depth_line + \
+            + nwsline + depth_line + adcp_type_line + \
             f'<br>From:&nbsp;{start_date}' \
             f'&nbsp;&nbsp;&nbsp;To:&nbsp;' \
             f'{end_date}<b>'
@@ -213,25 +218,27 @@ _COOPS_MDAPI_URL = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/'
 # each file at most once per process.
 _MODEL_CTL_CACHE: dict[str, dict[str, float]] = {}
 
-# Cache obs-side station.ctl parses: {ctl_path: {station_id: depth_m}}.
-_OBS_CTL_CACHE: dict[str, dict[str, float]] = {}
+# Cache obs-side station.ctl parses: {ctl_path: {station_id: (depth_m, hfb_m)}}.
+_OBS_CTL_CACHE: dict[str, dict[str, tuple[float, float]]] = {}
 
 
-def _load_obs_station_depths(ctl_path: str) -> dict[str, float]:
-    """Return ``{station_id: obs_depth_m}`` parsed from a station ctl file.
+def _load_obs_station_depths(
+    ctl_path: str,
+) -> dict[str, tuple[float, float]]:
+    """Return ``{station_id: (obs_depth_m, hfb_m)}`` parsed from a station ctl.
 
     Station control file format (2 lines per station)::
 
         <id> <source_id> "<name>"
-          <lat> <lon> <zdiff> <obs_depth> <shift>
+          <lat> <lon> <zdiff> <obs_depth> <shift> [<hfb>]
 
     The 4th space-separated token on the coord line is the observation
-    depth in meters. For non-virtual-ID stations (NDBC, USGS, CHS) this
-    is the only source of obs depth.
+    depth in meters. The optional 6th token is ``height_from_bottom``
+    (only present for CO-OPS side-looking ADCPs); missing → 0.0.
     """
     if ctl_path in _OBS_CTL_CACHE:
         return _OBS_CTL_CACHE[ctl_path]
-    result: dict[str, float] = {}
+    result: dict[str, tuple[float, float]] = {}
     if not os.path.isfile(ctl_path):
         _OBS_CTL_CACHE[ctl_path] = result
         return result
@@ -245,9 +252,16 @@ def _load_obs_station_depths(ctl_path: str) -> dict[str, float]:
                 continue
             station_id = head[0]
             try:
-                result[station_id] = float(coord[3])
+                depth = float(coord[3])
             except (TypeError, ValueError):
                 continue
+            hfb = 0.0
+            if len(coord) >= 6:
+                try:
+                    hfb = float(coord[5])
+                except (TypeError, ValueError):
+                    hfb = 0.0
+            result[station_id] = (depth, hfb)
     except OSError:
         pass
     _OBS_CTL_CACHE[ctl_path] = result
@@ -338,6 +352,13 @@ def _lookup_obs_depth(
                     orientation = str(
                         entry.get('orientation', '') or '')
                     if depth_val is not None:
+                        # A resolvable MDAPI per-bin depth only comes
+                        # from upward-looking (bottom-mounted) ADCPs;
+                        # side-looking (PICS) bins report depth=null.
+                        # Fill in the orientation when the endpoint
+                        # omitted it so the title can label the rig.
+                        if not orientation:
+                            orientation = 'up'
                         return bin_num, float(depth_val), orientation
                     # depth is None: leave MDAPI loop, try the CTL.
                     break
@@ -352,8 +373,13 @@ def _lookup_obs_depth(
         ctl_path = os.path.join(
             ctl_dir, f'{prop.ofs}_{name_var}_station.ctl')
         table = _load_obs_station_depths(ctl_path)
-        depth_val = table.get(str(station_id_tuple[0]))
-        if depth_val is not None:
+        entry = table.get(str(station_id_tuple[0]))
+        if entry is not None:
+            depth_val, hfb = entry
+            # CTL-only path loses MDAPI orientation; presence of hfb is
+            # the CTL-local signal for side-looking (PICS) ADCPs.
+            if not orientation and hfb > 0:
+                orientation = 'side-looking'
             return bin_num, float(depth_val), orientation
 
     return None
@@ -365,7 +391,7 @@ def _build_depth_line(prop, station_id, name_var, logger):
     Returns an empty string for non-currents plots or when no depth info
     can be resolved. Format::
 
-        <br>Bin NN — Obs depth -X.X m (orientation)  |  Model depth -Y.Y m
+        <br>Bin NN — Obs depth -X.X m  —  Model depth -Y.Y m
     """
     if name_var != 'cu':
         return ''
@@ -373,9 +399,8 @@ def _build_depth_line(prop, station_id, name_var, logger):
     obs_info = _lookup_obs_depth(station_id, prop, name_var, logger)
     bin_num = None
     obs_depth: float | None = None
-    orientation = ''
     if obs_info is not None:
-        bin_num, obs_depth, orientation = obs_info
+        bin_num, obs_depth, _orientation = obs_info
 
     # Resolve model depth from the model_station.ctl / model.ctl file.
     model_depth: float | None = None
@@ -396,14 +421,59 @@ def _build_depth_line(prop, station_id, name_var, logger):
     if bin_num is not None:
         parts.append(f'Bin&nbsp;{bin_num:02d}')
     if obs_depth is not None:
-        orient_txt = f'&nbsp;({orientation})' if orientation else ''
         parts.append(
-            f'Obs&nbsp;depth&nbsp;{-abs(obs_depth):.1f}&nbsp;m{orient_txt}')
+            f'Obs&nbsp;depth&nbsp;{-abs(obs_depth):.1f}&nbsp;m')
     if model_depth is not None:
         parts.append(
             f'Model&nbsp;depth&nbsp;{-abs(model_depth):.1f}&nbsp;m')
 
     return '<br>' + '&nbsp;—&nbsp;'.join(parts)
+
+
+def _format_adcp_orientation_label(raw: str) -> str:
+    """Map a raw CO-OPS MDAPI orientation value to a display label.
+
+    The MDAPI ``orientation`` field is a free-form short string; normalize
+    the common encodings to human-readable ADCP types. Returns '' when
+    the input is empty or unrecognized and cannot be cleanly displayed.
+    """
+    if not raw:
+        return ''
+    low = raw.strip().lower()
+    if not low:
+        return ''
+    if low.startswith('horiz') or 'side' in low or low in ('h',):
+        return 'Side-Looking ADCP'
+    if low.startswith('up') or low in ('u',):
+        return 'Upward-Looking ADCP (bottom-mounted)'
+    if low.startswith('down') or low in ('d',):
+        return 'Downward-Looking ADCP'
+    if low.startswith('vert') or low in ('v',):
+        return 'Vertical ADCP'
+    return raw.strip().title()
+
+
+def _build_adcp_type_line(prop, station_id, name_var, logger) -> str:
+    """HTML fragment (``<br>Side-Looking ADCP``) for a CO-OPS ADCP station.
+
+    Returns an empty string for non-currents plots, non-CO-OPS sources,
+    or when the orientation cannot be resolved. ``_lookup_obs_depth`` is
+    responsible for populating the raw orientation string (from MDAPI
+    for vertical ADCPs, or from the station.ctl ``hfb`` presence for
+    side-looking PICS ADCPs).
+    """
+    if name_var != 'cu':
+        return ''
+    if len(station_id) < 3 or station_id[2] != 'CO-OPS':
+        return ''
+
+    obs_info = _lookup_obs_depth(station_id, prop, name_var, logger)
+    if obs_info is None:
+        return ''
+    label = _format_adcp_orientation_label(obs_info[2])
+    if not label:
+        return ''
+    return f'<br>{label}'
 
 
 def get_error_range(

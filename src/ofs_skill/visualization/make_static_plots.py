@@ -125,9 +125,12 @@ def get_title_static(prop, node, station_id, name_var, logger):
     else:
         nwsline = ''
 
-    # Currents plots get the same obs/model depth annotation as the HTML
-    # title; strip the HTML tokens for matplotlib rendering.
+    # Currents plots get the same obs/model depth + ADCP-type annotation
+    # as the HTML title; strip the HTML tokens for matplotlib rendering.
     depth_line = plotting_functions._build_depth_line(
+        prop, station_id, name_var, logger,
+    ).replace('<br>', '\n').replace('&nbsp;', ' ')
+    adcp_type_line = plotting_functions._build_adcp_type_line(
         prop, station_id, name_var, logger,
     ).replace('<br>', '\n').replace('&nbsp;', ' ')
 
@@ -136,7 +139,7 @@ def get_title_static(prop, node, station_id, name_var, logger):
         f'({station_id[0]})\n' \
         f'OFS: {prop.ofs.upper()}    Node ID: ' \
         f'{node}    ' \
-        + nwsline + depth_line + \
+        + nwsline + depth_line + adcp_type_line + \
         f'\nFrom: {start_date}  ' \
         f'To: ' \
         f'{end_date}'
