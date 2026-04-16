@@ -925,7 +925,7 @@ def oned_vector_plot2b(
         # This determines the height of the plot based on # of rows
         height=figheight,
         width=figwidth, template='seaborn',
-        margin=dict(l=20, r=20, t=120, b=0), legend=dict(
+        margin=dict(l=20, r=20, t=160, b=0), legend=dict(
             font=dict(size=14, color='black', family='Arial'),
             orientation='h',
             yanchor='bottom',
