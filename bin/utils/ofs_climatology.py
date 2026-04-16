@@ -75,11 +75,10 @@ import xarray as xr
 from dateutil import parser
 from netCDF4 import Dataset
 
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-
-# Import from ofs_skill package
 from ofs_skill.model_processing import list_of_files, model_properties, model_source
 from ofs_skill.obs_retrieval import utils
+
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # print(f"--- CONTENTS OF cimgt: {dir(cimgt)} ---") # <-- ADD THIS LINE
 # from pylab import *
@@ -590,7 +589,7 @@ def fields_plot(logger, file, ofs, month_name, model, path_save):
 
             fig = m.get_figure()
 
-            cbar = fig.colorbar(
+            fig.colorbar(
                 tp2, ax=m, orientation='horizontal', pad=0.05,
             )
             # cbar.set_label("{} ({})".format(avg_file[var].attrs["long_name"], avg_file[var].attrs["units"]))
@@ -638,7 +637,7 @@ def fields_plot(logger, file, ofs, month_name, model, path_save):
 
             fig = m.get_figure()
 
-            cbar = fig.colorbar(
+            fig.colorbar(
                 tp2, ax=m, orientation='horizontal', pad=0.05,
             )
             # cbar.set_label("{} ({})".format(avg_file[var].attrs["long_name"], avg_file[var].attrs["units"]))
@@ -679,7 +678,7 @@ def stations_plot(logger, files_to_plot, ofs, path_save):
         fig, axs = plt.subplots(5, 1, figsize=(6, 10), layout='constrained')
 
         logger.info(f'Creating Plot: {site+1} of {len(z[0])}')
-        for ax, var, c, l in zip(axs.flat, variables, ['b', 'r', 'g', 'k', 'k'], ['meters', 'Celsius', 'ppm', 'meters per second', 'meters per second']):
+        for ax, var, c, label in zip(axs.flat, variables, ['b', 'r', 'g', 'k', 'k'], ['meters', 'Celsius', 'ppm', 'meters per second', 'meters per second']):
             ax.set_title(f'OFS: {ofs}, Station: {site}, Variable: {var}')
             if var == 'zeta_avg':
                 y = zz
@@ -693,7 +692,7 @@ def stations_plot(logger, files_to_plot, ofs, path_save):
                 y = vv
 
             ax.grid(ls='--')
-            ax.set_ylabel(l)
+            ax.set_ylabel(label)
             ax.plot(m, y, 'o', ls='-', ms=4, color=c)
 
         plt.savefig(
@@ -706,7 +705,11 @@ def stations_plot(logger, files_to_plot, ofs, path_save):
 
 def ofs_climatology(prop1, logger, path_save, datagroup):
 
-    dates = []
+    # Validate model source.
+    if prop1.model_source.lower() == 'adcirc':
+        logger.error('Climatology calculation not implemented for ADCIRC models.')
+        raise NotImplementedError('Climatology calculation not implemented for ADCIRC models.')
+
     if str(datagroup) == 'all' or str(datagroup) == 'none':
         month_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     else:

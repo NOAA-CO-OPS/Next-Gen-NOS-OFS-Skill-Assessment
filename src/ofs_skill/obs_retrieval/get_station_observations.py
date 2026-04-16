@@ -10,7 +10,7 @@ Technical Contact(s): Name:  FC
 Abstract:
 
    This is the final station observation data function.
-   This function calls the Tides and Currents, NDBC, and USGS retrieval
+   This function calls the Tides and Currents, NDBC, USGS, and CHS retrieval
    function in loop for all stations found in the
    ofs_inventory_stations(OFS, Start_Date, End_Date, Path) and variables
    ['water_level', 'water_temperature', 'salinity', 'currents'].
@@ -197,7 +197,7 @@ def is_number(n):
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
-    datum_shift, retrieve_input, logger
+    datum_shift, retrieve_input, logger, config_file=None,
 ):
     """Apply datum shift to water_level timeseries, with CO-OPS multi-datum fallback.
 
@@ -406,7 +406,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -435,7 +435,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -464,7 +464,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -493,7 +493,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(

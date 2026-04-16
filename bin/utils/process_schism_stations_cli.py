@@ -39,7 +39,12 @@ def parameter_validation(prop, dir_params, logger):
                         f"'{prop.path}'. Abort!"
         logger.error(error_message)
         sys.exit(-1)
-    # OFS validation
+    # OFS validation.
+    if prop.model_source.lower() != 'schism':
+        error_message = f"OFS '{prop.ofs}' is not a SCHISM model! " \
+                        f'Please check your OFS input.'
+        logger.error(error_message)
+        raise ValueError(error_message)
     shapefile = f'{ofs_extents_path}/{prop.ofs}.shp'
     if not os.path.isfile(shapefile):
         error_message = f"Shapefile '{prop.ofs}' " \

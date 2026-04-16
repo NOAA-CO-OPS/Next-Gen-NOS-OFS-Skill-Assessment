@@ -421,8 +421,8 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        default = 'co-ops,ndbc,usgs',
-        help="'CO-OPS','NDBC','USGS',", )
+        default = 'co-ops,ndbc,usgs,chs',
+        help="'CO-OPS', 'NDBC', 'USGS', 'CHS'", )
 
 
     args = parser.parse_args()

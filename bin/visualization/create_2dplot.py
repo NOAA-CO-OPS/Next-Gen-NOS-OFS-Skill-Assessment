@@ -95,6 +95,11 @@ def validate_and_initialize_parameters(prop):
     # Load directory parameters
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
+    # Model source/OFS validation
+    if prop.model_source.lower() == 'adcirc':
+        logger.error('ADCIRC is not currently supported for 2D visualizations.')
+        raise NotImplementedError('ADCIRC is not currently supported for 2D visualizations.')
+
     # Date validation
     try:
         start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
@@ -128,12 +133,15 @@ def validate_and_initialize_parameters(prop):
     prop.whichcasts = prop.whichcasts.replace(']', '')
     prop.whichcasts = prop.whichcasts.split(',')
     for whichcast in prop.whichcasts:
-        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b'}:
-            logger.error("Invalid whichcast value: '%s'. Abort!",prop.whichcasts)
+        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}:
+            logger.error("Invalid whichcast value: '%s'. Abort!", whichcast)
             sys.exit(-1)
 
-    if prop.whichcasts == 'forecast_a' and prop.forecast_hr is None:
-        logger.error('Forecast_Hr is required if Whichcast is forecast_a. Abort!')
+    if 'forecast_a' in prop.whichcasts and prop.forecast_hr is None:
+        logger.error(
+            'Forecast_Hr (e.g., "now", "06z", "12z") is required '
+            'if Whichcast is forecast_a. Abort!'
+        )
         sys.exit(-1)
 
     # Create necessary directories
