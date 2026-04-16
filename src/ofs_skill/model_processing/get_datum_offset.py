@@ -455,8 +455,11 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         if prop.ofs == 'necofs':
             try:
                 datum_field1 = vdatums['navd88tomsl']
-                datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
-                datum_field = datum_field1 + datum_field2
+                if prop.datum.lower() == 'navd88':
+                    datum_field = datum_field1
+                else:
+                    datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
+                    datum_field = (-datum_field1 + datum_field2)
             except Exception as e_x:
                 logger.error(f'Datum conversion error: {e_x}')
                 return -9991
@@ -469,7 +472,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 return 0.23
             try:
                 datum_field1 = vdatums['xgeoid20btomsl']
-                if prop.datum.lower() == 'msl':
+                if prop.datum.lower() == 'msl': #TODO -- check this
                     datum_field = 0.23 - datum_field1
                 else:
                     datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
@@ -514,8 +517,11 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 # Gotta search with lat/lon here...
                 vlonlat = np.around(np.array([vdatums[
                     'longitude'], vdatums['latitude']]), 3)
+                lon_adjustment = 360
+                if 'necofs' in prop.ofs:
+                    lon_adjustment = 0
                 target = np.around(
-                    np.array([[model['lon'][0, node] - 360],
+                    np.array([[model['lon'][0, node] - lon_adjustment],
                               [model['lat'][0, node]]]), 3)
                 moddistances = np.linalg.norm(vlonlat - target,
                                               axis=0)
