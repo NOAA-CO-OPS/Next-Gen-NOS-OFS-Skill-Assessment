@@ -222,6 +222,28 @@ def max_duration_negative_outliers(errors, threshold):
             current = 0
     return max(max_run, current)
 
+def timing_central_frequency(timing_errors, threshold=0.5):
+    '''
+    Percentage of timing errors within [-threshold, +threshold] (inclusive).
+
+    Parameters -->
+
+    timing_errors : array-like
+        Differences between model and observation extrema times (hours).
+    threshold : float
+        Timing error threshold (default 0.5 hours for NOS).
+
+    Returns --> float percentage
+
+    '''
+
+    errors = np.asarray(timing_errors, dtype=float)
+    n = np.count_nonzero(~np.isnan(errors))
+    if n == 0:
+        return float('nan')
+    within = np.nansum((-threshold <= errors) & (errors <= threshold))
+    return float(within / n * 100)
+
 def worst_case_outlier_frequency(ofs, obs, tides, threshold):
     """
     Calculates the percentage of worst-case outliers between model and observation data.
@@ -244,6 +266,8 @@ def worst_case_outlier_frequency(ofs, obs, tides, threshold):
     # nsum counts where the sign of (ofs-tides) is different from (obs-tides)
     # AND the absolute difference between ofs and obs is greater than 2x error threshold
     n = np.count_nonzero(~np.isnan(ofs-obs))
+    if n == 0:
+        return None
     mask = np.abs(ofs - obs) > threshold*2
     try:
         crossings = ((ofs > tides) & (obs < tides)) | ((ofs < tides) & (obs > tides))
@@ -255,27 +279,39 @@ def worst_case_outlier_frequency(ofs, obs, tides, threshold):
     return (100.0 * nsum / n)
 
 
-def check_nos_criteria(cf, pof, nof, mdpo, mdno, wof):
-    """Evaluate CF/POF/NOF against NOS Standard Suite thresholds.
+def check_nos_criteria(cf, pof, nof, mdpo, mdno, wof, tcf=None):
+    """Evaluate skill metrics against NOS Standard Suite pass/fail thresholds.
+
+    This function checks if the calculated metrics meet the official National Ocean Service
+    (NOS) criteria for acceptance.
 
     Parameters
     ----------
     cf : float
-        Central frequency (%).
+        Central frequency (%). Accepted if >= 90%.
     pof : float
-        Positive outlier frequency (%).
+        Positive outlier frequency (%). Accepted if <= 1%.
     nof : float
-        Negative outlier frequency (%).
+        Negative outlier frequency (%). Accepted if <= 1%.
+    mdpo : float
+        Maximum duration of positive outliers (hours). Accepted if <= 24.
+    mdno : float
+        Maximum duration of negative outliers (hours). Accepted if <= 24.
+    wof : float or None
+        Worst-case outlier frequency (%). Accepted if <= 0.5%.
+    tcf : float, optional
+        Timing central frequency (%) for water level extrema. Accepted if >= 90%.
 
     Returns
     -------
     dict
-        ``{'cf': 'pass'/'fail', 'pof': 'pass'/'fail', 'nof': 'pass'/'fail'}``
+        A dictionary containing 'pass', 'fail', or 'NA' status for each metric:
+        ``{'cf', 'pof', 'nof', 'mdpo', 'mdno', 'wof', 'tcf'}``.
     """
     if wof is None:
         wof = 9999
 
-    return {
+    results = {
         'cf': 'pass' if cf >= 90 else 'fail',
         'pof': 'pass' if pof <= 1 else 'fail',
         'nof': 'pass' if nof <= 1 else 'fail',
@@ -283,6 +319,13 @@ def check_nos_criteria(cf, pof, nof, mdpo, mdno, wof):
         'mdno': 'pass' if mdno <= 24 else 'fail',
         'wof': 'pass' if wof <= 0.5 else 'NA' if wof == 9999 else 'fail',
     }
+
+    if tcf is not None:
+        results['tcf'] = 'pass' if tcf >= 90 else 'fail'
+
+    return results
+
+
 
 def get_error_threshold(variable_name, config_path=None):
     """Return (X1, X2) error-range thresholds for *variable_name*.
@@ -318,6 +361,6 @@ def get_error_threshold(variable_name, config_path=None):
     if variable_name not in _DEFAULT_THRESHOLDS:
         raise KeyError(
             f"Unknown variable '{variable_name}'. "
-            f"Known variables: {sorted(_DEFAULT_THRESHOLDS)}"
+            f'Known variables: {sorted(_DEFAULT_THRESHOLDS)}'
         )
     return _DEFAULT_THRESHOLDS[variable_name]

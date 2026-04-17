@@ -17,6 +17,7 @@ from scipy.stats import ConstantInputWarning
 
 from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 from ofs_skill.skill_assessment import nos_metrics
+from ofs_skill.skill_assessment.format_paired_one_d import get_distance_angle
 
 warnings.simplefilter('ignore', ConstantInputWarning)
 
@@ -127,7 +128,7 @@ def skill_scalar(
         # MDPO/MDNO
         mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
         mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
+        dt = np.asarray(df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)
@@ -137,19 +138,29 @@ def skill_scalar(
         wof = None
         tidal_data = None
         if name_var == 'wl':
-            if station_id == '8548989':
-                print('debug pause')
-            tidal_data, _ = get_station_tidal_data(df_paired['DateTime'].min().to_pydatetime(),
-                                                   df_paired['DateTime'].max().to_pydatetime(),
-                                                   prop, station_id, logger)
-            # Pair tidal data to df_paired
-            if tidal_data is not None:
-                tides = pd.merge(df_paired, tidal_data, on='DateTime', ).reset_index()
-                wof = nos_metrics.worst_case_outlier_frequency(tides['OFS'],
-                                                               tides['OBS'],
-                                                               tides['TIDE'],
-                                                               X1)
+            # tidal_info contains the 'used_datum' that successfully returned data
+            tidal_data, tidal_info = get_station_tidal_data(
+                df_paired['DateTime'].min().to_pydatetime(),
+                df_paired['DateTime'].max().to_pydatetime(),
+                prop, station_id, logger
+            )
+
+            # Skip WOF if retrieved datum differs from requested model datum
+            # This prevents bias in crossing logic caused by vertical reference offsets
+            if tidal_data is not None and tidal_info.get('used_datum') == prop.datum:
+                tides = pd.merge(df_paired, tidal_data, on='DateTime').reset_index()
+                wof = nos_metrics.worst_case_outlier_frequency(
+                    tides['OFS'],
+                    tides['OBS'],
+                    tides['TIDE'],
+                    X1
+                )
                 wof = np.around(wof, decimals=2)
+            elif tidal_data is not None:
+                logger.warning(
+                    'Skipping WOF for station %s: Tidal datum (%s) does not match requested datum (%s).',
+                    station_id, tidal_info.get('used_datum'), prop.datum
+                )
 
         # Check criteria
         # Pass or fail?
@@ -298,7 +309,7 @@ def skill_vector(
         # MDPO/MDNO
         mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
         mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
+        dt = np.asarray(df_paired['DateTime'].diff().dt.total_seconds() / 3600)[1]
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)
@@ -411,13 +422,15 @@ def skill_vector_dir(
     X1, X2 = nos_metrics.get_error_threshold(
         'cu_dir', os.path.join(prop.path, 'conf', 'error_ranges.csv'))
 
+    df_paired_ = df_paired.copy()
     df_paired = df_paired.dropna(subset=['OBS_DIR', 'OFS_DIR'])
     # Update obs and ofs after handling NaN
-    obs = df_paired['OBS_DIR']
-    ofs = df_paired['OFS_DIR']
+    obs = df_paired['OBS_DIR'].apply(lambda x: get_distance_angle(x, 0)).values
+    ofs = df_paired['OFS_DIR'].apply(lambda x: get_distance_angle(x, 0)).values
+
     dir_bias = df_paired['DIR_BIAS']
     if np.nansum(~np.isnan(obs)) >= datathreshold:
-        # RMSE -- fixed 8/13/24
+        # RMSE
         rmse = nos_metrics.rmse(ofs, obs)
         rmse = np.around(rmse, decimals=2)
 
@@ -431,9 +444,8 @@ def skill_vector_dir(
 
         # Mean bias & bias percent
         bias = dir_bias.mean()
-        bias_perc = 100 * (bias / obs.mean())
+        bias_perc = np.nan
         bias = np.around(bias, decimals=2)
-        bias_perc = np.around(bias_perc, decimals=2)
         bias_dir = dir_bias.mean()
         bias_dir = np.around(bias_dir, decimals=2)
 
@@ -451,9 +463,10 @@ def skill_vector_dir(
         nof = np.around(nof, decimals=2)
 
         # MDPO/MDNO
-        mdpo = nos_metrics.max_duration_positive_outliers(npbias, X1)
-        mdno = nos_metrics.max_duration_negative_outliers(npbias, X1)
-        dt = np.asarray((df_paired['DateTime'].diff().dt.total_seconds() / 3600))[1]
+        mdpo = nos_metrics.max_duration_positive_outliers(np.array(df_paired_['DIR_BIAS']), X1)
+        mdno = nos_metrics.max_duration_negative_outliers(np.array(df_paired_['DIR_BIAS']), X1)
+        diffs = np.asarray(df_paired['DateTime'].diff().dt.total_seconds() / 3600)
+        dt = np.median(diffs)
         mdpo = mdpo * dt
         mdno = mdno * dt
         mdno = np.around(mdno, decimals=2)
@@ -513,3 +526,81 @@ def skill_vector_dir(
             wofpf,
             stdev,
             X1]
+
+def skill_extrema(
+    df_paired: pd.DataFrame,
+    name_var: str,
+    station_id: str,
+    prop: Any,
+    logger: Logger,
+) -> list[Union[float, str]]:
+    """
+    Calculate skill metrics for water level extrema (HW/LW),
+    including amplitude and timing metrics.
+    """
+    # X1 is the amplitude threshold, T1 is timing (usually 0.5h)
+    X1, _ = nos_metrics.get_error_threshold(name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+    T1 = 0.5
+
+    obs = df_paired['OBS']
+    ofs = df_paired['OFS']
+    bias = df_paired['BIAS']
+    timing_err = df_paired['TIMING_ERR']
+
+    # Amplitude Stats (Reuse standard scalar logic)
+    rmse = nos_metrics.rmse(ofs, obs)
+    cf = nos_metrics.central_frequency(bias, X1)
+    pof = nos_metrics.positive_outlier_freq(bias, X1)
+    nof = nos_metrics.negative_outlier_freq(bias, X1)
+
+    # Timing Stats
+    tcf = nos_metrics.timing_central_frequency(timing_err, T1)
+    timing_rmse = np.sqrt(np.nanmean(timing_err**2))
+
+    # Evaluate all criteria
+    criteria = nos_metrics.check_nos_criteria(cf, pof, nof, 0, 0, None, tcf=tcf)
+
+    # return [rmse,
+    #         r_value,
+    #         bias,
+    #         bias_perc,
+    #         bias_dir,
+    #         cf,
+    #         cfpf,
+    #         pof,
+    #         pofpf,
+    #         nof,
+    #         nofpf,
+    #         mdpo,
+    #         mdpopf,
+    #         mdno,
+    #         mdnopf,
+    #         wof,
+    #         wofpf,
+    #         stdev,
+    #         X1]
+
+    return [
+        np.around(rmse, 2),
+        None,
+        np.around(bias.mean(), 2),
+        None,
+        None,
+        np.around(cf, 2),
+        criteria['cf'],
+        np.around(pof),
+        criteria['pof'],
+        np.around(nof),
+        criteria['nof'],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        #np.around(tcf, 2),
+        #criteria['tcf'],
+        #np.around(timing_rmse, 2),
+        X1
+    ]

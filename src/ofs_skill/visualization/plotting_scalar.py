@@ -272,59 +272,60 @@ def oned_scalar_plot(
     #  Add tidal predictions for water level plots excluding glofs     ##
     #####################################################################
     if name_var == 'wl' and prop.ofs[0] != 'l':
-      try:
-          data_times = obs_df.DateTime
-          start_dt = data_times.min().to_pydatetime()
-          end_dt = data_times.max().to_pydatetime()
-          tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id[0], logger)
+        tidal_info = {'tidal_station_id': None, 'used_datum': None}
+        try:
+            data_times = obs_df.DateTime
+            start_dt = data_times.min().to_pydatetime()
+            end_dt = data_times.max().to_pydatetime()
+            tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id[0], logger)
 
-          if tidal_data is not None and len(tidal_data) > 0:
-              # Build hover text with source information including distance
-              if tidal_info['tidal_station_name']:
-                  source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]} ({tidal_info["tidal_station_name"]})'
-              else:
-                  source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]}'
+            if tidal_data is not None and len(tidal_data) > 0:
+                # Build hover text with source information including distance
+                if tidal_info['tidal_station_name']:
+                    source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]} ({tidal_info["tidal_station_name"]})'
+                else:
+                    source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]}'
 
-              if tidal_info['tidal_station_distance'] is not None and tidal_info['tidal_station_distance'] > 0:
-                  distance_text = f'<br>Distance: {tidal_info["tidal_station_distance"]:.1f} km'
-              else:
-                  distance_text = ''
+                if tidal_info['tidal_station_distance'] is not None and tidal_info['tidal_station_distance'] > 0:
+                    distance_text = f'<br>Distance: {tidal_info["tidal_station_distance"]:.1f} km'
+                else:
+                    distance_text = ''
 
-              if tidal_info['used_datum'] == prop.datum:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}<i><extra></extra>'
-              else:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}(requested: {prop.datum})<i><extra></extra>'
+                if tidal_info['used_datum'] == prop.datum:
+                      hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}<i><extra></extra>'
+                else:
+                      hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}(requested: {prop.datum})<i><extra></extra>'
 
-              fig.add_trace(
-                  go.Scattergl(
-                      x=list(tidal_data.DateTime),
-                      y=list(tidal_data.TIDE),
-                      name='Tidal Predictions',
-                      hovertemplate=hover_text,
-                      mode='lines',
-                      opacity=0.7,
-                      line=dict(color=palette[-1], width=1.5, dash='dot'),
-                      legendgroup='tide',
-                      marker=dict(size=0)), 1, 1)
-              logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-                         str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
-              # Adding boxplots for tides
-              fig.add_trace(
-                  go.Box(
-                        y=tidal_data['TIDE'], boxmean='sd',
-                        name='Tidal Prediction', showlegend=False, legendgroup='tide',
-                        width=.7, line=dict(color=palette[-1], width=1.5),
-                        # fillcolor = 'black',
-                        marker=dict(color=palette[-1]),
-                  ), 1, 2,
-               )
+                fig.add_trace(
+                    go.Scattergl(
+                        x=list(tidal_data.DateTime),
+                        y=list(tidal_data.TIDE),
+                        name='Tidal Predictions',
+                        hovertemplate=hover_text,
+                        mode='lines',
+                        opacity=0.7,
+                        line=dict(color=palette[-1], width=1.5, dash='dot'),
+                        legendgroup='tide',
+                        marker=dict(size=0)), 1, 1)
+                logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
+                           str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
+                # Adding boxplots for tides
+                fig.add_trace(
+                    go.Box(
+                          y=tidal_data['TIDE'], boxmean='sd',
+                          name='Tidal Prediction', showlegend=False, legendgroup='tide',
+                          width=.7, line=dict(color=palette[-1], width=1.5),
+                          # fillcolor = 'black',
+                          marker=dict(color=palette[-1]),
+                    ), 1, 2,
+                 )
 
-      except Exception as ex:
-          logger.warning('Could not retrieve tidal predictions for station %s: %s',
-                        station_id[0], ex)
+        except Exception as ex:
+            logger.warning('Could not retrieve tidal predictions for station %s: %s',
+                          station_id[0], ex)
 
-      logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-           str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
+        logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
+             str(tidal_info['tidal_station_id']), tidal_info['used_datum'])
     #####################################################################
     ## Done tide retrieval and plotting                                ##
     #####################################################################

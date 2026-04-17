@@ -294,31 +294,52 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
 
         logger.info(f'{filename} is created successfully')
 
-        # Handle water level extrema
+# Step 1 & 2: Handle water level extrema independently and pair them
         if name_var == 'wl':
-            extrema_output = extract_water_level_extrema(
-                np.asarray(series_df['DateTime']),
-                np.asarray(series_df['OFS']),
-                4,
-                logger
+            # Detect extrema independently for both series
+            mod_extrema = extract_water_level_extrema(
+                np.asarray(series_df['DateTime']), np.asarray(series_df['OFS']), 4, logger
             )
-            obs_arr = np.asarray(series_df['OBS'])
+            obs_extrema = extract_water_level_extrema(
+                np.asarray(series_df['DateTime']), np.asarray(series_df['OBS']), 4, logger
+            )
 
-            def _process_extrema(extrema_prefix, target_dict, log_label):
-                idx = extrema_output[f'{extrema_prefix}_index']
-                df_extrema = pd.DataFrame({
-                    'DateTime': extrema_output[f'{extrema_prefix}_times'],
-                    'OFS': extrema_output[f'{extrema_prefix}_amplitudes'],
-                    'OBS': obs_arr[idx]
-                })
-                # Note: Fixed a bug here where lw was originally using hw values
-                df_extrema['BIAS'] = df_extrema['OFS'] - df_extrema['OBS']
+            def _process_extrema(extrema_type, target_dict, log_label):
+                """Pairs independent extrema within a ±3-hour window and computes skill."""
+                m_times = mod_extrema[f'{extrema_type}_times']
+                m_amps = mod_extrema[f'{extrema_type}_amplitudes']
+                o_times = obs_extrema[f'{extrema_type}_times']
+                o_amps = obs_extrema[f'{extrema_type}_amplitudes']
 
-                logger.info(f'Start {name_var} metrics for {station_id} {log_label}')
-                _append_metadata(target_dict, obs_row, i)
-                target_dict['skill'].append(
-                    metrics_paired_one_d.skill_scalar(df_extrema, name_var, station_id, prop, logger)
-                )
+                paired_data = []
+                window = np.timedelta64(3, 'h') # Standard NOS pairing window
+
+                for mt, ma in zip(m_times, m_amps):
+                    # Mask observation extrema within the time window
+                    mask = (o_times >= mt - window) & (o_times <= mt + window)
+                    matches = o_times[mask]
+                    if len(matches) > 0:
+                        # Find the match closest in time
+                        match_idx = np.argmin(np.abs(matches - mt))
+                        ot = matches[match_idx]
+                        oa = o_amps[mask][match_idx]
+
+                        paired_data.append({
+                            'DateTime': mt,
+                            'OFS': ma,
+                            'OBS': oa,
+                            'BIAS': ma - oa,
+                            'TIMING_ERR': (mt - ot) / np.timedelta64(1, 'h')
+                        })
+
+                if paired_data:
+                    df_extrema = pd.DataFrame(paired_data)
+                    logger.info(f'Start {name_var} metrics for {station_id} {log_label}')
+                    _append_metadata(target_dict, obs_row, i)
+                    # Route through specialized extrema skill logic (omitting MDPO/MDNO/WOF)
+                    target_dict['skill'].append(
+                        metrics_paired_one_d.skill_extrema(df_extrema, name_var, station_id, prop, logger)
+                    )
 
             _process_extrema('high_water', output_hw, 'high water extrema')
             _process_extrema('low_water', output_lw, 'low water extrema')
@@ -330,7 +351,6 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         return [output, output_hw, output_lw]
 
     return [output]
-
 
 def name_convent(variable):
     """
@@ -749,7 +769,7 @@ def get_skill(prop, logger):
             )
 
     # Now collect forecast horizon time series, if ya want!
-    if (prop.horizonskill == True and
+    if (prop.horizonskill and
         prop.whichcast == 'forecast_b'):
         # Get all model time series, and put them in a big 'ol CSV file
         # Check to see if this has already been done

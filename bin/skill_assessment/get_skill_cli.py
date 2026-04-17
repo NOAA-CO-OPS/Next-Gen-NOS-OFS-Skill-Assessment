@@ -6,7 +6,8 @@ Created on Mon Apr 13 21:23:02 2026
 This is the entry point for the main skill assessment module. It loads .prd
 and .obs files, pairs them, and then writes .int files and skill tables.
 
-It can only be used as an entry point if .prd and .obs files are already present!
+It can be used as an entry point if .prd and .obs files are already present,
+or will generate the .obs/.prd files for you
 
 """
 
@@ -33,7 +34,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-p',
         '--Path',
-        required=False,
+        required=True,
         help='Use /home as the default. User can specify path',
     )
     parser.add_argument(
@@ -51,7 +52,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-w',
         '--Whichcast',
-        required=False,
+        required=True,
         help='nowcast, forecast_a, '
              'forecast_b (it is the forecast between cycles)',
     )
