@@ -372,8 +372,13 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                         read_station_ctl_file, read_ofs_ctl_file, obs_row, i
                     )
                     extrema_entry['skill'] = metrics_paired_one_d.skill_extrema(
-                        df_extrema, name_var, station_id, prop, logger
+                        df_extrema, name_var, prop
                     )
+                    # Detection-rate visibility: count of matched pairs vs
+                    # each series' total extrema, for downstream CSV column.
+                    extrema_entry['n_mod_extrema'] = len(m_times)
+                    extrema_entry['n_obs_extrema'] = len(o_times)
+                    extrema_entry['n_matched_pairs'] = len(paired_data)
                     out[out_key] = extrema_entry
 
         return out
@@ -399,16 +404,23 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     [output, output_hw, output_lw] for water level (when extrema were paired).
     """
 
-    def _create_output_dict():
-        return {
+    def _create_output_dict(extrema=False):
+        out = {
             'station_id': [], 'X': [], 'Y': [],
             'obs_depth': [], 'mod_depth': [], 'node': [], 'skill': [],
         }
+        if extrema:
+            # Extra columns for HW/LW variants so the CSV surfaces detection
+            # asymmetry between model and observation extrema series.
+            out.update({
+                'n_mod_extrema': [], 'n_obs_extrema': [], 'n_matched_pairs': [],
+            })
+        return out
 
     output = _create_output_dict()
     output_dir = _create_output_dict()
-    output_hw = _create_output_dict()
-    output_lw = _create_output_dict()
+    output_hw = _create_output_dict(extrema=True)
+    output_lw = _create_output_dict(extrema=True)
 
     data_length = min(len(read_station_ctl_file[0]), len(read_ofs_ctl_file[-1]))
 
@@ -862,38 +874,42 @@ def get_skill(prop, logger):
                         else 'bias_standard_dev'
                     )
 
-                    pd.DataFrame(
-                        {
-                            'ID': skill_result['station_id'],
-                            'NODE': skill_result['node'],
-                            'obs_water_depth': skill_result['obs_depth'],
-                            'mod_water_depth': skill_result['mod_depth'],
-                            'rmse': skill_cols[0],
-                            'r': skill_cols[1],
-                            'bias': skill_cols[2],
-                            'bias_perc': skill_cols[3],
-                            'bias_dir': skill_cols[4],
-                            'central_freq': skill_cols[5],
-                            'central_freq_pass_fail': skill_cols[6],
-                            'pos_outlier_freq': skill_cols[7],
-                            'pos_outlier_freq_pass_fail': skill_cols[8],
-                            'neg_outlier_freq': skill_cols[9],
-                            'neg_outlier_freq_pass_fail': skill_cols[10],
-                            'max_duration_pos_outlier': skill_cols[11],
-                            'max_duration_pos_outlier_pass_fail': skill_cols[12],
-                            'max_duration_neg_outlier': skill_cols[13],
-                            'max_duration_neg_outlier_pass_fail': skill_cols[14],
-                            slot_15_name: skill_cols[15],
-                            slot_16_name: skill_cols[16],
-                            slot_17_name: skill_cols[17],
-                            'target_error_range': skill_cols[18],
-                            'datum': tabledatum,
-                            'Y': skill_result['Y'],
-                            'X': skill_result['X'],
-                            'start_date': prop.start_date_full,
-                            'end_date': prop.end_date_full,
-                        }
-                    ).to_csv(
+                    csv_data = {
+                        'ID': skill_result['station_id'],
+                        'NODE': skill_result['node'],
+                        'obs_water_depth': skill_result['obs_depth'],
+                        'mod_water_depth': skill_result['mod_depth'],
+                        'rmse': skill_cols[0],
+                        'r': skill_cols[1],
+                        'bias': skill_cols[2],
+                        'bias_perc': skill_cols[3],
+                        'bias_dir': skill_cols[4],
+                        'central_freq': skill_cols[5],
+                        'central_freq_pass_fail': skill_cols[6],
+                        'pos_outlier_freq': skill_cols[7],
+                        'pos_outlier_freq_pass_fail': skill_cols[8],
+                        'neg_outlier_freq': skill_cols[9],
+                        'neg_outlier_freq_pass_fail': skill_cols[10],
+                        'max_duration_pos_outlier': skill_cols[11],
+                        'max_duration_pos_outlier_pass_fail': skill_cols[12],
+                        'max_duration_neg_outlier': skill_cols[13],
+                        'max_duration_neg_outlier_pass_fail': skill_cols[14],
+                        slot_15_name: skill_cols[15],
+                        slot_16_name: skill_cols[16],
+                        slot_17_name: skill_cols[17],
+                        'target_error_range': skill_cols[18],
+                        'datum': tabledatum,
+                        'Y': skill_result['Y'],
+                        'X': skill_result['X'],
+                        'start_date': prop.start_date_full,
+                        'end_date': prop.end_date_full,
+                    }
+                    # Extrema variants carry detection-rate counts.
+                    if is_extrema and 'n_mod_extrema' in skill_result:
+                        csv_data['n_mod_extrema'] = skill_result['n_mod_extrema']
+                        csv_data['n_obs_extrema'] = skill_result['n_obs_extrema']
+                        csv_data['n_matched_pairs'] = skill_result['n_matched_pairs']
+                    pd.DataFrame(csv_data).to_csv(
                         r'' + f'{prop.data_skill_1d_table_path}/'
                               f'skill_{prop.ofs}_'
                         f'{variable}_{prop.whichcast}_{prop.ofsfiletype}.csv'

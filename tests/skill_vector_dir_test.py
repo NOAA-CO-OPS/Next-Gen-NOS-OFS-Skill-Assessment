@@ -26,7 +26,7 @@ def _write_error_ranges(tmpdir):
     """Write a minimal error_ranges.csv so get_error_threshold resolves."""
     conf_dir = os.path.join(tmpdir, 'conf')
     os.makedirs(conf_dir, exist_ok=True)
-    with open(os.path.join(conf_dir, 'error_ranges.csv'), 'w') as fh:
+    with open(os.path.join(conf_dir, 'error_ranges.csv'), 'w', encoding='utf-8') as fh:
         fh.write('name_var,X1,X2\n')
         fh.write('cu_dir,22.5,1.0\n')
 
@@ -54,39 +54,62 @@ def _build_df(obs_dirs, ofs_dirs, freq='h'):
 # ---------------------------------------------------------------------------
 
 class TestCircularHelpers:
+    """Unit tests for _circular_mean_deg and _circular_correlation_deg."""
+
     def test_circular_mean_cardinal(self):
-        # Symmetric around north (350 and 10) → mean at 0.
-        assert abs(_circular_mean_deg([350.0, 10.0])) < 1e-6 or \
-               abs(_circular_mean_deg([350.0, 10.0]) - 360.0) < 1e-6 or \
-               abs(_circular_mean_deg([350.0, 10.0])) < 1e-6
+        """Symmetric around 0° (350° and 10°) → circular mean at 0°."""
+        val = _circular_mean_deg([350.0, 10.0])
+        # Accept either 0° or the equivalent ±360° wrap.
+        assert abs((val + 180.0) % 360.0 - 180.0) < 1e-6
 
     def test_circular_mean_simple(self):
-        # All 90° → 90°.
+        """All 90° → circular mean 90°."""
         assert _circular_mean_deg([90.0, 90.0, 90.0]) == pytest.approx(90.0, abs=1e-6)
 
     def test_circular_mean_nan_tolerant(self):
+        """NaN entries are dropped before averaging."""
         val = _circular_mean_deg([90.0, np.nan, 90.0])
         assert val == pytest.approx(90.0, abs=1e-6)
 
+    def test_circular_mean_all_nan(self):
+        """All-NaN input → NaN, not a crash."""
+        assert np.isnan(_circular_mean_deg([np.nan, np.nan]))
+
     def test_circular_correlation_perfect(self):
-        # Identical series → correlation ≈ 1.
+        """Identical uniform series → ρ_c = 1."""
         angles = np.arange(0, 360, 10.0)
         r = _circular_correlation_deg(angles, angles)
         assert r == pytest.approx(1.0, abs=1e-6)
 
     def test_circular_correlation_noisy_tracking(self):
-        # Angles clustered around a mean with small iid noise on both obs and
-        # ofs → strong positive correlation (J-S is well-defined here, unlike
-        # for a uniform distribution where the mean direction is undefined).
+        """Clustered co-varying angles → strong positive ρ_c.
+
+        J-S is well-defined here (clear mean direction); unlike a uniform
+        distribution where the mean direction is undefined.
+        """
         rng = np.random.default_rng(0)
         obs = 90.0 + 10.0 * rng.standard_normal(200)  # ~N(90°, 10°)
         ofs = obs + 1.0 * rng.standard_normal(200)  # small iid noise
         r = _circular_correlation_deg(obs % 360, ofs % 360)
         assert r > 0.9, f'Co-varying clustered angles should correlate, got {r}'
 
+    def test_circular_correlation_null(self):
+        """Two independent uniform random series → ρ_c near 0."""
+        rng = np.random.default_rng(1)
+        obs = rng.uniform(0, 360, size=500)
+        ofs = rng.uniform(0, 360, size=500)
+        r = _circular_correlation_deg(obs, ofs)
+        # Independent series should give |r| small (< 0.2 with n=500).
+        assert abs(r) < 0.2, f'Independent angles should be near-zero correlated, got {r}'
+
     def test_circular_correlation_undefined(self):
-        # Single pair → NaN (needs >= 2).
+        """Single pair → NaN (J-S needs >= 2 valid pairs)."""
         r = _circular_correlation_deg([90.0], [91.0])
+        assert np.isnan(r)
+
+    def test_circular_correlation_all_nan(self):
+        """All-NaN pairs → NaN, not a crash."""
+        r = _circular_correlation_deg([np.nan, np.nan], [np.nan, np.nan])
         assert np.isnan(r)
 
 
@@ -170,3 +193,31 @@ class TestSkillVectorDirGaps:
         # Without gap-preservation (dropna first): 10h.
         assert mdpo == pytest.approx(5.0, abs=0.01), \
             f'NaN should break the outlier streak; got mdpo={mdpo}h'
+
+
+# ---------------------------------------------------------------------------
+# skill_vector_dir — insufficient-data fallback
+# ---------------------------------------------------------------------------
+
+class TestSkillVectorDirInsufficientData:
+    def test_all_nan_returns_fallback(self, tmp_path):
+        """All-NaN OBS_DIR → no-data fallback (doesn't crash)."""
+        _write_error_ranges(tmp_path)
+        n = 10
+        df = _build_df([np.nan] * n, [90.0] * n)
+        prop = _make_prop(str(tmp_path))
+        result = skill_vector_dir(df, 'cu', prop, getLogger('test'))
+        # Slot 0 is rmse; fallback text starts with '<'.
+        assert isinstance(result[0], str)
+        assert result[0].startswith('<')
+
+    def test_single_pair_returns_fallback(self, tmp_path):
+        """Only 1 valid pair < _MIN_DATA_POINTS=5 → no-data fallback."""
+        _write_error_ranges(tmp_path)
+        obs = [90.0] + [np.nan] * 9
+        ofs = [95.0] + [np.nan] * 9
+        df = _build_df(obs, ofs)
+        prop = _make_prop(str(tmp_path))
+        result = skill_vector_dir(df, 'cu', prop, getLogger('test'))
+        assert isinstance(result[0], str)
+        assert result[0].startswith('<')

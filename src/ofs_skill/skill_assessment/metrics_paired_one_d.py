@@ -40,8 +40,24 @@ def _circular_mean_deg(angles_deg) -> float:
 def _circular_correlation_deg(obs_deg, ofs_deg) -> float:
     """Jammalamadaka-Sarma circular correlation for paired angle series (degrees).
 
-    Computes ρ_c in [-1, 1] using circular means. NaN-safe (drops pairs where
-    either is NaN). Returns NaN if fewer than 2 valid pairs or zero-variance.
+    Computes ρ_c in [-1, 1] using circular means
+    (``arctan2(mean(sin), mean(cos))``). NaN-safe (drops pairs where either
+    is NaN). Returns NaN if fewer than 2 valid pairs or zero-variance.
+
+    References
+    ----------
+    Jammalamadaka, S. R., and Sarma, Y. R. (1988). "A correlation coefficient
+    for angular variables." *Statistical Theory and Data Analysis II*,
+    North-Holland.
+
+    Notes
+    -----
+    The statistic is well-defined when both series have a meaningful mean
+    direction (i.e. are clustered, not uniformly distributed around the
+    circle). For near-uniform input the circular mean becomes undefined and
+    ρ_c can be close to zero even for a rigid rotation. Current-direction
+    series at fixed stations typically cluster along a principal axis so
+    this degeneracy is not usually an issue in practice.
     """
     obs_rad = np.deg2rad(np.asarray(obs_deg, dtype=float))
     ofs_rad = np.deg2rad(np.asarray(ofs_deg, dtype=float))
@@ -437,8 +453,11 @@ def skill_vector_dir(
       ``paired_vector`` already produces via ``get_distance_angle`` and is in
       [-180, 180].
     - Mean direction bias uses the *circular* mean of the signed differences.
-    - Correlation uses the Jammalamadaka-Sarma circular correlation between
-      the raw OBS_DIR and OFS_DIR series.
+      Note: residuals of +179° and -179° give a circular-mean bias near 180°
+      while the arithmetic mean would give 0°; the circular form is the
+      conventional choice for angular residuals.
+    - Correlation uses the Jammalamadaka-Sarma circular correlation (1988)
+      between the raw OBS_DIR and OFS_DIR series.
     - CF / POF / NOF / MDPO / MDNO treat DIR_BIAS as a conventional signed
       error series, which is valid because DIR_BIAS is already in [-180, 180].
 
@@ -577,9 +596,7 @@ def skill_vector_dir(
 def skill_extrema(
     df_paired: pd.DataFrame,
     name_var: str,
-    station_id: str,
     prop: Any,
-    logger: Logger,
 ) -> list[Union[float, str]]:
     """Calculate amplitude + timing skill metrics for water-level extrema (HW/LW).
 
@@ -595,12 +612,8 @@ def skill_extrema(
         'TIMING_ERR']. TIMING_ERR is model-minus-obs in hours.
     name_var : str
         Variable name (currently only 'wl').
-    station_id : str
-        Station identifier (used for logging only).
     prop : Any
         Properties object; used to locate error_ranges.csv.
-    logger : Logger
-        Logger for warnings.
 
     Returns
     -------
@@ -617,7 +630,7 @@ def skill_extrema(
     obs = df_paired['OBS']
     ofs = df_paired['OFS']
     bias = df_paired['BIAS']
-    timing_err = df_paired['TIMING_ERR']
+    timing_err = np.asarray(df_paired['TIMING_ERR'], dtype=float)
 
     # Amplitude stats
     rmse = nos_metrics.rmse(ofs, obs)
@@ -625,9 +638,13 @@ def skill_extrema(
     pof = nos_metrics.positive_outlier_freq(bias, X1)
     nof = nos_metrics.negative_outlier_freq(bias, X1)
 
-    # Timing stats
+    # Timing stats. Guard all-NaN to avoid `RuntimeWarning: Mean of empty slice`
+    # (nanmean of all-NaN is a legitimate NaN result, but the warning is noisy).
     tcf = nos_metrics.timing_central_frequency(timing_err, T1)
-    timing_rmse = float(np.sqrt(np.nanmean(np.asarray(timing_err, dtype=float)**2)))
+    if np.isfinite(timing_err).any():
+        timing_rmse = float(np.sqrt(np.nanmean(timing_err**2)))
+    else:
+        timing_rmse = float('nan')
 
     # Evaluate amplitude + timing criteria; MDPO/MDNO/WOF are undefined on
     # event-series so we pass dummies that always pass.
