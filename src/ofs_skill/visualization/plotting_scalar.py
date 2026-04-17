@@ -272,29 +272,52 @@ def oned_scalar_plot(
     #  Add tidal predictions for water level plots excluding glofs     ##
     #####################################################################
     if name_var == 'wl' and prop.ofs[0] != 'l':
-        tidal_info = {'tidal_station_id': None, 'used_datum': None}
+        # Full 4-key default so the except-path / debug-logger at end-of-block
+        # never KeyErrors regardless of where retrieval fails.
+        tidal_info = {
+            'tidal_station_id': None,
+            'tidal_station_name': None,
+            'tidal_station_distance': None,
+            'used_datum': None,
+        }
         try:
             data_times = obs_df.DateTime
             start_dt = data_times.min().to_pydatetime()
             end_dt = data_times.max().to_pydatetime()
-            tidal_data, tidal_info = get_station_tidal_data(start_dt, end_dt, prop, station_id[0], logger)
+            tidal_data, tidal_info = get_station_tidal_data(
+                start_dt, end_dt, prop, station_id[0], logger
+            )
 
             if tidal_data is not None and len(tidal_data) > 0:
                 # Build hover text with source information including distance
                 if tidal_info['tidal_station_name']:
-                    source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]} ({tidal_info["tidal_station_name"]})'
+                    source_text = (
+                        f'CO-OPS Station {tidal_info["tidal_station_id"]} '
+                        f'({tidal_info["tidal_station_name"]})'
+                    )
                 else:
-                    source_text = f'CO-OPS Station {tidal_info["tidal_station_id"]}'
+                    source_text = (
+                        f'CO-OPS Station {tidal_info["tidal_station_id"]}'
+                    )
 
-                if tidal_info['tidal_station_distance'] is not None and tidal_info['tidal_station_distance'] > 0:
-                    distance_text = f'<br>Distance: {tidal_info["tidal_station_distance"]:.1f} km'
+                distance = tidal_info['tidal_station_distance']
+                if distance is not None and distance > 0:
+                    distance_text = f'<br>Distance: {distance:.1f} km'
                 else:
                     distance_text = ''
 
-                if tidal_info['used_datum'] == prop.datum:
-                      hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}<i><extra></extra>'
+                used_datum = tidal_info['used_datum']
+                if used_datum == prop.datum:
+                    datum_text = f'<br>Datum: {used_datum}'
                 else:
-                      hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {tidal_info["used_datum"]}(requested: {prop.datum})<i><extra></extra>'
+                    datum_text = (
+                        f'<br>Datum: {used_datum} (requested: {prop.datum})'
+                    )
+                hover_text = (
+                    f'Tidal Prediction: %{{y:.2f}}'
+                    f'<br><i>Source: {source_text}{distance_text}{datum_text}'
+                    f'<i><extra></extra>'
+                )
 
                 fig.add_trace(
                     go.Scattergl(

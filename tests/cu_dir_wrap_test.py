@@ -1,3 +1,5 @@
+"""Tests for format_paired_one_d.get_distance_angle — the signed angular-
+difference helper used by current direction pairing/skill."""
 import unittest
 
 from ofs_skill.skill_assessment.format_paired_one_d import get_distance_angle

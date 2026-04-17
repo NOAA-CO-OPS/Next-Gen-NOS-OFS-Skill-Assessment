@@ -43,11 +43,7 @@ def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     if prop.ofsfiletype == 'fields':
         ctl_path = os.path.join(prop.control_files_path,
                                 str(prop.ofs+'_'+name_var+'_model.ctl'))
-        if (
-            os.path.isfile(ctl_path
-            )
-            is False
-        ):
+        if not os.path.isfile(ctl_path):
             result = get_node_ofs(prop, logger,
                                   model_dataset=model_dataset)
             if result is not None:
@@ -55,22 +51,15 @@ def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     elif prop.ofsfiletype == 'stations':
         ctl_path = os.path.join(prop.control_files_path,
                             str(prop.ofs+'_'+name_var+'_model_station.ctl'))
-        if (
-            os.path.isfile(ctl_path
-            )
-            is False
-        ):
+        if not os.path.isfile(ctl_path):
             result = get_node_ofs(prop, logger,
                                   model_dataset=model_dataset)
             if result is not None:
                 prop._cached_model = result
 
     try:
-        if (os.path.getsize(ctl_path) > 0):
-            with open(#ctl_path
-                file=ctl_path,
-                encoding='utf-8',
-            ) as file:
+        if os.path.getsize(ctl_path) > 0:
+            with open(ctl_path, encoding='utf-8') as file:
                 read_ofs_ctl_file = file.read()
 
                 lines = read_ofs_ctl_file.split('\n')
@@ -335,21 +324,44 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                 o_amps = obs_extrema[f'{extrema_type}_amplitudes']
 
                 paired_data = []
+                matched_obs_idx = set()
                 window = np.timedelta64(3, 'h')  # Standard NOS pairing window
                 for mt, ma in zip(m_times, m_amps):
-                    mask = (o_times >= mt - window) & (o_times <= mt + window)
-                    matches = o_times[mask]
-                    if len(matches) > 0:
-                        match_idx = np.argmin(np.abs(matches - mt))
-                        ot = matches[match_idx]
-                        oa = o_amps[mask][match_idx]
-                        paired_data.append({
-                            'DateTime': mt,
-                            'OFS': ma,
-                            'OBS': oa,
-                            'BIAS': ma - oa,
-                            'TIMING_ERR': (mt - ot) / np.timedelta64(1, 'h'),
-                        })
+                    # Candidate obs extrema: within window AND not yet claimed
+                    # by another model extremum. This prevents two nearby model
+                    # peaks from both pairing to the same observed peak.
+                    candidates = [
+                        k for k in range(len(o_times))
+                        if k not in matched_obs_idx
+                        and (mt - window) <= o_times[k] <= (mt + window)
+                    ]
+                    if not candidates:
+                        continue
+                    best = candidates[
+                        int(np.argmin([abs(o_times[k] - mt) for k in candidates]))
+                    ]
+                    matched_obs_idx.add(best)
+                    ot = o_times[best]
+                    oa = o_amps[best]
+                    paired_data.append({
+                        'DateTime': mt,
+                        'OFS': ma,
+                        'OBS': oa,
+                        'BIAS': ma - oa,
+                        'TIMING_ERR': (mt - ot) / np.timedelta64(1, 'h'),
+                    })
+
+                # Surface detection-rate asymmetry: extrema counted on one
+                # series but not the other. Silent under the prior impl.
+                unmatched_mod = len(m_times) - len(paired_data)
+                unmatched_obs = len(o_times) - len(matched_obs_idx)
+                if unmatched_mod or unmatched_obs:
+                    logger.info(
+                        '%s %s: %d mod / %d obs extrema unmatched within '
+                        '%s window',
+                        station_id, log_label, unmatched_mod, unmatched_obs,
+                        window,
+                    )
 
                 if paired_data:
                     df_extrema = pd.DataFrame(paired_data)
@@ -365,7 +377,13 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                     out[out_key] = extrema_entry
 
         return out
+    except (KeyboardInterrupt, SystemExit):
+        # Never swallow these — they must propagate out of worker threads
+        raise
     except Exception:
+        # Worker-local isolation: one bad station must not kill the whole
+        # ThreadPoolExecutor. Log with traceback and return None so the
+        # aggregator skips this station.
         logger.exception('Unexpected error processing station index %d', i)
         return None
 
@@ -510,7 +528,6 @@ def get_skill(prop, logger):
         pass
 
     # Parse incoming arguments stored in prop from string to a list
-    #prop.whichcast = parse_arguments_to_list(prop.whichcast, logger)
     prop.stationowner = parse_arguments_to_list(prop.stationowner, logger)
     prop.var_list = parse_arguments_to_list(prop.var_list, logger)
 
@@ -823,10 +840,27 @@ def get_skill(prop, logger):
                     make_skill_maps(skill_result,
                                     prop, name_var,
                                     logger)
-                    if name_var == 'wl':
-                        tabledatum = prop.datum
-                    else:
-                        tabledatum= None
+                    tabledatum = prop.datum if name_var == 'wl' else None
+
+                    # Materialize columns once; zip(*rows) is O(n*m) per call.
+                    skill_cols = list(zip(*skill_result['skill']))
+
+                    # Extrema tables re-use slots 15-17 for timing metrics
+                    # (skill_extrema emits timing_rmse / tcf_pass_fail / tcf
+                    # there). Rename those three columns so the CSV is honest.
+                    is_extrema = variable.endswith(('_hw', '_lw'))
+                    slot_15_name = (
+                        'timing_rmse_hours' if is_extrema
+                        else 'worst_case_outlier_freq'
+                    )
+                    slot_16_name = (
+                        'timing_central_freq_pass_fail' if is_extrema
+                        else 'worst_case_outlier_freq_pass_fail'
+                    )
+                    slot_17_name = (
+                        'timing_central_freq' if is_extrema
+                        else 'bias_standard_dev'
+                    )
 
                     pd.DataFrame(
                         {
@@ -834,25 +868,25 @@ def get_skill(prop, logger):
                             'NODE': skill_result['node'],
                             'obs_water_depth': skill_result['obs_depth'],
                             'mod_water_depth': skill_result['mod_depth'],
-                            'rmse': list(zip(*skill_result['skill']))[0],
-                            'r': list(zip(*skill_result['skill']))[1],
-                            'bias': list(zip(*skill_result['skill']))[2],
-                            'bias_perc': list(zip(*skill_result['skill']))[3],
-                            'bias_dir': list(zip(*skill_result['skill']))[4],
-                            'central_freq': list(zip(*skill_result['skill']))[5],
-                            'central_freq_pass_fail': list(zip(*skill_result['skill']))[6],
-                            'pos_outlier_freq': list(zip(*skill_result['skill']))[7],
-                            'pos_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[8],
-                            'neg_outlier_freq': list(zip(*skill_result['skill']))[9],
-                            'neg_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[10],
-                            'max_duration_pos_outlier': list(zip(*skill_result['skill']))[11],
-                            'max_duration_pos_outlier_pass_fail': list(zip(*skill_result['skill']))[12],
-                            'max_duration_neg_outlier': list(zip(*skill_result['skill']))[13],
-                            'max_duration_neg_outlier_pass_fail': list(zip(*skill_result['skill']))[14],
-                            'worst_case_outlier_freq': list(zip(*skill_result['skill']))[15],
-                            'worst_case_outlier_freq_pass_fail': list(zip(*skill_result['skill']))[16],
-                            'bias_standard_dev': list(zip(*skill_result['skill']))[17],
-                            'target_error_range': list(zip(*skill_result['skill']))[18],
+                            'rmse': skill_cols[0],
+                            'r': skill_cols[1],
+                            'bias': skill_cols[2],
+                            'bias_perc': skill_cols[3],
+                            'bias_dir': skill_cols[4],
+                            'central_freq': skill_cols[5],
+                            'central_freq_pass_fail': skill_cols[6],
+                            'pos_outlier_freq': skill_cols[7],
+                            'pos_outlier_freq_pass_fail': skill_cols[8],
+                            'neg_outlier_freq': skill_cols[9],
+                            'neg_outlier_freq_pass_fail': skill_cols[10],
+                            'max_duration_pos_outlier': skill_cols[11],
+                            'max_duration_pos_outlier_pass_fail': skill_cols[12],
+                            'max_duration_neg_outlier': skill_cols[13],
+                            'max_duration_neg_outlier_pass_fail': skill_cols[14],
+                            slot_15_name: skill_cols[15],
+                            slot_16_name: skill_cols[16],
+                            slot_17_name: skill_cols[17],
+                            'target_error_range': skill_cols[18],
                             'datum': tabledatum,
                             'Y': skill_result['Y'],
                             'X': skill_result['X'],

@@ -15,7 +15,9 @@ positive_outlier_freq : Percentage of errors >= 2*threshold
 negative_outlier_freq : Percentage of errors <= -2*threshold
 max_duration_positive_outliers : Longest consecutive run of positive outliers
 max_duration_negative_outliers : Longest consecutive run of negative outliers
-check_nos_criteria : Evaluate CF/POF/NOF against NOS pass/fail thresholds
+worst_case_outlier_frequency : Percentage of opposite-side-of-tide outliers with |err| > 2*threshold
+timing_central_frequency : Percentage of timing errors within +/- threshold
+check_nos_criteria : Evaluate CF/POF/NOF/MDPO/MDNO/WOF/TCF against NOS pass/fail thresholds
 get_error_threshold : Read error-range thresholds from CSV or built-in defaults
 """
 
@@ -24,6 +26,14 @@ import os
 
 import numpy as np
 from scipy.stats import pearsonr
+
+# NOS pass/fail thresholds
+_CF_MIN_PCT = 90            # CF pass threshold: percentage >= this value
+_POF_MAX_PCT = 1            # POF pass threshold: percentage <= this value
+_NOF_MAX_PCT = 1            # NOF pass threshold: percentage <= this value
+_MD_MAX_HOURS = 24          # MDPO/MDNO pass threshold: hours <= this value
+_WOF_MAX_PCT = 0.5          # WOF pass threshold: percentage <= this value
+_TCF_MIN_PCT = 90           # TCF pass threshold: percentage >= this value
 
 # Built-in default thresholds: variable -> (X1, X2)
 _DEFAULT_THRESHOLDS = {
@@ -245,21 +255,33 @@ def timing_central_frequency(timing_errors, threshold=0.5):
     return float(within / n * 100)
 
 def worst_case_outlier_frequency(ofs, obs, tides, threshold):
-    """
-    Calculates the percentage of worst-case outliers between model and observation data.
+    """Percentage of worst-case outliers between model and observation data.
 
-    A "worst-case outlier" is defined as a data point where both of the following conditions are met:
-    1. The model (`ofs`) and observation (`obs`) fall on opposite sides of the tidal baseline (`tides`).
-    2. The absolute difference between the forecast and observation is strictly greater than twice the specified error threshold.
+    A "worst-case outlier" is a data point where BOTH conditions hold:
 
-    Args:
-        ofs (numpy.ndarray): Array of forecast values (e.g., Ocean Forecast System data).
-        obs (numpy.ndarray): Array of observational data values. Must be the same length as `ofs`.
-        tides (numpy.ndarray): Array of tidal baseline values. Must be the same length as `ofs` and `obs`.
-        threshold (float or int): The baseline error threshold. The calculation checks for differences greater than 2x this value.
+    1. ``ofs`` and ``obs`` fall on opposite sides of the tidal baseline
+       (``tides``), i.e. the signs of ``(ofs - tides)`` and ``(obs - tides)``
+       disagree.
+    2. ``|ofs - obs| > 2 * threshold``.
 
-    Returns:
-        float or None: The percentage (0.0 to 100.0) of valid (non-NaN) data points that are classified as worst-case outliers. Returns `None` if a `ValueError` is raised (e.g., due to array shape mismatches).
+    Parameters
+    ----------
+    ofs : numpy.ndarray
+        Forecast values. Must match ``obs`` and ``tides`` in shape.
+    obs : numpy.ndarray
+        Observations.
+    tides : numpy.ndarray
+        Tidal-baseline values at matching times.
+    threshold : float
+        Baseline error threshold (X1). Absolute differences above ``2 *
+        threshold`` are considered outliers.
+
+    Returns
+    -------
+    float or None
+        Percentage (0-100) of valid (non-NaN) data points classified as
+        worst-case outliers. Returns ``None`` if all pairs are NaN or if
+        shape mismatch raises ``ValueError``.
     """
 
     # ofs, obs, tides are numpy arrays of same length and
@@ -282,46 +304,48 @@ def worst_case_outlier_frequency(ofs, obs, tides, threshold):
 def check_nos_criteria(cf, pof, nof, mdpo, mdno, wof, tcf=None):
     """Evaluate skill metrics against NOS Standard Suite pass/fail thresholds.
 
-    This function checks if the calculated metrics meet the official National Ocean Service
-    (NOS) criteria for acceptance.
+    Checks whether computed metrics meet the official National Ocean Service
+    (NOS) acceptance criteria. Thresholds are module-level constants
+    (``_CF_MIN_PCT``, ``_POF_MAX_PCT``, ``_NOF_MAX_PCT``, ``_MD_MAX_HOURS``,
+    ``_WOF_MAX_PCT``, ``_TCF_MIN_PCT``).
 
     Parameters
     ----------
     cf : float
-        Central frequency (%). Accepted if >= 90%.
+        Central frequency (%). Pass if >= ``_CF_MIN_PCT``.
     pof : float
-        Positive outlier frequency (%). Accepted if <= 1%.
+        Positive outlier frequency (%). Pass if <= ``_POF_MAX_PCT``.
     nof : float
-        Negative outlier frequency (%). Accepted if <= 1%.
+        Negative outlier frequency (%). Pass if <= ``_NOF_MAX_PCT``.
     mdpo : float
-        Maximum duration of positive outliers (hours). Accepted if <= 24.
+        Max duration of positive outliers (hours). Pass if <= ``_MD_MAX_HOURS``.
     mdno : float
-        Maximum duration of negative outliers (hours). Accepted if <= 24.
+        Max duration of negative outliers (hours). Pass if <= ``_MD_MAX_HOURS``.
     wof : float or None
-        Worst-case outlier frequency (%). Accepted if <= 0.5%.
+        Worst-case outlier frequency (%). Pass if <= ``_WOF_MAX_PCT``. ``None``
+        (e.g. when tidal data is unavailable or datum mismatches) yields 'NA'.
     tcf : float, optional
-        Timing central frequency (%) for water level extrema. Accepted if >= 90%.
+        Timing central frequency (%) for water-level extrema. Pass if >=
+        ``_TCF_MIN_PCT``. If not supplied, 'tcf' is omitted from the result.
 
     Returns
     -------
     dict
-        A dictionary containing 'pass', 'fail', or 'NA' status for each metric:
-        ``{'cf', 'pof', 'nof', 'mdpo', 'mdno', 'wof', 'tcf'}``.
+        Status per metric: 'pass', 'fail', or 'NA'. Keys:
+        ``{'cf', 'pof', 'nof', 'mdpo', 'mdno', 'wof'}`` always; ``'tcf'`` when
+        ``tcf`` is supplied.
     """
-    if wof is None:
-        wof = 9999
-
     results = {
-        'cf': 'pass' if cf >= 90 else 'fail',
-        'pof': 'pass' if pof <= 1 else 'fail',
-        'nof': 'pass' if nof <= 1 else 'fail',
-        'mdpo': 'pass' if mdpo <= 24 else 'fail',
-        'mdno': 'pass' if mdno <= 24 else 'fail',
-        'wof': 'pass' if wof <= 0.5 else 'NA' if wof == 9999 else 'fail',
+        'cf': 'pass' if cf >= _CF_MIN_PCT else 'fail',
+        'pof': 'pass' if pof <= _POF_MAX_PCT else 'fail',
+        'nof': 'pass' if nof <= _NOF_MAX_PCT else 'fail',
+        'mdpo': 'pass' if mdpo <= _MD_MAX_HOURS else 'fail',
+        'mdno': 'pass' if mdno <= _MD_MAX_HOURS else 'fail',
+        'wof': 'NA' if wof is None else ('pass' if wof <= _WOF_MAX_PCT else 'fail'),
     }
 
     if tcf is not None:
-        results['tcf'] = 'pass' if tcf >= 90 else 'fail'
+        results['tcf'] = 'pass' if tcf >= _TCF_MIN_PCT else 'fail'
 
     return results
 

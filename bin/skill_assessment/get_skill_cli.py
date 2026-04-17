@@ -19,7 +19,7 @@ from ofs_skill.skill_assessment.get_skill import get_skill
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
-        prog='python get_skill.py', usage='%(prog)s',
+        prog='python get_skill_cli.py', usage='%(prog)s',
         description='Run skill assessment'
     )
 
