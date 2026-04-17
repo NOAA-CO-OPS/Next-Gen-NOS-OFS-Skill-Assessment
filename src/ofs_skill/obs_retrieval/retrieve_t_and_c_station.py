@@ -5,13 +5,19 @@ This module provides functions to retrieve tidal observations, water level,
 temperature, salinity, currents, and other oceanographic data from NOAA CO-OPS
 stations, as well as tidal predictions and nearest station finding capabilities.
 
-The retrieval is performed in 30-day chunks to handle API limitations, with
-automatic retry logic for temperature and salinity using backup URLs.
+The retrieval is performed in 30-day chunks to handle API limitations. Every
+CO-OPS HTTP call is gated by a module-level semaphore (see
+``_rate_limited_get``) so upstream parallelization cannot exceed a safe
+concurrent-request ceiling, and transient errors are handled with
+full-jitter exponential backoff (see ``_get_with_retry``). Water temperature
+and salinity additionally fall back to a ``PHYSOCEAN`` backup URL when the
+primary endpoint exhausts retries.
 """
 
 import json
 import math
 import random
+import threading
 import time
 from datetime import datetime, timedelta
 from logging import Logger
@@ -39,6 +45,33 @@ def _get_session():
         _session.mount('https://', adapter)
         _session.mount('http://', adapter)
     return _session
+
+
+# ---------------------------------------------------------------------------
+# Global CO-OPS concurrency cap (issue #98)
+# ---------------------------------------------------------------------------
+# CO-OPS throttles aggressively when many historical datagetter requests
+# come from one IP at once. ``write_obs_ctlfile`` parallelizes across
+# variables (4) and stations (up to 6), so without a process-wide cap an
+# OFS run can fire ~24 concurrent GETs at CO-OPS, trigger IP-level 403s,
+# and then synchronize retries into a thundering herd. Every CO-OPS HTTP
+# call in this module acquires this semaphore before issuing the GET,
+# decoupling HTTP pressure from upstream ThreadPoolExecutor sizing.
+_COOPS_CONCURRENCY_LIMIT = 4
+_coops_request_semaphore = threading.Semaphore(_COOPS_CONCURRENCY_LIMIT)
+
+
+def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
+    """GET ``url`` through the shared session, gated by the CO-OPS semaphore.
+
+    The semaphore caps concurrent in-flight CO-OPS requests across every
+    worker thread in the process. Callers still get the shared connection
+    pool; only the HTTP round-trip itself counts against the concurrency
+    budget. Retry backoff sleeps outside this lock so waiting threads do
+    not starve the pool.
+    """
+    with _coops_request_semaphore:
+        return _get_session().get(url, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +104,7 @@ def _get_station_depth(station_id, mdapi_url, logger):
 
     url = f'{mdapi_url}/webapi/stations/{station_id}/bins.json?units=metric'
     try:
-        response = _get_session().get(url, timeout=120)
+        response = _rate_limited_get(url, timeout=120)
         response.raise_for_status()
         depth_data = response.json()
         logger.info(
@@ -88,19 +121,29 @@ def _get_station_depth(station_id, mdapi_url, logger):
 
 # CO-OPS occasionally rate-limits or returns transient 5xx when a long
 # historical window forces many 30-day chunk requests per station; retry
-# a small number of times with exponential backoff + jitter before giving
-# up. Kept in sync with the per-bin retry helper on issue-87-currents-bins
-# so both paths share the same backoff profile.
+# a small number of times with full-jitter exponential backoff before
+# giving up. Kept in sync with the per-bin retry helper on
+# issue-87-currents-bins so both paths share the same backoff profile.
 _RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
 _RETRY_MAX_ATTEMPTS = 6
-_RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
-_RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
+# Base delay is the upper bound of the first retry. CO-OPS throttle
+# windows for burst IP traffic are typically tens of seconds, so starting
+# at 5s lets the first retry clear even short bans instead of re-hitting
+# the ceiling. Delay grows as random.uniform(0, _BASE * 2**(attempt-1)).
+_RETRY_BASE_DELAY = 5.0
 
 
 def _backoff_delay(attempt: int) -> float:
-    """Return seconds to sleep before the next retry attempt."""
-    return (_RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            + random.uniform(0, _RETRY_JITTER_MAX))
+    """Return seconds to sleep before the next retry attempt.
+
+    Full-jitter exponential backoff: ``uniform(0, base * 2^(attempt-1))``.
+    Randomizing the entire delay (rather than adding a small jitter on top
+    of a fixed backoff) decorrelates retry timing across threads that all
+    hit the rate limiter in the same instant. Without this, every worker
+    that got a 403 together would also retry together, keeping the herd
+    effect alive through the full retry budget.
+    """
+    return random.uniform(0, _RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
 
 def _get_with_retry(
@@ -125,7 +168,7 @@ def _get_with_retry(
     last_exc = None
     for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
         try:
-            response = _get_session().get(url, timeout=120)
+            response = _rate_limited_get(url, timeout=120)
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout) as ex:
             last_exc = ex
@@ -504,7 +547,7 @@ def retrieve_tidal_predictions(
         )
 
         try:
-            response = _get_session().get(t_c.station_url, timeout=120)
+            response = _rate_limited_get(t_c.station_url, timeout=120)
             response.raise_for_status()
             obs = response.json()
             logger.info(
@@ -630,7 +673,7 @@ def retrieve_harmonic_constants(
     )
 
     try:
-        resp = _get_session().get(harcon_url, timeout=TIMEOUT_SEC)
+        resp = _rate_limited_get(harcon_url, timeout=TIMEOUT_SEC)
         resp.raise_for_status()
         response = resp.json()
         logger.info(
@@ -747,7 +790,7 @@ def find_nearest_tidal_stations(
     stations_url = f'{mdapi_url}/webapi/stations.json?type=tidepredictions'
 
     try:
-        response = _get_session().get(stations_url, timeout=120)
+        response = _rate_limited_get(stations_url, timeout=120)
         response.raise_for_status()
         stations_data = response.json()
     except Exception as ex:
