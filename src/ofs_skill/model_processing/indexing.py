@@ -142,7 +142,7 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
-                index_min_dist.append(int(nearby_nodes[dist.index(min(dist))]))
+                index_min_dist.append(int(nearby_nodes[dist.index(min(dist))].item()))
                 logger.info(
                     f'Nearest node found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
@@ -334,7 +334,7 @@ def index_nearest_node(
 
     elif model_source == 'adcirc':
         raise NotImplementedError('ADCIRC indexing not yet implemented.')
-    
+
     else:
         raise ValueError(f'Unknown model source: {model_source}')
 
@@ -592,17 +592,17 @@ def index_nearest_depth(
                         index_min_depth.append(0)
                         depth_value.append(0.0)
                         logger.info(
-                            'Nearest depth found: node %s of %s', 
+                            'Nearest depth found: node %s of %s',
                             idx + 1, len(index_min_dist)
                         )
                     else:
-                        # We raise en exception here for STOFS-2D-Global non-water level variables 
+                        # We raise en exception here for STOFS-2D-Global non-water level variables
                         # because it does not have depth-wise data, and logic elsewhere should steer users
                         # away from calling this function with STOFS-2D-Global and other variables.
                         raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
                 else:
                     raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
-                
+
     elif prop.ofsfiletype == 'stations':
         if 'stofs' in prop.ofs:
             return [], []
@@ -637,7 +637,7 @@ def index_nearest_depth(
                             )
                             continue
                         else:
-                            # We raise en exception here for STOFS-2D-Global non-water level variables 
+                            # We raise en exception here for STOFS-2D-Global non-water level variables
                             # because it does not have depth-wise data, and logic elsewhere should steer users
                             # away from calling this function with STOFS-2D-Global and other variables.
                             raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
