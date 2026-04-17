@@ -48,29 +48,47 @@ def _get_session():
 
 
 # ---------------------------------------------------------------------------
-# Global CO-OPS concurrency cap (issue #98)
+# Global CO-OPS concurrency cap + pacing (issue #98)
 # ---------------------------------------------------------------------------
 # CO-OPS throttles aggressively when many historical datagetter requests
-# come from one IP at once. ``write_obs_ctlfile`` parallelizes across
-# variables (4) and stations (up to 6), so without a process-wide cap an
-# OFS run can fire ~24 concurrent GETs at CO-OPS, trigger IP-level 403s,
-# and then synchronize retries into a thundering herd. Every CO-OPS HTTP
-# call in this module acquires this semaphore before issuing the GET,
-# decoupling HTTP pressure from upstream ThreadPoolExecutor sizing.
-_COOPS_CONCURRENCY_LIMIT = 4
+# come from one IP at once. Two measures guard against this:
+#
+#   1. Semaphore caps concurrent in-flight CO-OPS GETs process-wide,
+#      decoupling HTTP pressure from upstream ThreadPoolExecutor sizing
+#      (``write_obs_ctlfile`` otherwise fans out 4 vars x 6 stations = 24
+#      concurrent workers).
+#   2. Minimum inter-request gap paces the START of each GET so the
+#      sustained request rate stays below CO-OPS's per-IP threshold.
+#      This is what lets long historical windows retrieve 100% of
+#      chunks; relying on backoff alone to recover AFTER a 403 doesn't
+#      work when CO-OPS's throttle window outlasts the retry budget.
+#
+# Tuned against a 14-month stofs_3d_atl run where the earlier settings
+# (concurrency=4, no pacing) still dropped ~1.6% of chunks to exhaustion.
+_COOPS_CONCURRENCY_LIMIT = 2
+_COOPS_MIN_REQUEST_GAP_SEC = 0.5
 _coops_request_semaphore = threading.Semaphore(_COOPS_CONCURRENCY_LIMIT)
+_coops_pacing_lock = threading.Lock()
+_coops_last_request_time = 0.0
 
 
 def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
-    """GET ``url`` through the shared session, gated by the CO-OPS semaphore.
+    """GET ``url`` through the shared session, gated by the CO-OPS semaphore
+    and paced by a minimum inter-request gap.
 
-    The semaphore caps concurrent in-flight CO-OPS requests across every
-    worker thread in the process. Callers still get the shared connection
-    pool; only the HTTP round-trip itself counts against the concurrency
-    budget. Retry backoff sleeps outside this lock so waiting threads do
-    not starve the pool.
+    Concurrency semaphore caps in-flight requests across all threads;
+    pacing lock serializes request STARTS so no two GETs fire within
+    ``_COOPS_MIN_REQUEST_GAP_SEC``. Retry backoff sleeps outside both
+    locks so waiting threads do not starve the pool.
     """
+    global _coops_last_request_time
     with _coops_request_semaphore:
+        with _coops_pacing_lock:
+            now = time.monotonic()
+            wait = _COOPS_MIN_REQUEST_GAP_SEC - (now - _coops_last_request_time)
+            if wait > 0:
+                time.sleep(wait)
+            _coops_last_request_time = time.monotonic()
         return _get_session().get(url, timeout=timeout)
 
 
@@ -125,25 +143,32 @@ def _get_station_depth(station_id, mdapi_url, logger):
 # giving up. Kept in sync with the per-bin retry helper on
 # issue-87-currents-bins so both paths share the same backoff profile.
 _RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
-_RETRY_MAX_ATTEMPTS = 6
-# Base delay is the upper bound of the first retry. CO-OPS throttle
-# windows for burst IP traffic are typically tens of seconds, so starting
-# at 5s lets the first retry clear even short bans instead of re-hitting
-# the ceiling. Delay grows as random.uniform(0, _BASE * 2**(attempt-1)).
-_RETRY_BASE_DELAY = 5.0
+# Observed with stofs_3d_atl + 14-month historical window: CO-OPS throttles
+# hard enough that unpaced requests still drop chunks even with backoff.
+# The pacing gap above prevents most 403s from ever firing; these retry
+# settings are the safety net for the few that still slip through.
+# Worst-case total wait per chunk with full-jitter and cap=120s:
+# 10+20+40+80 + 5*120 = 750s = 12.5min, expected ~375s.
+_RETRY_MAX_ATTEMPTS = 10
+_RETRY_BASE_DELAY = 10.0
+# Cap per-attempt delay so late retries don't run away to 20+ minute waits
+# (base * 2^9 = ~85min otherwise at attempt 10). 120s is long enough to
+# clear typical CO-OPS throttle windows, short enough to keep total
+# wall-clock bounded when an individual chunk is having a bad day.
+_RETRY_DELAY_CAP = 120.0
 
 
 def _backoff_delay(attempt: int) -> float:
     """Return seconds to sleep before the next retry attempt.
 
-    Full-jitter exponential backoff: ``uniform(0, base * 2^(attempt-1))``.
-    Randomizing the entire delay (rather than adding a small jitter on top
-    of a fixed backoff) decorrelates retry timing across threads that all
-    hit the rate limiter in the same instant. Without this, every worker
-    that got a 403 together would also retry together, keeping the herd
-    effect alive through the full retry budget.
+    Full-jitter exponential backoff capped at ``_RETRY_DELAY_CAP``:
+    ``uniform(0, min(base * 2^(attempt-1), cap))``. Full jitter
+    decorrelates retry timing across threads that hit the limiter
+    together; the cap keeps late-attempt waits bounded.
     """
-    return random.uniform(0, _RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+    max_delay = min(_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                    _RETRY_DELAY_CAP)
+    return random.uniform(0, max_delay)
 
 
 def _get_with_retry(
