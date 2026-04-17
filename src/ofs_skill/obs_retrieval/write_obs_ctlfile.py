@@ -28,7 +28,6 @@ logging,
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 import pandas as pd
 from coastalmodeling_vdatum import vdatum
@@ -51,7 +50,8 @@ _USGS_MAX_WORKERS_NO_KEY = 2
 
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
-                           datum, datum_list, ofs, logger):
+                           datum, datum_list, ofs, logger,
+                           config_file=None):
     """Process a single CO-OPS station. Returns CTL entry string or None."""
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
@@ -62,7 +62,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
         retrieve_input.datum = datum
         timeseries = \
             retrieve_t_and_c_station(
-                retrieve_input,logger)
+                retrieve_input, logger,
+                config_file=config_file)
         if variable == 'water_level':
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
@@ -92,7 +93,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             all_datums [data]
                         timeseries = \
                             retrieve_t_and_c_station(
-                                retrieve_input, logger)
+                                retrieve_input, logger,
+                                config_file=config_file)
                         if ((isinstance(timeseries, pd.DataFrame) is \
                             True) and
                             (all_datums[data] in accepted_datums)):
@@ -523,7 +525,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
-                      control_files_path, logger):
+                      control_files_path, logger, config_file=None):
     """Process all stations for a single variable. Writes .ctl file."""
     var_name_map = {
         'water_level': 'wl',
@@ -558,7 +560,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                     _process_coops_station,
                     row['ID'], row['Name'], row['X'], row['Y'],
                     start_date, end_date, variable, name_var,
-                    datum, datum_list, ofs, logger
+                    datum, datum_list, ofs, logger,
+                    config_file=config_file
                 ))
             for future in futures:
                 result = future.result()
@@ -640,7 +643,7 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
 
 
 def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
-                      var_list, logger):
+                      var_list, logger, config_file=None):
     """
     This function calls the Tid_numberes and Currents, NDBC, and USGS
     retrieval
@@ -651,11 +654,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
     have data
     """
 
-    start_dt = datetime.strptime( start_date , '%Y%m%d' )
-    end_dt = datetime.strptime( end_date , '%Y%m%d' )
-
-    dir_params = utils.Utils().read_config_section( 'directories' , logger )
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    dir_params = utils.Utils(config_file).read_config_section( 'directories' , logger )
+    datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     control_files_path = os.path.join(
@@ -706,7 +706,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 'This might take a couple of minutes'
                 )
             ofs_inventory_stations(
-                ofs , start_date , end_date , path, stationowner, logger
+                ofs , start_date , end_date , path, stationowner, logger,
+                config_file=config_file
                 )
             dtypes = {
                 'ID': 'object',
@@ -772,7 +773,7 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 _process_variable,
                 variable, inventory, var_to_col, start_date, end_date,
                 datum, datum_list, ofs, usgs_max_workers,
-                control_files_path, logger
+                control_files_path, logger, config_file
             ))
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:

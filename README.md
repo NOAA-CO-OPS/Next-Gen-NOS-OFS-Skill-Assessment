@@ -548,6 +548,7 @@ This will retrieve all CBOFS nowcast station files between 07/01/2025 and 07/02/
 |End date for assessment|-e|--EndDate|YYYY-MM-DDTHH:MM:SSZ<br>(e.g. 2025-07-02T00:00:00Z)|required|
 |Mode, or 'cast'|-ws|--WhichCast|nowcast OR forecast_b|required<br><sub>use only one whichcast at a time</sub>|
 |OFS file format|-t|--FileType|stations OR fields|required<br><sub>use only one file type at a time</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
 In the example skill assessment run below ([Section 3.4](#34-running-the-software)), you will use both nowcast and forecast model data. Run the `get_model_data` call one more time to retrieve the forecast station files:
 
@@ -622,6 +623,7 @@ So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and
 |Observation station owner selection|-so|--Station_Owner|USGS, NDBC, CO-OPS, CHS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS, CHS)</sub>|
 |Enable forecast horizon & model cycle skill|-hs|--Horizon_Skill|None, just include -hs|optional<br><sub>(default is False)</sub>|
 |Variable selection|-vs|--Var_Selection|water_level, water_temperature, salinity, currents|optional<br><sub>(default is all variables)</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
 Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs,chs`, and `stations` respectively. So the same run can be achieved using a shorter call:
 
@@ -636,6 +638,14 @@ Input flags that support multiple arguments, like `-ws` or `-vs`, should be form
 `-vs water_level,salinity`
 
 `-so co-ops,ndbc`
+
+All entry point scripts support an optional `-c` (or `--config`) flag to specify a custom configuration file. This allows you to maintain multiple configuration files for different run profiles (e.g., monthly vs. daily assessments, different output directories) and switch between them without editing the default `conf/ofs_dps.conf` file. For example:
+
+```
+python ./bin/visualization/create_1dplot.py -c conf/monthly.conf -p ./ -o cbofs -s 2025-10-01T00:00:00Z -e 2025-10-02T00:00:00Z -d MLLW -ws nowcast,forecast_b
+```
+
+When `-c` is omitted, the default `conf/ofs_dps.conf` is used.
 
 The skill assessment can be run for time spans for a year or longer if using station files. If using field files, the duration is shorter and depends on available processing power and resources (see [Section 2.2](#22-ofs-data-formats--data-retention-schedules)).
 
@@ -909,7 +919,7 @@ All arguments are the same as described in [Section 3.5](#35-running-the-1d-skil
 * _-s_ and _-e_ are the start and end dates, respectively
 * _-ws_ is the mode (nowcast, forecast_a, and/or forecast_b)
 
-As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment.
+As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment. Both `get_satellite_observations.py` and `create_2dplot.py` also support the `-c`/`--config` flag for specifying a custom configuration file (see [Section 3.5](#35-running-the-1d-skill-assessment)).
 
 ## 3.9 2D outputs
 During a run, the skill assessment creates a 'data' directory to save all skill-related outputs. Within the data directory, outputs are saved in separate sub-directories depending on output type, including 'observations', 'model', 'skill', and 'visual'. The following sections will cover 2D outputs in each relevant directory.

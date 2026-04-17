@@ -54,15 +54,15 @@ def get_variable_names(name_var):
 
     return plot_name, save_name
 
-def main(logger):
+def main(logger, _conf=None):
     '''This function plot time series from .prd files'''
 
     # Directories from conf file
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     home_path = dir_params['home']
     # Logger
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(home_path), log_config_file)
 
@@ -273,4 +273,18 @@ def main(logger):
         logger.info('No .prd output files found! No plots were made.')
 
 if __name__ == '__main__':
-    main(None)
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog='python plot_model_timeseries.py',
+        usage='%(prog)s',
+        description='Plot model time series from .prd files',
+    )
+    parser.add_argument(
+        '-c',
+        '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
+    args = parser.parse_args()
+
+    main(None, _conf=args.config)

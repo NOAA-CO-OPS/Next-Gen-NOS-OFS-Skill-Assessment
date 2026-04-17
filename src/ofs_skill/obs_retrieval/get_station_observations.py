@@ -197,7 +197,7 @@ def is_number(n):
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
-    datum_shift, retrieve_input, logger
+    datum_shift, retrieve_input, logger, config_file=None,
 ):
     """Apply datum shift to water_level timeseries, with CO-OPS multi-datum fallback.
 
@@ -252,6 +252,7 @@ def _apply_datum_shift(
                     retrieve_input.datum = all_datums[dat]
                     timeseries = retrieve_t_and_c_station(
                         retrieve_input, logger,
+                        config_file=config_file,
                     )
                     if (timeseries is not None and
                             all_datums[dat] in accepted_datums):
@@ -331,7 +332,7 @@ def _format_timeseries(timeseries, variable, start_date_full, end_date_full):
 def _fetch_and_format_station(
     station_info, station_metadata, variable, name_var, datum, datum_list,
     start_date, end_date, start_date_full, end_date_full, ofs,
-    data_observations_1d_station_path, logger
+    data_observations_1d_station_path, logger, config_file=None,
 ):
     """Fetch observation data for a single station, format it, and write .obs file.
 
@@ -388,7 +389,8 @@ def _fetch_and_format_station(
                 retrieve_input.datum = datum
 
                 timeseries = retrieve_t_and_c_station(
-                    retrieve_input, logger)
+                    retrieve_input, logger,
+                    config_file=config_file)
 
                 if timeseries is None:
                     logger.info(
@@ -404,7 +406,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -433,7 +435,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -462,7 +464,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -491,7 +493,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger
+                        retrieve_input, logger, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -545,7 +547,8 @@ def _fetch_and_format_station(
 def _process_variable_obs(
     variable, prop, datum, datum_list, start_date, end_date,
     start_date_full, end_date_full, path, ofs, stationowner, var_list,
-    control_files_path, data_observations_1d_station_path, logger
+    control_files_path, data_observations_1d_station_path, logger,
+    config_file=None,
 ):
     """Process observation retrieval for a single variable.
 
@@ -637,7 +640,8 @@ def _process_variable_obs(
             )
             write_obs_ctlfile(
                 start_date, end_date, datum, path, ofs,
-                stationowner, var_list, logger
+                stationowner, var_list, logger,
+                config_file=config_file,
             )
             read_station_ctl_file = (
                 station_ctl_file_extract(
@@ -742,6 +746,7 @@ def _process_variable_obs(
                         ofs,
                         data_observations_1d_station_path,
                         logger,
+                        config_file,
                     )
                     futures[future] = station_info[0]
 
@@ -802,9 +807,10 @@ def get_station_observations(prop,logger):
         logger.info('Using log config %s', log_config_file)
     logger.info('--- Starting Station Observation Process ---')
 
-    dir_params = utils.Utils().read_config_section(
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section(
         'directories', logger)
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     # Parse arguments to lists
@@ -893,6 +899,7 @@ def get_station_observations(prop,logger):
                     control_files_path,
                     data_observations_1d_station_path,
                     logger,
+                    _conf,
                 )
                 var_futures[future] = variable
 
@@ -927,6 +934,7 @@ def get_station_observations(prop,logger):
                 control_files_path,
                 data_observations_1d_station_path,
                 logger,
+                config_file=_conf,
             )
             if is_blank:
                 blank_file += 1

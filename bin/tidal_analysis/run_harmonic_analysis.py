@@ -62,6 +62,7 @@ Arguments:
  -vs Var_Selection     water_level, currents, or both (default water_level)
  --min-duration        Minimum record length in days for HA (default 15.0)
  --predictions         Also produce tidal prediction + non-tidal residual CSVs
+ -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Output:
 Name                          Description
@@ -210,6 +211,7 @@ def _run_ha_worker(work_item):
             work_item['vector_diff_threshold'],
             cast,
             logger,
+            config_file=work_item.get('config_file'),
         )
         return {'station_id': station_id, 'cast': cast, 'status': 'ok'}
     except Exception as ex:
@@ -245,6 +247,7 @@ def run_harmonic_analysis_station_loop(
         Logger instance.
     """
     variable, name_var, list_of_headings = var_info
+    _conf = getattr(prop, 'config_file', None)
 
     logger.info(
         'Starting harmonic analysis station loop for %s, variable %s',
@@ -379,6 +382,7 @@ def run_harmonic_analysis_station_loop(
                 'phase_threshold': phase_threshold,
                 'vector_diff_threshold': vector_diff_threshold,
                 'cast': cast,
+                'config_file': _conf,
             })
 
     # ------------------------------------------------------------------
@@ -449,7 +453,7 @@ def _run_ha_for_station(
     paired_data, prop, station_id, node_id, latitude,
     variable, name_var, min_duration_days, do_predictions,
     amp_threshold, phase_threshold, vector_diff_threshold,
-    cast, logger
+    cast, logger, config_file=None,
 ):
     """
     Run harmonic analysis for a single station and write outputs.
@@ -511,7 +515,8 @@ def _run_ha_for_station(
         obs_time, obs_eq = to_equal_interval(time, obs_values, logger=logger)
 
         # Try to get CO-OPS accepted harmonic constants as reference
-        harcon = retrieve_harmonic_constants(station_id, logger)
+        harcon = retrieve_harmonic_constants(station_id, logger,
+                                                config_file=config_file)
 
         if harcon is not None:
             logger.info(
@@ -893,8 +898,9 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 1. Logger setup
     # ------------------------------------------------------------------
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = os.path.join(Path(prop.path), 'conf/logging.conf')
 
         if not os.path.isfile(log_config_file):
@@ -914,9 +920,9 @@ def run_harmonic_analysis(prop, logger):
     # ------------------------------------------------------------------
     # 2. Read config
     # ------------------------------------------------------------------
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     prop.datum_list = (
-        utils.Utils().read_config_section('datums', logger)['datum_list']
+        utils.Utils(_conf).read_config_section('datums', logger)['datum_list']
     ).split(' ')
 
     # ------------------------------------------------------------------
@@ -1198,6 +1204,9 @@ def main():
         help='Also produce tidal prediction and non-tidal residual CSVs',
     )
     parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+    parser.add_argument(
         '--prediction-format',
         choices=['consolidated', 'fortran'],
         default='consolidated',
@@ -1242,6 +1251,7 @@ def main():
     prop.var_list = args.Var_Selection
     prop.min_duration_days = args.min_duration
     prop.do_predictions = args.predictions
+    prop.config_file = args.config
     prop.prediction_format = args.prediction_format
     prop.amp_threshold = (
         args.amp_threshold if args.amp_threshold is not None
