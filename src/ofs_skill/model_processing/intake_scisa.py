@@ -42,22 +42,80 @@ Revisions:
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
 from typing import Any
 
 import intake
 import numpy as np
 import xarray as xr
+
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
 
 
-def preprocess_with_filename(ds):
-    """Preprocess an xarray dataset by adding a 'filename' coordinate.
+def _extract_filename_from_encoding(ds):
+    """Best-effort extraction of filename from dataset encoding."""
+    # Try common encoding keys
+    for key in ('source', 'original_source'):
+        source = ds.encoding.get(key, '')
+        if source:
+            if '::' in source:
+                source = source.split('::')[-1]
+            return os.path.basename(source)
 
-    Extracts the filename from the dataset's encoding source path
-    and assigns it as a coordinate.
+    # Scan all encoding values for a .nc path
+    for val in ds.encoding.values():
+        if isinstance(val, str) and '.nc' in val:
+            if '::' in val:
+                val = val.split('::')[-1]
+            return os.path.basename(val)
+
+    # Try variable-level encoding
+    for var_name in ds.data_vars:
+        var_source = ds[var_name].encoding.get('source', '')
+        if var_source:
+            if '::' in var_source:
+                var_source = var_source.split('::')[-1]
+            return os.path.basename(var_source)
+
+    return ''
+
+
+def make_preprocess_with_filename(urlpaths):
+    """Create a preprocess function that maps datasets to filenames.
+
+    When files are opened through simplecache or other fsspec wrappers,
+    ds.encoding may not contain the original file path. This factory
+    creates a closure that tracks call order and falls back to extracting
+    the filename from the known urlpaths list.
     """
-    filename = os.path.basename(ds.encoding['source'])
+    call_count = [0]  # mutable counter for closure
+
+    def preprocess_with_filename(ds):
+        filename = _extract_filename_from_encoding(ds)
+        if not filename or filename == 'unknown':
+            # Fall back to the original urlpath by call order
+            idx = call_count[0]
+            if idx < len(urlpaths):
+                path = urlpaths[idx]
+                if isinstance(path, str):
+                    # Strip protocol prefixes
+                    if '::' in path:
+                        path = path.split('::')[-1]
+                    filename = os.path.basename(path)
+            if not filename:
+                filename = 'unknown'
+        call_count[0] += 1
+        return ds.assign_coords(filename=filename)
+
+    return preprocess_with_filename
+
+
+def preprocess_with_filename(ds):
+    """Standalone preprocess — used when urlpaths aren't available."""
+    filename = _extract_filename_from_encoding(ds)
+    if not filename:
+        filename = 'unknown'
     return ds.assign_coords(filename=filename)
 
 def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
@@ -196,6 +254,114 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                            'combining netcdfs in intake! Error: %s. '
                            'Continuing...',
                            ex)
+    # Build storage_options for S3 streaming when remote files are present.
+    # Only use S3-specific options (anon, block_size) when URLs use s3://
+    # protocol. For https:// URLs, use simpler HTTP-compatible options.
+    s3_storage_opts = {}
+    if has_remote:
+        has_s3_proto = any(
+            isinstance(f, str) and f.startswith('s3://')
+            for f in urlpaths
+        )
+        if has_s3_proto:
+            s3_storage_opts = {
+                'storage_options': {
+                    'anon': True,
+                    'default_block_size': 64 * 1024 * 1024,
+                    'default_fill_cache': False,
+                }
+            }
+        # For https:// URLs, no special storage_options needed
+
+        # Apply fsspec caching for remote URLs to avoid re-downloading
+        if has_remote and not has_s3_proto:
+            # For https:// URLs (NODD S3 via HTTPS)
+            cache_dir = os.path.join(os.path.expanduser('~'), '.ofs_cache', 's3')
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # Check if all files are remote — simplecache cannot handle
+            # mixed local + remote file lists (fsspec protocol mismatch)
+            all_remote = all(
+                isinstance(f, str) and f.startswith('http')
+                for f in urlpaths
+            )
+
+            if prop.ofsfiletype == 'stations' and all_remote:
+                # simplecache: cache whole files (stations files are small,
+                # typically 1-10 MB each)
+                try:
+                    cached_urlpaths = [
+                        f'simplecache::{url}' for url in urlpaths
+                    ]
+                    urlpaths = cached_urlpaths
+                    s3_storage_opts = {
+                        'storage_options': {
+                            'simplecache': {
+                                'cache_storage': cache_dir,
+                                'same_names': True,
+                            },
+                        }
+                    }
+                    logger.info(
+                        'Using simplecache for %d remote station files '
+                        '(cache: %s)', remote_count, cache_dir,
+                    )
+                except Exception as cache_err:
+                    logger.warning(
+                        'Failed to set up simplecache, falling back to '
+                        'direct access: %s', cache_err,
+                    )
+                    # Restore original urlpaths on failure
+                    urlpaths = file_list
+                    if prop.ofsfiletype == 'stations' \
+                            and prop.whichcast == 'forecast_a':
+                        urlpaths = urlpaths + urlpaths
+            elif prop.ofsfiletype == 'stations' and not all_remote:
+                # Mixed local + remote: download remote files to cache
+                # so all paths are local (fsspec requires uniform protocol)
+                import urllib.request
+                remote_n = sum(1 for f in urlpaths
+                               if isinstance(f, str) and f.startswith('http'))
+                local_n = len(urlpaths) - remote_n
+                logger.info(
+                    'Mixed file list: downloading %d remote files to '
+                    'local cache (%d already local)', remote_n, local_n,
+                )
+                resolved = []
+                for f in urlpaths:
+                    if isinstance(f, str) and f.startswith('http'):
+                        local_path = os.path.join(
+                            cache_dir, os.path.basename(f))
+                        if not os.path.isfile(local_path):
+                            try:
+                                urllib.request.urlretrieve(f, local_path)
+                            except Exception as dl_err:
+                                logger.warning(
+                                    'Failed to cache %s: %s. '
+                                    'Using direct URL.', f, dl_err)
+                                resolved.append(f)
+                                continue
+                        resolved.append(local_path)
+                    else:
+                        resolved.append(f)
+                urlpaths = resolved
+            else:
+                # For fields files, caching is skipped (files are 100-500 MB
+                # each and would quickly exhaust local disk)
+                logger.info(
+                    'Skipping cache for %d remote fields files '
+                    '(too large for local cache)', remote_count,
+                )
+
+    # Build a preprocess function that knows the original urlpaths,
+    # so it can recover filenames even when simplecache hides them.
+    # Strip simplecache:: prefixes to get the real filenames.
+    raw_paths = [
+        p.split('::')[-1] if isinstance(p, str) and '::' in p else p
+        for p in urlpaths
+    ]
+    preprocess_fn = make_preprocess_with_filename(raw_paths)
+
     if dim_compat:  # This will only be FALSE for stations files when
         # station dimensions do not match! Always True for fields
         # files
@@ -209,10 +375,11 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'by_coords',  # <-- align files by coordinates
                         'engine': engine,
-                        'preprocess': preprocess_with_filename,
+                        'preprocess': preprocess_fn,
                         'drop_variables': drop_variables,
                         'chunks': {'time': 1},
                     },
+                    **s3_storage_opts,
                 )
             else:
                 source = intake.open_netcdf(
@@ -220,31 +387,40 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'nested',
                         'engine': engine,
-                        'preprocess': preprocess_with_filename,
+                        'preprocess': preprocess_fn,
                         'concat_dim': time_name,
-                        'decode_times': 'False',
+                        'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
+                    **s3_storage_opts,
                 )
 
         else:
-            # Note it might be possible to add 
+            # For fields files, chunk by single time step to bound memory
+            # for monthly/yearly runs with hundreds of files. Stations
+            # files have small spatial dims, so auto-chunking is safe.
+            if prop.ofsfiletype == 'fields':
+                chunk_spec = {time_name: 1}
+            else:
+                chunk_spec = 'auto'
+            # Note it might be possible to add
             #     'data_vars': 'minimal'
-            # to the xarray_kwargs to avoid expanding spatial/mesh variables 
+            # to the xarray_kwargs to avoid expanding spatial/mesh variables
             # in the time dimension, which can result in very large arrays.
-            # But this messes up the indexing.py process, so we will leave 
+            # But this messes up the indexing.py process, so we will leave
             # it out for now.
             source = intake.open_netcdf(
                 urlpath=urlpaths,
                 xarray_kwargs={
                     'combine': 'nested',
                     'engine': engine,
-                    'preprocess': preprocess_with_filename,
+                    'preprocess': preprocess_fn,
                     'concat_dim': time_name,
-                    'decode_times': 'False',
+                    'decode_times': True,
                     'drop_variables': drop_variables,
-                    'chunks': 'auto',  # Enables lazy loading with Dask
+                    'chunks': chunk_spec,
                 },
+                **s3_storage_opts,
             )
         # Read the dataset lazily
         logger.info('No dimension changes needed, lazy loading catalog ...')
@@ -257,7 +433,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         )
 
     # If ADCIRC, we need to subset times to the appropriate whichcast.
-    # Note that this needs to be done before removal of duplicate times.    
+    # Note that this needs to be done before removal of duplicate times.
     if prop.model_source == 'adcirc':
         ds = fix_adcirc_dataset(prop, ds, urlpaths, logger)
 
@@ -545,8 +721,8 @@ def calc_sigma(h: np.ndarray, sigma: xr.DataArray) -> tuple[np.ndarray, np.ndarr
 
 
 def fix_adcirc_dataset(
-    prop: Any, 
-    data_set: xr.Dataset, 
+    prop: Any,
+    data_set: xr.Dataset,
     urlpaths: Any,
     logger: Logger
 ) -> xr.Dataset:
@@ -583,26 +759,26 @@ def fix_adcirc_dataset(
     data, contatenated together. So when multiple files are loaded with
     intake, the time coordinate goes something like
         t_start_0 ... t_end_0, t_start_1 ... t_end_1, ...
-    where t_start_1 can be earlier than t_end_0. 
-    I.e., this can be a non-monotonic series. 
-    
+    where t_start_1 can be earlier than t_end_0.
+    I.e., this can be a non-monotonic series.
+
     We need to drop the timesteps that are not part of the requested whichcast.
     We illustrate how to do this with a single STOFS-2D-Global run initialized
     at 12:00 UTC on March 1st.
     Nowcast: 06:00 UTC -> 12:00 UTC, both on March 1st
-    Forecast_b: 12:00 UTC -> 18:: UTC, both on March 1st 
+    Forecast_b: 12:00 UTC -> 18:: UTC, both on March 1st
     Forecast_a: 12:00 UTC -> 00:00 UTC on March 9th.
 
-    Technical note: we cannot use time for subsetting, because we have a 
-    non-monotonic coordinate with repeated labels. Therefore we have to 
-    calculate everything with positional indexing (numpy style). This 
-    requires some strong assumptions about structure, and we raise an 
+    Technical note: we cannot use time for subsetting, because we have a
+    non-monotonic coordinate with repeated labels. Therefore we have to
+    calculate everything with positional indexing (numpy style). This
+    requires some strong assumptions about structure, and we raise an
     exception if these assumptions are off.
     """
     if prop.model_source != 'adcirc':
         raise ValueError('Function fix_adcirc_dataset should only be used with ADCIRC data!')
-    
-    # We use the run length and number of cycles per day for timestep 
+
+    # We use the run length and number of cycles per day for timestep
     # indexing, so get them from the appropriate function.
     fcst_a_hours, fcstcycles = get_fcst_hours(prop.ofs)
 
@@ -632,7 +808,7 @@ def fix_adcirc_dataset(
     n_t_nowcast = int(nowcast_hours) * timesteps_per_hour
     n_t_total = n_t_nowcast + n_t_fcst_a
 
-    # Calculate the number of runs in the dataset, and check 
+    # Calculate the number of runs in the dataset, and check
     # that it matches the number of items in urlpaths.
     N_runs = len(data_set.time) / n_t_total
     if int(N_runs) != N_runs:
@@ -644,12 +820,12 @@ def fix_adcirc_dataset(
                        f'Number of constituent files in ADCIRC dataset ({len(urlpaths)})'
                        'not equal to the number calculated from the number of timesteps '
                        f'({len(data_set.time)} / {n_t_total}). Continuing with the calculated number.')
-    
-    # Set up a variable that will be equal to 1 for the timesteps 
+
+    # Set up a variable that will be equal to 1 for the timesteps
     # we want to keep.
     keep_t_s = np.zeros(len(data_set.time))
 
-    # Loop over each run and convert values from 0 to 1 for the 
+    # Loop over each run and convert values from 0 to 1 for the
     # timesteps we want to keep.
     if prop.whichcast == 'nowcast':
         for i_run in range(int(N_runs)):
@@ -691,7 +867,7 @@ def fix_adcirc_dataset(
                        'This may cause issues with downstream processing. Continuing...')
     #
     return data_set
-            
+
 
 def get_station_dim(engine: str, urlpaths: list[str],
                     drop_variables: list[str], logger: Logger) -> tuple[bool, int]:
@@ -737,11 +913,7 @@ def get_station_dim(engine: str, urlpaths: list[str],
     """
 
 
-    station_dim = []
-    dim_compat = True
-    dim_ref = []
-    for file in urlpaths:
-
+    def _read_dim(file):
         source = intake.open_netcdf(
             urlpath=file,
             xarray_kwargs={
@@ -751,7 +923,22 @@ def get_station_dim(engine: str, urlpaths: list[str],
             },
         )
         ds = source.read()
-        station_dim.append(ds.dims['station'])
+        dim = ds.dims['station']
+        ds.close()
+        return dim
+
+    num_files = len(urlpaths)
+    max_workers = min(num_files, 8)
+    logger.info(
+        'Checking station dimensions for %d files in parallel '
+        '(max_workers=%d)', num_files, max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        station_dim = list(executor.map(_read_dim, urlpaths))
+
+    dim_compat = True
+    dim_ref = []
     if np.nanmax(np.diff(station_dim)) != 0:
         dim_compat = False
         # Get reference dataset index
@@ -827,7 +1014,7 @@ def remove_extra_stations(engine: str,
             xarray_kwargs={
                 'engine': 'h5netcdf',
                 'drop_variables': drop_variables,
-                'decode_times': 'False',
+                'decode_times': True,
                 'chunks': 'auto',
             },
         )

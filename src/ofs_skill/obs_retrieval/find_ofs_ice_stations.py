@@ -54,7 +54,8 @@ def find_ofs_ice_stations(
     start_date = start_dt.strftime('%Y%m%d')
     end_date = end_dt.strftime('%Y%m%d')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     control_files_path = os.path.join(
         path, dir_params['control_files_dir'],
@@ -83,6 +84,7 @@ def find_ofs_ice_stations(
             ofs_inventory_stations(
                 ofs, start_date, end_date, path, ['co-ops', 'ndbc', 'usgs', 'chs'],
                 logger,
+                config_file=_conf,
             )
             inventory = pd.read_csv(
                 r'' + f'{control_files_path}/inventory_all_{ofs}.csv',

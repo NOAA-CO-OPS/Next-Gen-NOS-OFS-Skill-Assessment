@@ -87,7 +87,8 @@ def check_model_files(prop: Any, logger: Logger) -> None:
     for cast in prop.whichcasts:
         prop.whichcast = cast
         # Directory params
-        dir_params = utils.Utils().read_config_section('directories', logger)
+        _conf = getattr(prop, 'config_file', None)
+        dir_params = utils.Utils(_conf).read_config_section('directories', logger)
         prop.model_save_path = os.path.join(dir_params['model_historical_dir'],
                                             prop.ofs, dir_params['netcdf_dir'])
 

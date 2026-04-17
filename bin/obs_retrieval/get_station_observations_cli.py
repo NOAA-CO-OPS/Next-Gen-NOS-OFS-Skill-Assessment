@@ -65,6 +65,7 @@ optional arguments:
   -d DATUM, --datum DATUM
                         datum: 'MHHW', 'MHW', 'MTL', 'MSL', 'DTL', 'MLW',
                         'MLLW', 'NAVD', 'IGLD', 'LWD', 'STND'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Output:
 1) station_timeseries
@@ -148,12 +149,16 @@ if __name__ == '__main__':
         help='Which variables do you want to skill assess? Options are: '
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.datum = args.Datum.upper()

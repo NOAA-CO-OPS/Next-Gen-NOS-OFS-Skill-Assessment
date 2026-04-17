@@ -533,6 +533,23 @@ def oned_vector_plot1(
         ),
     )
 
+    # Add annotation if assumed surface depth (no depth data from API)
+    if len(station_id) > 3:
+        try:
+            obs_depth = float(station_id[3])
+            if obs_depth == 0.0:
+                fig.add_annotation(
+                    text='<b>Note: no obs depth<br>available from API.<br>'
+                         'Assumed surface (0 m)</b>',
+                    xref='x domain', yref='y domain',
+                    font=dict(size=12, color='#E68A00'),
+                    x=0, y=0.0,
+                    showarrow=False,
+                    row=1, col=1,
+                )
+        except (ValueError, TypeError):
+            pass
+
     # Set x-axis moving bar
     fig.update_xaxes(
         showspikes=True,

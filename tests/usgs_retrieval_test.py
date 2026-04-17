@@ -9,6 +9,7 @@ This module tests the USGS data retrieval functionality including:
 """
 
 import logging
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -296,6 +297,216 @@ class TestMockRetrieveInput:
         )
 
         assert mock.variable == 'water_level'
+
+
+def _make_usgs_multiindex_df(rows):
+    """Build a DataFrame mimicking get_usgs_station_data output.
+
+    Each row is a dict with keys: site_no, datetime, code, option, value.
+    Returns a DataFrame with a MultiIndex of (site_no, datetime, code, option).
+    """
+    df = pd.DataFrame(rows)
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = df.set_index(['site_no', 'datetime', 'code', 'option'])
+    return df
+
+
+class TestDeduplication:
+    """Test that duplicate time series (multiple options) are collapsed."""
+
+    def test_multiple_options_deduplicated(self, logger):
+        """When multiple option variants exist, only the first is kept."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00065', 'option': '00000', 'value': 1.0},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:15',
+             'code': '00065', 'option': '00000', 'value': 1.1},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00065', 'option': '00001', 'value': 2.0},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:15',
+             'code': '00065', 'option': '00001', 'value': 2.1},
+        ])
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'water_level')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert len(result) == 2  # Only option '00000' kept
+        assert list(result['OBS']) == pytest.approx([1.0 * 0.3048, 1.1 * 0.3048])
+
+    def test_duplicate_timestamps_dropped(self, logger):
+        """Even within a single option, duplicate timestamps are dropped."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00065', 'option': '00000', 'value': 1.0},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00065', 'option': '00000', 'value': 1.5},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:15',
+             'code': '00065', 'option': '00000', 'value': 2.0},
+        ])
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'water_level')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert len(result) == 2  # Duplicate timestamp collapsed
+        assert result['OBS'].iloc[0] == pytest.approx(1.0 * 0.3048)
+
+    def test_no_option_column_still_works(self, logger):
+        """If option column is absent after reset_index, no crash."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00065', 'option': '00000', 'value': 1.0},
+        ])
+        # Simulate a DataFrame without 'option' after reset
+        mock_data.index = mock_data.index.droplevel('option')
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'water_level')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert len(result) == 1
+
+    def test_time_series_id_dedup(self, logger):
+        """Prefer time_series_id over option for dedup (new Water Data API)."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '11162765', 'datetime': '2024-01-01 00:00',
+             'code': '00095', 'option': '', 'value': 33800.0},
+            {'site_no': '11162765', 'datetime': '2024-01-01 00:15',
+             'code': '00095', 'option': '', 'value': 33800.0},
+            {'site_no': '11162765', 'datetime': '2024-01-01 00:00',
+             'code': '00095', 'option': '', 'value': 33600.0},
+            {'site_no': '11162765', 'datetime': '2024-01-01 00:15',
+             'code': '00095', 'option': '', 'value': 33600.0},
+        ])
+        # Add time_series_id column (present in new API, not in index)
+        df = mock_data.reset_index()
+        df['time_series_id'] = ['ts_A', 'ts_A', 'ts_B', 'ts_B']
+        mock_data = df.set_index(['site_no', 'datetime', 'code', 'option'])
+
+        inp = MockRetrieveInput('11162765', '20240101', '20240102', 'salinity')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert len(result) == 2  # Only ts_A kept
+        # All values from ts_A (33800 * 0.00064 = 21.632)
+        assert result['OBS'].iloc[0] == pytest.approx(33800.0 * 0.00064)
+        assert result['OBS'].iloc[1] == pytest.approx(33800.0 * 0.00064)
+
+
+class TestSpecificConductanceConversion:
+    """Test specific conductance (code 00095) to PSU conversion."""
+
+    def test_conductance_converted_to_psu(self, logger):
+        """Code 00095 values are multiplied by 0.00064."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '294643095035200', 'datetime': '2024-01-01 00:00',
+             'code': '00095', 'option': '00000', 'value': 1000.0},
+            {'site_no': '294643095035200', 'datetime': '2024-01-01 00:15',
+             'code': '00095', 'option': '00000', 'value': 1500.0},
+        ])
+
+        inp = MockRetrieveInput(
+            '294643095035200', '20240101', '20240102', 'salinity'
+        )
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert result['OBS'].iloc[0] == pytest.approx(1000.0 * 0.00064)
+        assert result['OBS'].iloc[1] == pytest.approx(1500.0 * 0.00064)
+
+    def test_actual_salinity_code_no_conversion(self, logger):
+        """Code 00480 (actual salinity PSU) is not converted."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00480', 'option': '00000', 'value': 5.0},
+        ])
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'salinity')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert result['OBS'].iloc[0] == pytest.approx(5.0)
+
+
+class TestSalinityCodePreference:
+    """Test that actual salinity codes are preferred over conductance."""
+
+    def test_preferred_code_chosen_over_conductance(self, logger):
+        """When both 00480 and 00095 exist, 00480 is used."""
+        mock_data = _make_usgs_multiindex_df([
+            # Conductance data listed first
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00095', 'option': '00000', 'value': 1000.0},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:15',
+             'code': '00095', 'option': '00000', 'value': 1500.0},
+            # Actual salinity data listed second
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00480', 'option': '00000', 'value': 5.0},
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:15',
+             'code': '00480', 'option': '00000', 'value': 6.0},
+        ])
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'salinity')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        # Should get the raw PSU values from 00480, not the conductance
+        assert result['OBS'].iloc[0] == pytest.approx(5.0)
+        assert result['OBS'].iloc[1] == pytest.approx(6.0)
+
+    def test_falls_back_to_conductance_if_no_preferred(self, logger):
+        """When only 00095 is available, it is used with conversion."""
+        mock_data = _make_usgs_multiindex_df([
+            {'site_no': '01646500', 'datetime': '2024-01-01 00:00',
+             'code': '00095', 'option': '00000', 'value': 1000.0},
+        ])
+
+        inp = MockRetrieveInput('01646500', '20240101', '20240102', 'salinity')
+
+        with patch(
+            'ofs_skill.obs_retrieval.retrieve_usgs_station.get_usgs_station_data',
+            return_value=mock_data,
+        ):
+            result = retrieve_usgs_station(inp, logger)
+
+        assert result is not None
+        assert result['OBS'].iloc[0] == pytest.approx(0.64)
 
 
 if __name__ == '__main__':

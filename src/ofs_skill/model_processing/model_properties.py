@@ -138,6 +138,7 @@ class ModelProperties:
         self.data_model_ice_path: str = ''
 
         self.model_source: str = ''
+        self.config_file = None
 
     def __repr__(self) -> str:
         """String representation of ModelProperties."""

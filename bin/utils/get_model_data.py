@@ -12,6 +12,7 @@ import socket
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
@@ -20,6 +21,7 @@ import numpy as np
 
 from ofs_skill.model_processing import get_fcst_cycle, model_properties
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 
 TIMEOUT_SEC = 60  # default API timeout in seconds
 socket.setdefaulttimeout(TIMEOUT_SEC)
@@ -280,7 +282,7 @@ def make_file_list(prop, dates, dir_list, logger):
     #         stofs_2d_glo
     #         other OFSs
     # whichcast == all (not ready yet)
-    # Note no "hindcast" option. 
+    # Note no "hindcast" option.
     # TODO: delete the above comment once merged. It's just here to note the change.
     if prop.whichcast in ['forecast_b', 'forecast_a']:
         if prop.ofsfiletype == 'fields':
@@ -463,7 +465,8 @@ def list_of_urls(file_list, prop, logger):
     """
 
     # Retrieve urls from config file
-    url_params = utils.Utils().read_config_section('urls', logger)
+    _conf = getattr(prop, 'config_file', None)
+    url_params = utils.Utils(_conf).read_config_section('urls', logger)
     if prop.ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
         url_root = url_params['nodd_s3']
         url_list = []
@@ -497,6 +500,80 @@ def list_of_urls(file_list, prop, logger):
     return url_list
 
 
+def _download_single_file(mod_dat, savepath, ofs, logger):
+    """
+    Download a single model output file from the NODD.
+
+    Handles stofs vs non-stofs path construction, skips files that already
+    exist locally, and retries up to 3 times on HTTP 503 errors with
+    exponential backoff.
+
+    Parameters
+    ----------
+    mod_dat : str
+        Full URL of the file to download.
+    savepath : str
+        Local base path for saving downloaded files.
+    ofs : str
+        OFS name (e.g. 'cbofs', 'stofs_3d_atl').
+    logger : logging.Logger
+        Logger instance.
+
+    Returns
+    -------
+    str or None
+        The local file path on success, None on failure.
+    """
+    max_retries = 3
+    backoff_seconds = 1
+
+    try:
+        # Build the local file path based on OFS type
+        if ofs not in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/')
+        elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/').replace(
+                'STOFS-3D-Atl/', 'stofs_3d_atl/',
+            )
+        else:
+            # stofs_2d_global or other future stofs variants
+            local_path = (
+                savepath + mod_dat.split('.com')[-1]
+            ).replace('//', '/')
+
+        # Skip if file already exists
+        if os.path.isfile(local_path):
+            logger.info('File already exists, skipping: %s', local_path)
+            return local_path
+
+        logger.info('Downloading model data: %s', mod_dat)
+        url = mod_dat.replace('\\', '/')
+
+        # Retry loop for transient HTTP errors
+        for attempt in range(max_retries):
+            try:
+                urllib.request.urlretrieve(url, local_path)
+                return local_path
+            except HTTPError as e:
+                if e.code == 503 and attempt < max_retries - 1:
+                    wait = backoff_seconds * (2 ** attempt)
+                    logger.warning(
+                        'HTTP 503 for %s, retrying in %ds (attempt %d/%d)',
+                        mod_dat, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+
+    except Exception as ex:
+        logger.error('Error: %s. Download failed %s!', ex, mod_dat)
+        return None
+
+
 def download_data(prop, list_of_urls1, dir_list, logger):
     """
     This function gets the model output files from the NODD using the list
@@ -504,7 +581,7 @@ def download_data(prop, list_of_urls1, dir_list, logger):
     """
     # Set up save path
     savepath = dir_list[0][:].split(prop.ofs)[0]
-    # Need to add a "stofs_2d_glo" to the savepath for stofs_2d_glo files 
+    # Need to add a "stofs_2d_glo" to the savepath for stofs_2d_glo files
     # because the NODD S3 bucket doesn't contain it (unlike other models).
     if prop.ofs == 'stofs_2d_glo':
         savepath = savepath + 'stofs_2d_glo/'
@@ -538,52 +615,19 @@ def download_data(prop, list_of_urls1, dir_list, logger):
         sys.exit(-1)
         # list_of_urls = list_of_urls2
 
-    for mod_dat in list_of_urls_main:
-        try:
-            logger.info(f'Downloading model data: {mod_dat}')
-            if prop.ofs not in (
-                'stofs_3d_atl', 'stofs_3d_pac',
-                'stofs_2d_glo',
-            ):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/')):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/'),
-                    )
-            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-                if not os.path.isfile((
-                    savepath +
-                    mod_dat.split('.com')[-1]
-                ).replace('//', '/').replace(
-                    'STOFS-3D-Atl/',
-                    'stofs_3d_atl/',
-                )):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), (
-                            savepath +
-                            mod_dat.split('.com')[-1]
-                        ).replace('//', '/').replace(
-                            'STOFS-3D-Atl/',
-                            'stofs_3d_atl/',
-                        ),
-                    )
-            elif prop.ofs in ('stofs_2d_glo'):
-                if not os.path.isfile(
-                    (savepath + mod_dat.split('.com')[-1]).replace('//', '/')
-                ):
-                    urllib.request.urlretrieve(
-                        mod_dat.replace('\\', '/'), 
-                        (savepath + mod_dat.split('.com')[-1]).replace('//', '/'),
-                    )
+    # Download remaining files in parallel
+    parallel_config = get_parallel_config(logger)
+    max_workers = parallel_config['model_download_workers']
 
-        except (ValueError, HTTPError, Exception) as ex:
-            logger.error('Error: %s. Download failed %s!', ex, mod_dat)
-            # sys.exit(-1)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _download_single_file, mod_dat, savepath, prop.ofs, logger,
+            ): mod_dat
+            for mod_dat in list_of_urls_main
+        }
+        for future in as_completed(futures):
+            future.result()  # raise exceptions from worker if any
 
 
 def get_model_data(prop, logger):
@@ -610,10 +654,12 @@ def get_model_data(prop, logger):
     logger.info('--- Starting the program ---')
 
     #Parameter validation
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     if dir_params['home'] == '/path/to/sa_homedir/':
-        logger.error('HOMEDIR NOT SET IN conf/ofs_dps.conf FILE!')
+        logger.error('HOMEDIR NOT SET! Copy conf/ofs_dps.conf.example to '
+                     'conf/ofs_dps.conf and set home= to your working directory.')
         logger.error(
             'Program will sleep for 10 seconds to allow user to kill it '
             '(ctl-c).',)
@@ -741,12 +787,16 @@ if __name__ == '__main__':
         '--Forecast_Hr',
         required=False,
         help="'02hr', '06hr', '12hr', '24hr' ... ", )
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.whichcast = args.Whichcast.lower()
