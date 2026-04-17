@@ -5,7 +5,6 @@
 """
 
 
-import argparse
 import copy
 import logging
 import logging.config
@@ -24,14 +23,10 @@ from ofs_skill.model_processing.get_node_ofs import get_node_ofs
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment import format_paired_one_d, metrics_paired_one_d
 from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
 from ofs_skill.tidal_analysis.extremes import extract_water_level_extrema
-
-from ofs_skill.obs_retrieval.utils import get_parallel_config
-from ofs_skill.skill_assessment import format_paired_one_d, make_skill_maps, metrics_paired_one_d
-
 
 
 def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
@@ -219,119 +214,159 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
     return formatted_series
 
 
+def _station_metadata(read_station_ctl_file, read_ofs_ctl_file, obs_idx, ofs_idx):
+    """Build the per-station metadata dict shared by primary + direction + extrema outputs."""
+    return {
+        'station_id': read_station_ctl_file[0][obs_idx][0],
+        'node': read_ofs_ctl_file[1][ofs_idx],
+        'obs_depth': read_station_ctl_file[1][obs_idx][-2],
+        'mod_depth': read_ofs_ctl_file[-2][ofs_idx],
+        'X': str(float(read_station_ctl_file[1][obs_idx][1])),
+        'Y': read_station_ctl_file[1][obs_idx][0],
+    }
+
+
 def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
-                          prop, name_var, logger):
+                          station_id_to_idx, prop, name_var, logger):
     """
     Process a single station pair: match IDs, compute pairing + metrics,
     and write the .int file.
 
-    Returns a dict with station_id, X, Y, obs_depth, mod_depth, node, skill
-    on success, or None on failure.
+    Returns a dict with a 'primary' key (always) plus optional 'direction',
+    'hw', 'lw' sub-dicts. Returns None if this station cannot be processed.
     """
     try:
-        # First, match rows using station ID between model and obs control
-        # files
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].index(
-                read_ofs_ctl_file[-1][i]
-            )
-            if read_station_ctl_file[0][obs_row][0] != \
-                    read_ofs_ctl_file[-1][i]:
-                raise ValueError
-        except (ValueError, IndexError):
+        ofs_station_id = read_ofs_ctl_file[-1][i]
+        if ofs_station_id not in station_id_to_idx:
             logger.error(
-                'Could not match station ID %s between control '
-                'file in get_node_ofs!', read_ofs_ctl_file[-1][i]
+                f'Could not match station ID {ofs_station_id} between '
+                f'control file in get_node_ofs!'
             )
             return None
 
-        # Now continue formatting paired series
+        obs_row = station_id_to_idx[ofs_station_id]
+        station_id = read_station_ctl_file[0][obs_row][0]
+
         formatted_series = prepare_series(
             read_station_ctl_file, read_ofs_ctl_file, prop,
             name_var, i, obs_row, logger
         )
-        if (
-            formatted_series is not None
+
+        if not (
+            formatted_series
             and formatted_series != 'NoDataFound'
             and len(formatted_series[0]) > 1
         ):
-            result = {
-                'station_id': read_station_ctl_file[0][obs_row][0],
-                'node': read_ofs_ctl_file[1][i],
-                'obs_depth': read_station_ctl_file[1][obs_row][-2],
-                'mod_depth': read_ofs_ctl_file[-2][i],
-                'Y': read_station_ctl_file[1][obs_row][0],
-            }
-
-            if name_var == 'cu':
-                logger.info('Start cu metrics for %s',
-                            read_station_ctl_file[0][obs_row][0])
-                result['X'] = read_station_ctl_file[1][obs_row][1]
-                result['skill'] = metrics_paired_one_d.skill_vector(
-                    formatted_series[-1], name_var, prop, logger
-                )
-            else:
-                logger.info('Start %s metrics for %s',
-                            name_var,
-                            read_station_ctl_file[0][obs_row][0])
-                temp_x = str(float(
-                    read_station_ctl_file[1][obs_row][1]))
-                result['X'] = temp_x
-                result['skill'] = metrics_paired_one_d.skill_scalar(
-                    formatted_series[-1], name_var, prop, logger
-                )
-
-            # Write the paired time series file
-            int_path = os.path.join(
-                prop.data_skill_1d_pair_path,
-                str(prop.ofs + '_' + name_var + '_'
-                    + read_station_ctl_file[0][obs_row][0]
-                    + '_' + str(read_ofs_ctl_file[1][i]) + '_'
-                    + prop.whichcast + '_' + prop.ofsfiletype
-                    + '_pair.int')
-            )
-            with open(int_path, 'w', encoding='utf-8') as output_2:
-                if name_var == 'cu':
-                    output_2.write(
-                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
-                        + 'HOUR ' + 'MINUTE ' + 'SPEED_OB '
-                        + 'SPEED_MODEL ' + 'BIAS_SPEED '
-                        + 'DIR_OB ' + 'DIR_MODEL ' + 'BIAS_DIR ' + '\n'
-                    )
-                else:
-                    output_2.write(
-                        'DNUM_JAN1 ' + 'YEAR ' + 'MONTH ' + 'DAY '
-                        + 'HOUR ' + 'MINUTE ' + 'VAL_OB '
-                        + 'VAL_MODEL ' + 'BIAS ' + '\n'
-                    )
-                for p_value in formatted_series[0]:
-                    p_value = str(p_value)
-                    p_value = p_value.replace(',', ' ')
-                    p_value = p_value.replace('[', '')
-                    p_value = p_value.replace(']', '')
-                    output_2.write(p_value + '\n')
-            logger.info(
-                '%s_%s_%s_%s_%s_%s_pair.int is created successfully',
-                prop.ofs, name_var, read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype
-            )
-            return result
-        else:
             logger.error(
-                '%s_%s_%s_%s_%s_%s_pair.int is not created successfully',
-                prop.ofs,
-                name_var,
-                read_station_ctl_file[0][obs_row][0],
-                read_ofs_ctl_file[1][i],
-                prop.whichcast,
-                prop.ofsfiletype
+                f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_'
+                f'{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully'
             )
             return None
 
-    except Exception:
-        logger.exception(
-            'Unexpected error processing station index %d', i
+        series_df = formatted_series[-1]
+        series_df['DateTime'] = pd.to_datetime({
+            'year': series_df[1], 'month': series_df[2], 'day': series_df[3],
+            'hour': series_df[4], 'minute': series_df[5]
+        })
+
+        out = {}
+        primary = _station_metadata(read_station_ctl_file, read_ofs_ctl_file, obs_row, i)
+
+        if name_var == 'cu':
+            logger.info(f'Start cu metrics for {station_id}')
+            primary['skill'] = metrics_paired_one_d.skill_vector(
+                series_df, name_var, prop, logger
+            )
+            out['primary'] = primary
+
+            logger.info(f'Start cu dir metrics for {station_id}')
+            direction = _station_metadata(read_station_ctl_file, read_ofs_ctl_file, obs_row, i)
+            direction['skill'] = metrics_paired_one_d.skill_vector_dir(
+                series_df, name_var, prop, logger
+            )
+            out['direction'] = direction
+        else:
+            logger.info(f'Start {name_var} metrics for {station_id}')
+            primary['skill'] = metrics_paired_one_d.skill_scalar(
+                series_df, name_var, station_id, prop, logger
+            )
+            out['primary'] = primary
+
+        # Write the paired time series file (.int)
+        filename = (
+            f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_'
+            f'{prop.whichcast}_{prop.ofsfiletype}_pair.int'
         )
+        int_path = os.path.join(prop.data_skill_1d_pair_path, filename)
+        with open(int_path, 'w', encoding='utf-8') as output_2:
+            if name_var == 'cu':
+                output_2.write(
+                    'DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE SPEED_OB '
+                    'SPEED_MODEL BIAS_SPEED DIR_OB DIR_MODEL BIAS_DIR \n'
+                )
+            else:
+                output_2.write(
+                    'DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE VAL_OB '
+                    'VAL_MODEL BIAS \n'
+                )
+            for p_value in formatted_series[0]:
+                cleaned_val = str(p_value).replace(',', ' ').replace('[', '').replace(']', '')
+                output_2.write(f'{cleaned_val}\n')
+        logger.info(f'{filename} is created successfully')
+
+        # Water-level extrema (HW/LW) independent detection + ±3h pairing
+        if name_var == 'wl':
+            mod_extrema = extract_water_level_extrema(
+                np.asarray(series_df['DateTime']),
+                np.asarray(series_df['OFS']), 4, logger
+            )
+            obs_extrema = extract_water_level_extrema(
+                np.asarray(series_df['DateTime']),
+                np.asarray(series_df['OBS']), 4, logger
+            )
+
+            for extrema_type, out_key, log_label in (
+                ('high_water', 'hw', 'high water extrema'),
+                ('low_water', 'lw', 'low water extrema'),
+            ):
+                m_times = mod_extrema[f'{extrema_type}_times']
+                m_amps = mod_extrema[f'{extrema_type}_amplitudes']
+                o_times = obs_extrema[f'{extrema_type}_times']
+                o_amps = obs_extrema[f'{extrema_type}_amplitudes']
+
+                paired_data = []
+                window = np.timedelta64(3, 'h')  # Standard NOS pairing window
+                for mt, ma in zip(m_times, m_amps):
+                    mask = (o_times >= mt - window) & (o_times <= mt + window)
+                    matches = o_times[mask]
+                    if len(matches) > 0:
+                        match_idx = np.argmin(np.abs(matches - mt))
+                        ot = matches[match_idx]
+                        oa = o_amps[mask][match_idx]
+                        paired_data.append({
+                            'DateTime': mt,
+                            'OFS': ma,
+                            'OBS': oa,
+                            'BIAS': ma - oa,
+                            'TIMING_ERR': (mt - ot) / np.timedelta64(1, 'h'),
+                        })
+
+                if paired_data:
+                    df_extrema = pd.DataFrame(paired_data)
+                    logger.info(
+                        f'Start {name_var} metrics for {station_id} {log_label}'
+                    )
+                    extrema_entry = _station_metadata(
+                        read_station_ctl_file, read_ofs_ctl_file, obs_row, i
+                    )
+                    extrema_entry['skill'] = metrics_paired_one_d.skill_extrema(
+                        df_extrema, name_var, station_id, prop, logger
+                    )
+                    out[out_key] = extrema_entry
+
+        return out
+    except Exception:
+        logger.exception('Unexpected error processing station index %d', i)
         return None
 
 
@@ -341,12 +376,15 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     file (.int), and 2) sends the paired time series to
     metrics_paired_one_d to calculate skill stats, which are returned from the
     function.
+
+    Returns a list: [output] for scalars, [output, output_dir] for currents,
+    [output, output_hw, output_lw] for water level (when extrema were paired).
     """
 
     def _create_output_dict():
         return {
             'station_id': [], 'X': [], 'Y': [],
-            'obs_depth': [], 'mod_depth': [], 'node': [], 'skill': []
+            'obs_depth': [], 'mod_depth': [], 'node': [], 'skill': [],
         }
 
     output = _create_output_dict()
@@ -354,161 +392,46 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     output_hw = _create_output_dict()
     output_lw = _create_output_dict()
 
-<<<<<<< HEAD
     data_length = min(len(read_station_ctl_file[0]), len(read_ofs_ctl_file[-1]))
 
-    # pre-compute station ID to index mapping for O(1) lookup
-    station_id_to_idx = {row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])}
+    # O(1) station ID -> obs-row lookup, computed once and shared with workers
+    station_id_to_idx = {
+        row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])
+    }
 
-    # Helper function to reduce repetitive appending
-    def _append_metadata(target_dict, obs_idx, ofs_idx):
-        target_dict['station_id'].append(read_station_ctl_file[0][obs_idx][0])
-        target_dict['node'].append(read_ofs_ctl_file[1][ofs_idx])
-        target_dict['obs_depth'].append(read_station_ctl_file[1][obs_idx][-2])
-        target_dict['mod_depth'].append(read_ofs_ctl_file[-2][ofs_idx])
-        target_dict['X'].append(str(float(read_station_ctl_file[1][obs_idx][1])))
-        target_dict['Y'].append(read_station_ctl_file[1][obs_idx][0])
-
-    for i in range(data_length):
-        ofs_station_id = read_ofs_ctl_file[-1][i]
-
-        # Match rows using station ID between model and obs control files
-        if ofs_station_id not in station_id_to_idx:
-            logger.error(f'Could not match station ID {ofs_station_id} between control file in get_node_ofs!')
-            continue
-
-        obs_row = station_id_to_idx[ofs_station_id]
-        station_id = read_station_ctl_file[0][obs_row][0]
-
-        # Continue formatting paired series
-        formatted_series = None
-        formatted_series = prepare_series(
-            read_station_ctl_file, read_ofs_ctl_file, prop,
-            name_var, i, obs_row, logger
-        )
-
-        if not (formatted_series and formatted_series != 'NoDataFound' and len(formatted_series[0]) > 1):
-            logger.error(
-                f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_'
-                f'{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully'
-            )
-            continue
-
-        series_df = formatted_series[-1]
-        series_df['DateTime'] = pd.to_datetime({
-            'year': series_df[1], 'month': series_df[2], 'day': series_df[3],
-            'hour': series_df[4], 'minute': series_df[5]
-        })
-
-        if name_var == 'cu':
-            logger.info(f'Start cu metrics for {station_id}')
-            _append_metadata(output, obs_row, i)
-            output['skill'].append(
-                metrics_paired_one_d.skill_vector(series_df, name_var, prop, logger)
-=======
     parallel_config = get_parallel_config(logger)
     max_workers = parallel_config['skill_workers']
+
+    def _append_entry(target_dict, entry):
+        for key in target_dict:
+            target_dict[key].append(entry[key])
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
             executor.submit(
                 _process_station_pair, i, read_station_ctl_file,
-                read_ofs_ctl_file, prop, name_var, logger
->>>>>>> main
+                read_ofs_ctl_file, station_id_to_idx, prop, name_var, logger
             )
             for i in range(data_length)
         ]
         # Iterate in submission order to preserve consistent CSV output
         for future in futures:
             result = future.result()
-            if result is not None:
-                for key in output:
-                    output[key].append(result[key])
-
-            logger.info(f'Start cu dir metrics for {station_id}')
-            _append_metadata(output_dir, obs_row, i)
-            output_dir['skill'].append(
-                metrics_paired_one_d.skill_vector_dir(series_df, name_var, prop, logger)
-            )
-        else:
-            logger.info(f'Start {name_var} metrics for {station_id}')
-            _append_metadata(output, obs_row, i)
-            output['skill'].append(
-                metrics_paired_one_d.skill_scalar(series_df, name_var, station_id, prop, logger)
-            )
-
-        # Write the paired time series file (.int)
-        filename = f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_{prop.whichcast}_{prop.ofsfiletype}_pair.int'
-        int_path = os.path.join(prop.data_skill_1d_pair_path, filename)
-
-        with open(int_path, 'w', encoding='utf-8') as output_2:
-            if name_var == 'cu':
-                output_2.write('DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE SPEED_OB SPEED_MODEL BIAS_SPEED DIR_OB DIR_MODEL BIAS_DIR \n')
-            else:
-                output_2.write('DNUM_JAN1 YEAR MONTH DAY HOUR MINUTE VAL_OB VAL_MODEL BIAS \n')
-
-            for p_value in formatted_series[0]:
-                cleaned_val = str(p_value).replace(',', ' ').replace('[', '').replace(']', '')
-                output_2.write(f'{cleaned_val}\n')
-
-        logger.info(f'{filename} is created successfully')
-
-        # Step 1 & 2: Handle water level extrema independently and pair them
-        if name_var == 'wl':
-            # Detect extrema independently for both series
-            mod_extrema = extract_water_level_extrema(
-                np.asarray(series_df['DateTime']), np.asarray(series_df['OFS']), 4, logger
-            )
-            obs_extrema = extract_water_level_extrema(
-                np.asarray(series_df['DateTime']), np.asarray(series_df['OBS']), 4, logger
-            )
-
-            def _process_extrema(extrema_type, target_dict, log_label):
-                """Pairs independent extrema within a ±3-hour window and computes skill."""
-                m_times = mod_extrema[f'{extrema_type}_times']
-                m_amps = mod_extrema[f'{extrema_type}_amplitudes']
-                o_times = obs_extrema[f'{extrema_type}_times']
-                o_amps = obs_extrema[f'{extrema_type}_amplitudes']
-
-                paired_data = []
-                window = np.timedelta64(3, 'h') # Standard NOS pairing window
-
-                for mt, ma in zip(m_times, m_amps):
-                    # Mask observation extrema within the time window
-                    mask = (o_times >= mt - window) & (o_times <= mt + window)
-                    matches = o_times[mask]
-                    if len(matches) > 0:
-                        # Find the match closest in time
-                        match_idx = np.argmin(np.abs(matches - mt))
-                        ot = matches[match_idx]
-                        oa = o_amps[mask][match_idx]
-
-                        paired_data.append({
-                            'DateTime': mt,
-                            'OFS': ma,
-                            'OBS': oa,
-                            'BIAS': ma - oa,
-                            'TIMING_ERR': (mt - ot) / np.timedelta64(1, 'h')
-                        })
-
-                if paired_data:
-                    df_extrema = pd.DataFrame(paired_data)
-                    logger.info(f'Start {name_var} metrics for {station_id} {log_label}')
-                    _append_metadata(target_dict, obs_row, i)
-                    # Route through specialized extrema skill logic (omitting MDPO/MDNO/WOF)
-                    target_dict['skill'].append(
-                        metrics_paired_one_d.skill_extrema(df_extrema, name_var, station_id, prop, logger)
-                    )
-
-            _process_extrema('high_water', output_hw, 'high water extrema')
-            _process_extrema('low_water', output_lw, 'low water extrema')
+            if result is None:
+                continue
+            _append_entry(output, result['primary'])
+            if 'direction' in result:
+                _append_entry(output_dir, result['direction'])
+            if 'hw' in result:
+                _append_entry(output_hw, result['hw'])
+            if 'lw' in result:
+                _append_entry(output_lw, result['lw'])
 
     # Construct final output payload
     if name_var == 'cu' and len(output_dir['station_id']) > 0:
         return [output, output_dir]
-    elif name_var == 'wl' and len(output_hw['station_id']) > 0:
+    if name_var == 'wl' and len(output_hw['station_id']) > 0:
         return [output, output_hw, output_lw]
-
     return [output]
 
 def name_convent(variable):
