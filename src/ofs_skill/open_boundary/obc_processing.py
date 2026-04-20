@@ -16,6 +16,8 @@ import xarray as xr
 from ofs_skill.model_processing import model_source
 from ofs_skill.obs_retrieval import utils
 
+_ZETA_MISSING_WARNED = False
+
 
 def parameter_validation(prop,logger):
     """
@@ -243,9 +245,30 @@ def transform_to_z(ds,var,x_labels,logger):
         tuple: (z_mask, ref_depth, x_grid) containing the 3D data array,
             the depth axis, and the horizontal distance axis.
     """
+    # Pull bathymetry, sigma layers, and free-surface elevation up front.
+    # FVCOM convention: h positive-down; siglay in [-1, 0] with -1 at bottom,
+    # 0 at surface. siglay may be stored as (siglay,) or (siglay, node).
+    h = np.asarray(ds['h'])
+    siglay_arr = np.asarray(ds['siglay'])
+    n_sig = siglay_arr.shape[0]
+    n_node = len(ds['lon'])
+    n_time = len(ds['time'])
+
+    zeta_name = next(
+        (v for v in ds.data_vars if v in ('zeta', 'elevation')), None)
+    if zeta_name is None:
+        global _ZETA_MISSING_WARNED
+        if not _ZETA_MISSING_WARNED:
+            logger.warning(
+                "No 'zeta'/'elevation' variable in OBC file; "
+                'assuming free surface = 0 for sigma->z transform.')
+            _ZETA_MISSING_WARNED = True
+        zeta_arr = np.zeros((n_time, n_node))
+    else:
+        zeta_arr = np.asarray(ds[zeta_name])
+
     # Set new siglay length from max depth & min dz
-    siglay_len = int(np.ceil(np.nanmax(np.array(ds['h']))/\
-                             np.nanmin(np.array(ds['h'])/len(ds['siglay']))))
+    siglay_len = int(np.ceil(np.nanmax(h) / np.nanmin(h / n_sig)))
     # Need to reduce spatial and temporal resolution for plotting
     # with a time slider!
     max_rows = 300
@@ -253,32 +276,37 @@ def transform_to_z(ds,var,x_labels,logger):
     if siglay_len > max_rows:
         siglay_len = int(siglay_len/(np.ceil(siglay_len/max_rows)))
     time_iterator = 1
-    if len(ds['time']) > 55:
-        time_iterator = int(np.ceil(len(ds['time'])/55))
+    if n_time > 55:
+        time_iterator = int(np.ceil(n_time / 55))
 
-    # Make new empty arrays for the new sigma layer length
-    z_depth_single = np.array(np.full((siglay_len, len(ds['lon'])), np.nan))
-    ref_depth = np.linspace(0,np.nanmax(np.array(ds['h'])),siglay_len,
-                            endpoint=True)
-    ref_index = np.linspace(0,siglay_len-1,siglay_len)
-    siglay_index = np.linspace(0,len(ds['siglay'])-1,len(ds['siglay']))
+    ref_depth = np.linspace(0, np.nanmax(h), siglay_len, endpoint=True)
 
-    # Loop through each time and each column and assign z values
+    # Sigma->z transform (per node j, per time t):
+    #   z_local = siglay[k,j] * (h[j] + zeta[t,j]) + zeta[t,j]
+    # z_local is negative-up (0 at free surface, -(h+zeta) at bottom). We flip
+    # sign to positive-down so it aligns with ref_depth. This preserves
+    # non-uniform sigma stretching (generalized/tanh/s-coord) and tide-driven
+    # surface elevation, unlike the prior layer-index proxy.
+    var_arr = np.asarray(ds[var])
     z_depth_all = []
-    for i in range(0,len(ds['time']),time_iterator):
+    for i in range(0, n_time, time_iterator):
         logger.info('Interpolating depths for %s, time %s of %s', var, str(i),
-                    str(len(ds['time'])))
-        for j in range(len(ds['lon'])):
-            # Find nearest row of each column's max depth
-            col_depth = np.array(ds['h'])[j]
-            depth_row = int(np.argmin(np.abs(ref_depth-col_depth)))
-            # Interpolate variable downwards to the depth_row
-            xint = np.linspace(siglay_index[0],siglay_index[-1],
-                               len(ref_index[0:depth_row+1]))
-            z_depth_single[0:depth_row+1,j] = np.interp(xint,siglay_index,
-                                             np.array(ds[var])[i,:,j])
+                    str(n_time))
+        z_depth_single = np.full((siglay_len, n_node), np.nan)
+        for j in range(n_node):
+            sig_j = siglay_arr[:, j] if siglay_arr.ndim == 2 else siglay_arr
+            total_depth = h[j] + zeta_arr[i, j]
+            depth_pd = -(sig_j * total_depth + zeta_arr[i, j])
+            order = np.argsort(depth_pd)
+            depth_sorted = depth_pd[order]
+            vals_sorted = var_arr[i, :, j][order]
+            interp = np.interp(ref_depth, depth_sorted, vals_sorted,
+                               left=np.nan, right=np.nan)
+            # Mask above free surface and below seafloor
+            interp[ref_depth < -zeta_arr[i, j]] = np.nan
+            interp[ref_depth > total_depth] = np.nan
+            z_depth_single[:, j] = interp
         z_depth_all.append(z_depth_single)
-        z_depth_single = np.array(np.full((siglay_len, len(ds['lon'])), np.nan))
 
     z_depth_all = np.stack(z_depth_all)
 

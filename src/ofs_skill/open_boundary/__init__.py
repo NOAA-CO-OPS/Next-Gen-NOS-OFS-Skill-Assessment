@@ -23,6 +23,5 @@ __all__ = [
     'mask_distance_gaps',
     'transform_to_z',
     'make_x_labels',
-    'plot_roms_obc',
     'plot_fvcom_obc',
 ]
