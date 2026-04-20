@@ -29,10 +29,11 @@ class MockLogger:
 class MockProps:
     """Mock ModelProperties object for testing"""
 
-    def __init__(self, ofs, whichcast, ofsfiletype):
+    def __init__(self, ofs, whichcast, ofsfiletype, forecast_hr='00z'):
         self.ofs = ofs
         self.whichcast = whichcast
         self.ofsfiletype = ofsfiletype
+        self.forecast_hr = forecast_hr
 
 
 @pytest.fixture
@@ -118,11 +119,12 @@ class TestStationsFilesForecast:
         assert all('.stations.forecast.nc' in f for f in files)
 
     def test_forecast_a_stations(self, logger, test_dir_new):
-        """Test forecast_a station files"""
-        prop = MockProps('cbofs', 'forecast_a', 'stations')
+        """Test forecast_a station files (single cycle from forecast_hr)"""
+        prop = MockProps('cbofs', 'forecast_a', 'stations', forecast_hr='00z')
         files = construct_expected_files(prop, test_dir_new, logger)
 
-        assert len(files) == 4
+        # forecast_a uses single cycle from forecast_hr
+        assert len(files) == 1
         assert 'cbofs.t00z.20251215.stations.forecast.nc' in files[0]
 
 
@@ -193,21 +195,21 @@ class TestFieldsFilesForecast:
         assert all('.fields.f' in f for f in files)
 
     def test_cbofs_forecast_a_fields(self, logger, test_dir_new):
-        """Test CBOFS forecast_a fields (48-hour forecast)"""
-        prop = MockProps('cbofs', 'forecast_a', 'fields')
+        """Test CBOFS forecast_a fields (single cycle, 48-hour forecast)"""
+        prop = MockProps('cbofs', 'forecast_a', 'fields', forecast_hr='00z')
         files = construct_expected_files(prop, test_dir_new, logger)
 
-        # CBOFS forecast_a: 4 cycles × 48 hours = 192 files
-        assert len(files) == 192, f'Expected 192 files for forecast_a, got {len(files)}'
+        # CBOFS forecast_a: 1 cycle × 48 hours = 48 files
+        assert len(files) == 48, f'Expected 48 files for forecast_a, got {len(files)}'
         assert 'cbofs.t00z.20251215.fields.f001.nc' in files[0]
 
     def test_gomofs_forecast_a_fields(self, logger, test_dir_new):
-        """Test GOMOFS forecast_a (72-hour forecast)"""
-        prop = MockProps('gomofs', 'forecast_a', 'fields')
+        """Test GOMOFS forecast_a (single cycle, 72-hour forecast)"""
+        prop = MockProps('gomofs', 'forecast_a', 'fields', forecast_hr='00z')
         files = construct_expected_files(prop, test_dir_new, logger)
 
-        # GOMOFS forecast_a: 4 cycles × 72 hours / 3hr timestep = 96 files
-        assert len(files) == 96
+        # GOMOFS forecast_a: 1 cycle × 72 hours / 3hr timestep = 24 files
+        assert len(files) == 24, f'Expected 24 files for forecast_a, got {len(files)}'
 
 
 class TestBackwardsCompatibility:

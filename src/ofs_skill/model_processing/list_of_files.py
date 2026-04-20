@@ -29,6 +29,12 @@ from os import listdir
 from pathlib import Path
 from typing import Any, Optional
 
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
+from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours, get_s3_bucket
 from ofs_skill.obs_retrieval import utils
 
 
@@ -59,7 +65,8 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
     """
     try:
         # Get URL configuration
-        url_params = utils.Utils().read_config_section('urls', logger)
+        _conf = getattr(prop, 'config_file', None)
+        url_params = utils.Utils(_conf).read_config_section('urls', logger)
 
         # Normalize path separators
         local_path = Path(local_path).as_posix()
@@ -83,20 +90,27 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
                 return None
 
         # Select appropriate S3 bucket URL based on OFS
+        url_root = url_params[get_s3_bucket(prop.ofs)]
         if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-            url_root = url_params['nodd_s3_stofs3d']
             # STOFS uses different path structure - no 'netcdf' subdirectory
             # Bucket structure: STOFS-3D-Atl/stofs_3d_atl.YYYYMMDD/filename.nc
             ofs_relative_path = ofs_relative_path.replace('stofs_3d_atl/', 'STOFS-3D-Atl/')
             ofs_relative_path = ofs_relative_path.replace('stofs_3d_pac/', 'STOFS-3D-Pac/')
-        elif prop.ofs == 'stofs_2d_global':
+        elif prop.ofs == 'stofs_2d_glo':
             url_root = url_params['nodd_s3_stofs2d']
+            # STOFS-2D-Global uses different path structure - no 'netcdf' subdirectory
+            # Bucket structure: stofs_2d_glo.YYYYMMDD/<filename>.nc
+            # Note no <ofs> subdirectory in bucket, so we need to remove 'stofs_2d_glo/' from the path
+            ofs_relative_path = ofs_relative_path.replace('stofs_2d_glo/', '')
         else:
             url_root = url_params['nodd_s3']
 
         # Construct full S3 URL
         s3_url = f'{url_root}{ofs_relative_path}'
-
+        # Check if it exists on the S3 bucket
+        is_exist = check_s3_for_file(s3_url, logger)
+        if not is_exist:
+            raise FileNotFoundError(f'S3 file not found: {s3_url}')
         return s3_url
 
     except Exception as e:
@@ -104,7 +118,7 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
         return None
 
 
-def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> list[str]:
+def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str, logger: Logger) -> list[str]:
     """
     Generate a list of dates between start and end dates.
 
@@ -120,12 +134,16 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> lis
     ----------
     start_date : str
         Start date in format 'YYYYMMDDHH'
+        The hours part ("HH") is ignored.
     end_date : str
         End date in format 'YYYYMMDDHH'
+        The hours part ("HH") is ignored.
     ofs : str
         OFS model name (e.g., 'cbofs', 'wcofs', 'stofs_3d_atl')
     whichcast : str
         Forecast type ('nowcast', 'forecast_a', 'forecast_b')
+    logger : Logger
+        Logger instance for logging messages
 
     Returns
     -------
@@ -134,36 +152,85 @@ def dates_range(start_date: str, end_date: str, ofs: str, whichcast: str) -> lis
 
     Examples
     --------
-    >>> dates = dates_range('2024010100', '2024010300', 'cbofs', 'nowcast')
+    >>> dates = dates_range('2024010100', '2024010300', 'cbofs', 'nowcast', logger)
     >>> print(dates)
     ['01/01/24', '01/02/24', '01/03/24']
     """
-    dates = []
+    # Get just the date parts of the input yyyymmddhh strings.
+    start_d = datetime.strptime(start_date, '%Y%m%d%H').date()
+    end_d = datetime.strptime(end_date, '%Y%m%d%H').date()
     # For WCOFS nowcast, we need to look an extra day ahead for nowcast, and an
     # extra day behind for forecast_b
-    if ofs == 'wcofs' or ofs == 'stofs_3d_atl' or ofs == 'stofs_3d_pac':
-        if whichcast == 'forecast_b' and ofs == 'wcofs':
-            offset = 2
-            ddays = -1  # Look behind one day with offset
-        elif whichcast != 'nowcast' and ofs != 'wcofs':
-            offset = 2
-            ddays = -1  # Look behind one day with offset
-        elif whichcast == 'nowcast':
-            offset = 2
-            ddays = 0  # Look ahead one day with offset
-    else:  # No looking behind or ahead
-        offset = 1
-        ddays = 0
 
-    for i in range(
-        int((datetime.strptime(end_date, '%Y%m%d%H')
-             - datetime.strptime(start_date, '%Y%m%d%H')).days) + offset):
-        date = datetime.strptime(start_date, '%Y%m%d%H') + \
-            timedelta(days=(i + ddays))
+    if ofs == 'wcofs':
+        if whichcast == 'nowcast':
+            first_date = start_d
+            last_date = end_d + timedelta(days=1)
+        elif whichcast == 'forecast_b':
+            first_date = start_d - timedelta(days=1)
+            last_date = end_d
+        else:
+            first_date = start_d
+            last_date = end_d
+    # For STOFS-3D, we need to look an extra day ahead for nowcast, and an
+    # extra day behind for forecasts.
+    elif ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+        if whichcast == 'nowcast':
+            first_date = start_d
+            last_date = end_d + timedelta(days=1)
+        else:
+            first_date = start_d - timedelta(days=1)
+            last_date = end_d
+    # For STOFS-2D, we need to look a day ahead for nowcast, but
+    # don't need to look an extra day behind for forecasts.
+    elif ofs in ('stofs_2d_glo'):
+        if whichcast == 'nowcast':
+            first_date = start_d
+            last_date = end_d + timedelta(days=1)
+        else:
+            first_date = start_d
+            last_date = end_d
+
+    else:  # No looking behind or ahead
+        first_date = start_d
+        last_date = end_d
+    # Now construct the list of dates.
+    dates = []
+    date = first_date
+    while date <= last_date:
         dates.append(date.strftime('%m/%d/%y'))
+        date = date + timedelta(days=1)
 
     return dates
 
+def check_s3_for_file(file, logger):
+    '''
+    Check to see if file exists in S3 bucket.
+
+    Parameters
+    ----------
+    file : file/url path to S3 bucket.
+    logger : so you know what is happening as the program runs
+
+    Returns
+    -------
+    bool; True if file exists, False if file does not exist. Easy peasy.
+
+    '''
+    s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    try:
+        s3.head_object(Bucket=file.split('//')[1].split('.')[0],
+                       Key=file.split('//')[1].split('/',1)[1])
+        return True
+    except ClientError as e:
+        # if a ClientError is raised, check the error code...
+        # '404' indicates the object does not exist, so return False
+        if e.response['Error']['Code'] == '404':
+            logger.warning('S3 file not found! Removing it from file list...')
+            return False
+        else:
+            logger.error(f'S3 error {e.response["Error"]["Code"]}: {e}')
+            return False
 
 def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[str]:
     """
@@ -206,7 +273,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     date_str = None
     try:
         # Try STOFS format first: {ofs}.YYYYMMDD
-        if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_global'):
+        if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
             # STOFS directory format: .../netcdf/stofs_3d_atl.20251228
             dir_name = path_parts[-1]
             if '.' in dir_name:
@@ -246,16 +313,13 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
         logger.error(f'Unable to extract date from path: {dir_path}')
         return files
 
-    # Get forecast cycles based on OFS
-    if prop.ofs in ('cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs', 'lmhofs', 'loofs',
-                    'loofs2','lsofs', 'tbofs', 'necofs'):
-        fcstcycles = ['00', '06', '12', '18']
-    elif prop.ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):
-        fcstcycles = ['03', '09', '15', '21']
-    elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
-        fcstcycles = ['12']
-    else:
-        fcstcycles = ['03']
+    fcstlength, fcstcycles = get_fcst_hours(prop.ofs)
+    # Forecast cycles from int to str
+    fcstcycles = [f'{item:02}' for item in fcstcycles]
+
+    # Switch fcstcycles if using forecast_a
+    if prop.whichcast == 'forecast_a':
+        fcstcycles = [prop.forecast_hr[:-1]]
 
     # Determine file type indicator
     if prop.whichcast == 'nowcast':
@@ -263,6 +327,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     elif prop.whichcast in ['forecast_a', 'forecast_b']:
         cast_type = 'forecast'
     else:
+        #TODO: Shouldn't this raise a ValueError?
         cast_type = prop.whichcast
 
     # Construct file names based on format (new format after 9/1/2024)
@@ -297,25 +362,16 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     else:
         d_t = 3
 
-    # Get forecast length
-    if prop.ofs in ('cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-                    'tbofs', 'stofs_3d_pac'):
-        fcstlength = 48
-    elif prop.ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
-        fcstlength = 72
-    elif prop.ofs in ('stofs_3d_atl'):
-        fcstlength = 96
-    else:
-        fcstlength = 120
 
     for date_obj in date_objs:
         day_date_str = date_obj.strftime('%Y%m%d')
 
         if prop.ofsfiletype == 'stations':
             for cycle in fcstcycles:
-
                 if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
                     filename = f'{prop.ofs}.t{cycle}z.points.cwl.temp.salt.vel.nc'
+                elif prop.ofs in ('stofs_2d_glo'):
+                    filename = f'{prop.ofs}.t{cycle}z.points.cwl.nc'
                 else:
                     if date_obj >= datechange:
                         # New format: cbofs.t00z.20251215.stations.nowcast.nc
@@ -355,6 +411,11 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
                             filename = f'{prop.ofs}.t{cycle}z.fields.{var_name}_{hr_range}.nc'
                             filepath = f'{dir_path}//{filename}'
                             files.append(filepath)
+
+            elif prop.ofs in ('stofs_2d_glo'):
+                for cycle in fcstcycles:
+                    # For now we're just doing the combined water level ("cwl").
+                    files.append(f'{dir_path}//{prop.ofs}.t{cycle}z.fields.cwl.nc')
 
             else:
                 # Standard OFS file naming
@@ -434,8 +495,9 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
     ['../cbofs/netcdf/2025/01/01', '../cbofs/netcdf/2025/01/02']
     """
     # Check if S3 fallback is enabled
+    _conf = getattr(prop, 'config_file', None)
     try:
-        conf_settings = utils.Utils().read_config_section('settings', logger)
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False
@@ -447,10 +509,10 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
     dir_list = []
     if prop.whichcast != 'forecast_a':
         dates = dates_range(prop.startdate, prop.enddate, prop.ofs,
-                            prop.whichcast)
+                            prop.whichcast, logger)
     else:
         dates = dates_range(prop.startdate, prop.startdate, prop.ofs,
-                            prop.whichcast)
+                            prop.whichcast, logger)
     dates_len = len(dates)
 
     # After 12/31/24, directory structure changes! Now we need to sort
@@ -463,8 +525,7 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
         month = datetime.strptime(dates[date_index], '%m/%d/%y').month
         day = datetime.strptime(dates[date_index], '%m/%d/%y').day
         # Add stofs directory structure
-        if prop.ofs == 'stofs_3d_atl' or prop.ofs == 'stofs_2d_global' \
-            or prop.ofs == 'stofs_3d_pac':
+        if prop.ofs in('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
             model_dir = Path(f'{prop.model_path}/{prop.ofs}.{year}{month:02}{day:02}').as_posix()
         else:
             # Do old directory structure
@@ -485,14 +546,14 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
 
             # Always try backup directory first before S3 fallback
             logger.info('Trying backup dir...')
-            dir_params = utils.Utils().read_config_section(
+            dir_params = utils.Utils(_conf).read_config_section(
                 'directories', logger)
             backup_model_path = os.path.join(
                 dir_params['model_historical_dir_backup'],
                 prop.ofs, dir_params['netcdf_dir'])
 
             # Construct backup directory path based on OFS type and date
-            if prop.ofs in ('stofs_3d_atl', 'stofs_2d_global', 'stofs_3d_pac'):
+            if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):
                 day = datetime.strptime(dates[date_index], '%m/%d/%y').day
                 backup_model_dir = f'{backup_model_path}/{prop.ofs}.{year}{month:02}{day:02}'
             elif datetime.strptime(dates[date_index], '%m/%d/%y') <= datethreshold:
@@ -511,13 +572,13 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
                 # Backup also not found, fall back to S3
                 logger.info('Backup dir not found either. S3 fallback enabled - will use expected directory path for URL construction')
             else:
-                # No S3 fallback and backup not found - error out
-                logger.error(
+                # No S3 fallback and backup not found
+                logger.warning(
                     'Model file path ' + model_dir + ' not found, and backup '
-                    + backup_model_dir + ' also not found. Abort!')
-                raise SystemExit(-1)
+                    + backup_model_dir + ' also not found.')
+                model_dir = None
 
-        if model_dir not in dir_list:
+        if model_dir and model_dir not in dir_list:
             dir_list.append(model_dir)
             if os.path.exists(model_dir):
                 logger.info('Found model output dir: %s', model_dir)
@@ -573,8 +634,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
     48
     """
     # Check if S3 fallback is enabled
+    _conf = getattr(prop, 'config_file', None)
     try:
-        conf_settings = utils.Utils().read_config_section('settings', logger)
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False
@@ -583,8 +645,8 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
     if prop.ofs == 'loofs2' and prop.whichcast == 'hindcast':
         use_s3_fallback = False
 
+    list_files = []
     try:
-        list_files = []
         dir_list_len = len(dir_list)
         for i_index in range(0, dir_list_len):
 
@@ -606,104 +668,140 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 # Old file format:
                 # nos.cbofs.fields.n001.20240901.t00z.nc
 
-                all_files = listdir(dir_list[i_index])
+                try:
+                    all_files = listdir(dir_list[i_index])
+                except OSError as e:
+                    logger.error('Cannot read directory %s: %s. Skipping.', dir_list[i_index], e)
+                    if use_s3_fallback:
+                        files = construct_expected_files(prop, dir_list[i_index], logger)
+                        list_files.append(files)
+                    continue
                 files = []
                 hr_cyc_day = []
+                #TODO: The above three definitions could be moved to before the whichcast if blocks to avoid repetition.
                 if prop.ofs == 'wcofs':
                     ndays = 1
                 else:
                     ndays = 0
+                skipped_files = []
                 for af_name in all_files:
-                    spltstr = af_name.split('.')
-                    # First do old file names
-                    if 'nos.' in af_name:
-                        if 'fields.n' in af_name and prop.ofsfiletype == 'fields':
-                            checkstr = spltstr[-4][-3:] + spltstr[-2][1:3] + \
-                                spltstr[-3][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
-                                     datetime.strptime
-                                     (prop.enddate[:-2], '%Y%m%d') +
-                                     timedelta(days=ndays))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif ('stations.n' in af_name and
-                              prop.ofsfiletype == 'stations'):
-                            checkstr = '999' + spltstr[-2][1:3] + spltstr[-3][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
-                                     datetime.strptime
-                                     (prop.enddate[:-2], '%Y%m%d') +
-                                     timedelta(days=ndays))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
+                    try:
+                        spltstr = af_name.split('.')
+                        # First do old file names
+                        if 'nos.' in af_name:
+                            if 'fields.n' in af_name and prop.ofsfiletype == 'fields':
+                                checkstr = spltstr[-4][-3:] + spltstr[-2][1:3] + \
+                                    spltstr[-3][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
+                                         datetime.strptime
+                                         (prop.startdate[:-2], '%Y%m%d'))
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
+                                         datetime.strptime
+                                         (prop.enddate[:-2], '%Y%m%d') +
+                                         timedelta(days=ndays))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
+                                    files.append(af_name)
+                            elif ('stations.n' in af_name and
+                                  prop.ofsfiletype == 'stations'):
+                                checkstr = '999' + spltstr[-2][1:3] + spltstr[-3][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
+                                         datetime.strptime
+                                         (prop.startdate[:-2], '%Y%m%d'))
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
+                                         datetime.strptime
+                                         (prop.enddate[:-2], '%Y%m%d') +
+                                         timedelta(days=ndays))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
+                                    files.append(af_name)
 
-                    # Now do new file names
-                    elif 'nos.' not in af_name:
-                        if 'fields.n' in af_name and prop.ofsfiletype == 'fields':
-                            checkstr = spltstr[-2][-3:] + spltstr[-5][1:3] + \
-                                spltstr[-4][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
-                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
-                                     + timedelta(days=ndays))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif ('stations.n' in af_name and
-                              prop.ofsfiletype == 'stations'):
-                            checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
-                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
-                                     + timedelta(days=ndays))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):  # add stofs filename format
-                            if 'n0' in af_name and 'fields' in af_name:  # skiping filed2d post process
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
-                                if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
-                                    and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                        # Now do new file names
+                        elif 'nos.' not in af_name:
+                            if 'fields.n' in af_name and prop.ofsfiletype == 'fields':
+                                checkstr = spltstr[-2][-3:] + spltstr[-5][1:3] + \
+                                    spltstr[-4][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                         datetime.strptime
+                                         (prop.startdate[:-2], '%Y%m%d'))
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                         datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                         + timedelta(days=ndays))
+                                    and checkstr[0:3] != '000'
                                     ):
+                                    hr_cyc_day.append(checkstr)
                                     files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
-                            elif prop.ofsfiletype == 'stations':
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
-                                if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
-                                    and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                            elif ('stations.n' in af_name and
+                                  prop.ofsfiletype == 'stations'):
+                                checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                         datetime.strptime
+                                         (prop.startdate[:-2], '%Y%m%d'))
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                         datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                         + timedelta(days=ndays))
+                                    and checkstr[0:3] != '000'
                                     ):
+                                    hr_cyc_day.append(checkstr)
                                     files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
+                            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):  # add stofs filename format
+                                if 'n0' in af_name and 'fields' in af_name:  # skiping filed2d post process
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
+                                    if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
+                                        and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                                        ):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+                                elif prop.ofsfiletype == 'stations':
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
+                                    if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
+                                        and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                                        ):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+                            elif prop.ofs in ('stofs_2d_glo'):
+                                # STOFS-2D-Global files each contain the full timeseries,
+                                # so we filter only on:
+                                # (1) station vs fields;
+                                # (2) netcdf format.
+                                # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
+                                # For sorting, we need just the model cycle (only one file per time series;
+                                # only one day per directory).
+                                # But to work with the sorting method used for other OFS,
+                                # we have to construct a string that looks like the other checkstrs.
+                                if af_name.endswith('.nc'):
+                                    if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
+                                    elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
+                    except (IndexError, ValueError, TypeError) as e:
+                        skipped_files.append(af_name)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
+                if skipped_files:
+                    logger.warning('Skipped %d unparseable file(s) in %s: %s',
+                                   len(skipped_files), dir_list[i_index], skipped_files[:5])
 
                 files = [dir_list[i_index] + '//' + i for i in files]
 
+                # TODO: This could be moved to after the nowcast/forecast_a/forecast_b if-blocks to avoid repeating.
                 # Only sort if we have files
                 if len(files) > 0:
                     tupfiles = tuple(zip(hr_cyc_day, files))
@@ -720,27 +818,36 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     files = construct_expected_files(prop, dir_list[i_index], logger)
 
             elif prop.whichcast == 'hindcast':
-                all_files = listdir(dir_list[i_index])
+                try:
+                    all_files = listdir(dir_list[i_index])
+                except OSError as e:
+                    logger.error('Cannot read directory %s: %s. Skipping.', dir_list[i_index], e)
+                    if use_s3_fallback:
+                        files = construct_expected_files(prop, dir_list[i_index], logger)
+                        list_files.append(files)
+                    continue
                 files = []
                 hr_cyc_day = []
                 ndays = 0
+                skipped_files = []
                 for af_name in all_files:
-                    spltstr = af_name.split('.')
-                    if ('stations.h' in af_name and
-                          prop.ofsfiletype == 'stations'):
-                        checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
-                        if (checkstr not in hr_cyc_day
-                            and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
-                                 datetime.strptime
-                                 (prop.startdate[:-2], '%Y%m%d'))
-                            and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
-                                 datetime.strptime(prop.enddate[:-2], '%Y%m%d')
-                                 + timedelta(days=ndays))
-                            and checkstr[0:3] != '000'
-                            ):
-                            hr_cyc_day.append(checkstr)
-                            files.append(af_name)
-                    elif ('out2d' in af_name and prop.ofsfiletype == 'fields'):
+                    try:
+                        spltstr = af_name.split('.')
+                        if ('stations.h' in af_name and
+                              prop.ofsfiletype == 'stations'):
+                            checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
+                            if (checkstr not in hr_cyc_day
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                     datetime.strptime
+                                     (prop.startdate[:-2], '%Y%m%d'))
+                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                     datetime.strptime(prop.enddate[:-2], '%Y%m%d')
+                                     + timedelta(days=ndays))
+                                and checkstr[0:3] != '000'
+                                ):
+                                hr_cyc_day.append(checkstr)
+                                files.append(af_name)
+                        elif ('out2d' in af_name and prop.ofsfiletype == 'fields'):
                             checkstr = '999' + spltstr[-5][1:3] + \
                                 spltstr[-4][-2:]
                             if (checkstr not in hr_cyc_day
@@ -754,6 +861,14 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                 ):
                                 hr_cyc_day.append(checkstr)
                                 files.append(af_name)
+                    except (IndexError, ValueError, TypeError) as e:
+                        skipped_files.append(af_name)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
+                if skipped_files:
+                    logger.warning('Skipped %d unparseable file(s) in %s: %s',
+                                   len(skipped_files), dir_list[i_index], skipped_files[:5])
                 files = [dir_list[i_index] + '//' + i for i in files]
 
                 # Only sort if we have files
@@ -776,90 +891,124 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 # cbofs.t00z.20240901.fields.f001.nc
                 # Old file format:
                 # nos.cbofs.fields.f001.20240901.t00z.nc
-
-                all_files = listdir(dir_list[i_index])
+                a_start = prop.startdate
+                try:
+                    all_files = listdir(dir_list[i_index])
+                except OSError as e:
+                    logger.error('Cannot read directory %s: %s. Skipping.', dir_list[i_index], e)
+                    if use_s3_fallback:
+                        files = construct_expected_files(prop, dir_list[i_index], logger)
+                        list_files.append(files)
+                    continue
                 files = []
                 hr_cyc_day = []
-                cycle_z = prop.forecast_hr[:-2] + 'z'
+                cycle_z = a_start[-2:] + 'z'
+                skipped_files = []
                 for af_name in all_files:
-                    spltstr = af_name.split('.')
-                    # First do old file names
-                    if 'nos.' in af_name:
-                        if ('fields.f' in af_name and
-                            prop.ofsfiletype == 'fields' and
-                            cycle_z in af_name):
-                            checkstr = spltstr[-4][-3:] + spltstr[-2][1:3] + \
-                                spltstr[-3][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif ('stations.f' in af_name and
-                              prop.ofsfiletype == 'stations' and
-                              cycle_z in af_name):
-                            checkstr = '999' + spltstr[-2][1:3] + spltstr[-3][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-
-                    # Now do new file names
-                    elif 'nos.' not in af_name:
-                        if ('fields.f' in af_name and
-                            prop.ofsfiletype == 'fields' and
-                            cycle_z in af_name):
-                            checkstr = spltstr[-2][-3:] + spltstr[-5][1:3] + \
-                                spltstr[-4][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif ('stations.f' in af_name and
-                              prop.ofsfiletype == 'stations' and
-                              cycle_z in af_name):
-                            checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d'))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):   # add stofs filename format
-                            if 'f0' in af_name and 'fields' in af_name:  # skiping filed2d post process
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
-
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                    try:
+                        spltstr = af_name.split('.')
+                        # First do old file names
+                        if 'nos.' in af_name:
+                            if ('fields.f' in af_name and
+                                prop.ofsfiletype == 'fields' and
+                                cycle_z in af_name):
+                                checkstr = spltstr[-4][-3:] + spltstr[-2][1:3] + \
+                                    spltstr[-3][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
+                                         datetime.strptime
+                                         (a_start[:8], '%Y%m%d'))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
                                     files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
-
-                            elif prop.ofsfiletype == 'stations':
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
-
-                                if (int(checkstr2) - 1 >= int(prop.startdate[-2:])):
+                            elif ('stations.f' in af_name and
+                                  prop.ofsfiletype == 'stations' and
+                                  cycle_z in af_name):
+                                checkstr = '999' + spltstr[-2][1:3] + spltstr[-3][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-3], '%Y%m%d') ==
+                                         datetime.strptime
+                                         (a_start[:8], '%Y%m%d'))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
                                     files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
+
+                        # Now do new file names
+                        elif 'nos.' not in af_name:
+                            if ('fields.f' in af_name and
+                                prop.ofsfiletype == 'fields' and
+                                cycle_z in af_name):
+                                checkstr = spltstr[-2][-3:] + spltstr[-5][1:3] + \
+                                    spltstr[-4][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
+                                         datetime.strptime
+                                         (a_start[:8], '%Y%m%d'))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
+                                    files.append(af_name)
+                            elif ('stations.f' in af_name and
+                                  prop.ofsfiletype == 'stations' and
+                                  cycle_z in af_name):
+                                checkstr = '999' + spltstr[-5][1:3] + spltstr[-4][-2:]
+                                if (checkstr not in hr_cyc_day
+                                    and (datetime.strptime(spltstr[-4], '%Y%m%d') ==
+                                         datetime.strptime
+                                         (a_start[:8], '%Y%m%d'))
+                                    and checkstr[0:3] != '000'
+                                    ):
+                                    hr_cyc_day.append(checkstr)
+                                    files.append(af_name)
+                            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):   # add stofs filename format
+                                if 'f0' in af_name and 'fields' in af_name:  # skiping filed2d post process
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
+
+                                    if (int(checkstr2) - 1 >= int(a_start[-2:])):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+
+                                elif prop.ofsfiletype == 'stations':
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
+
+                                    if (int(checkstr2) - 1 >= int(a_start[-2:])):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+                            elif prop.ofs in ('stofs_2d_glo'):
+                                # STOFS-2D-Global files each contain the full timeseries,
+                                # so we filter on:
+                                # (1) station vs fields;
+                                # (2) netcdf format;
+                                # (3) model cycle (e.g., t00z, t12z).
+                                # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
+                                # The sorting variable is unnecessary in this case as we only have one model cycle,
+                                # only one file per time series, and only one day per directory. But
+                                # we need to assign it anyway.
+                                if af_name.endswith('.nc') and (cycle_z in af_name):
+                                    if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('0000000')
+                                    elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('0000000')
+                    except (IndexError, ValueError, TypeError) as e:
+                        skipped_files.append(af_name)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
+                if skipped_files:
+                    logger.warning('Skipped %d unparseable file(s) in %s: %s',
+                                   len(skipped_files), dir_list[i_index], skipped_files[:5])
 
                 files = [dir_list[i_index] + '//' + i for i in files]
 
@@ -884,20 +1033,52 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                 # Old file format:
                 # nos.cbofs.fields.f001.20240901.t00z.nc
 
-                all_files = listdir(dir_list[i_index])
+                try:
+                    all_files = listdir(dir_list[i_index])
+                except OSError as e:
+                    logger.error('Cannot read directory %s: %s. Skipping.', dir_list[i_index], e)
+                    if use_s3_fallback:
+                        files = construct_expected_files(prop, dir_list[i_index], logger)
+                        list_files.append(files)
+                    continue
                 files = []
                 hr_cyc_day = []
                 if prop.ofs == 'wcofs':
                     ndays = 1
                 else:
                     ndays = 0
+                skipped_files = []
                 for af_name in all_files:
-                    spltstr = af_name.split('.')
-                    # Old file names
-                    if 'nos.' in af_name:
-                        if 'fields.f' in af_name and prop.ofsfiletype == 'fields':
-                            if 'f0' in af_name:
-                                checkstr = (spltstr[-4][-3:] + spltstr[-2][1:3]
+                    try:
+                        spltstr = af_name.split('.')
+                        # Old file names
+                        if 'nos.' in af_name:
+                            if 'fields.f' in af_name and prop.ofsfiletype == 'fields':
+                                if 'f0' in af_name:
+                                    checkstr = (spltstr[-4][-3:] + spltstr[-2][1:3]
+                                                + spltstr[-3][-2:])
+                                    if (checkstr not in hr_cyc_day
+                                        and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
+                                             datetime.strptime
+                                             (prop.startdate[:-2], '%Y%m%d') -
+                                             timedelta(days=ndays))
+                                        and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
+                                             datetime.strptime
+                                             (prop.enddate[:-2], '%Y%m%d'))
+                                        and checkstr[0:3] != '000'
+                                        ):
+                                        if (prop.ofs == 'wcofs'
+                                            and int(checkstr[0:3]) >= 1
+                                            and int(checkstr[0:3]) < 25):
+                                            hr_cyc_day.append(checkstr)
+                                            files.append(af_name)
+                                        elif (int(checkstr[0:3]) >= 1
+                                              and int(checkstr[0:3]) < 7):
+                                            hr_cyc_day.append(checkstr)
+                                            files.append(af_name)
+                            elif ('stations.f' in af_name and
+                                  prop.ofsfiletype == 'stations'):
+                                checkstr = ('999' + spltstr[-2][1:3]
                                             + spltstr[-3][-2:])
                                 if (checkstr not in hr_cyc_day
                                     and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
@@ -907,37 +1088,37 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                     and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
                                          datetime.strptime
                                          (prop.enddate[:-2], '%Y%m%d'))
-                                    and checkstr[0:3] != '000'
                                     ):
-                                    if (prop.ofs == 'wcofs'
-                                        and int(checkstr[0:3]) >= 1
-                                        and int(checkstr[0:3]) < 25):
-                                        hr_cyc_day.append(checkstr)
-                                        files.append(af_name)
-                                    elif (int(checkstr[0:3]) >= 1
-                                          and int(checkstr[0:3]) < 7):
-                                        hr_cyc_day.append(checkstr)
-                                        files.append(af_name)
-                        elif ('stations.f' in af_name and
-                              prop.ofsfiletype == 'stations'):
-                            checkstr = ('999' + spltstr[-2][1:3]
-                                        + spltstr[-3][-2:])
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d') -
-                                     timedelta(days=ndays))
-                                and (datetime.strptime(spltstr[-3], '%Y%m%d') <=
-                                     datetime.strptime
-                                     (prop.enddate[:-2], '%Y%m%d'))
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                    # New file names
-                    elif 'nos.' not in af_name:
-                        if 'fields.f' in af_name and prop.ofsfiletype == 'fields':
-                            if 'f0' in af_name:
-                                checkstr = (spltstr[-2][-3:] + spltstr[-5][1:3]
+                                    hr_cyc_day.append(checkstr)
+                                    files.append(af_name)
+                        # New file names
+                        elif 'nos.' not in af_name:
+                            if 'fields.f' in af_name and prop.ofsfiletype == 'fields':
+                                if 'f0' in af_name:
+                                    checkstr = (spltstr[-2][-3:] + spltstr[-5][1:3]
+                                                + spltstr[-4][-2:])
+                                    if (checkstr not in hr_cyc_day
+                                        and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
+                                             datetime.strptime
+                                             (prop.startdate[:-2], '%Y%m%d') -
+                                             timedelta(days=ndays))
+                                        and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
+                                             datetime.strptime
+                                             (prop.enddate[:-2], '%Y%m%d'))
+                                        and checkstr[0:3] != '000'
+                                        ):
+                                        if (prop.ofs == 'wcofs'
+                                            and int(checkstr[0:3]) >= 1
+                                            and int(checkstr[0:3]) < 25):
+                                            hr_cyc_day.append(checkstr)
+                                            files.append(af_name)
+                                        elif (int(checkstr[0:3]) >= 1
+                                              and int(checkstr[0:3]) < 7):
+                                            hr_cyc_day.append(checkstr)
+                                            files.append(af_name)
+                            elif ('stations.f' in af_name and
+                                  prop.ofsfiletype == 'stations'):
+                                checkstr = ('999' + spltstr[-5][1:3]
                                             + spltstr[-4][-2:])
                                 if (checkstr not in hr_cyc_day
                                     and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
@@ -949,56 +1130,58 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                                          (prop.enddate[:-2], '%Y%m%d'))
                                     and checkstr[0:3] != '000'
                                     ):
-                                    if (prop.ofs == 'wcofs'
-                                        and int(checkstr[0:3]) >= 1
-                                        and int(checkstr[0:3]) < 25):
-                                        hr_cyc_day.append(checkstr)
-                                        files.append(af_name)
-                                    elif (int(checkstr[0:3]) >= 1
-                                          and int(checkstr[0:3]) < 7):
-                                        hr_cyc_day.append(checkstr)
-                                        files.append(af_name)
-                        elif ('stations.f' in af_name and
-                              prop.ofsfiletype == 'stations'):
-                            checkstr = ('999' + spltstr[-5][1:3]
-                                        + spltstr[-4][-2:])
-                            if (checkstr not in hr_cyc_day
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') >=
-                                     datetime.strptime
-                                     (prop.startdate[:-2], '%Y%m%d') -
-                                     timedelta(days=ndays))
-                                and (datetime.strptime(spltstr[-4], '%Y%m%d') <=
-                                     datetime.strptime
-                                     (prop.enddate[:-2], '%Y%m%d'))
-                                and checkstr[0:3] != '000'
-                                ):
-                                hr_cyc_day.append(checkstr)
-                                files.append(af_name)
-                        elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):    # add stofs filename format
-                            if 'f0' in af_name and 'fields' in af_name:  # skiping filed2d post process:
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
-
-                                if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
-                                    and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
-                                    ):
+                                    hr_cyc_day.append(checkstr)
                                     files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
-                            elif prop.ofsfiletype == 'stations':
-                                # Split the string based on underscores and periods
-                                spltstr = af_name.split('_')
-                                # Extract the values
-                                checkstr1 = spltstr[-2][-2:]
-                                checkstr2 = spltstr[-1].split('.')[0][1:3]
+                            elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):    # add stofs filename format
+                                if 'f0' in af_name and 'fields' in af_name:  # skiping filed2d post process:
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
 
-                                if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
-                                    and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
-                                    ):
-                                    files.append(af_name)
-                                    hr_cyc_day.append(checkstr1)
+                                    if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
+                                        and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                                        ):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+                                elif prop.ofsfiletype == 'stations':
+                                    # Split the string based on underscores and periods
+                                    spltstr = af_name.split('_')
+                                    # Extract the values
+                                    checkstr1 = spltstr[-2][-2:]
+                                    checkstr2 = spltstr[-1].split('.')[0][1:3]
+
+                                    if ((int(checkstr2) - 1 >= int(prop.startdate[-2:]))
+                                        and (int(checkstr1) - 1 <= int(prop.enddate[-2:]))
+                                        ):
+                                        files.append(af_name)
+                                        hr_cyc_day.append(checkstr1)
+                            elif prop.ofs in ['stofs_2d_glo']:
+                                # STOFS-2D-Global files each contain the full timeseries,
+                                # so we filter only on:
+                                # (1) station vs fields;
+                                # (2) netcdf format.
+                                # Example names: stofs_2d_glo.t00z.fields.cwl.nc, stofs_2d_glo.t00z.points.cwl.nc
+                                # For sorting, we need just the model cycle (only one file per time series;
+                                # only one day per directory).
+                                # But to work with the sorting method used for other OFS,
+                                # we have to construct a string that looks like the other checkstrs.
+                                if af_name.endswith('.nc'):
+                                    if (prop.ofsfiletype == 'fields') and ('fields' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
+                                    elif (prop.ofsfiletype == 'stations') and ('points' in af_name):
+                                        files.append(af_name)
+                                        hr_cyc_day.append('000' + af_name.split('.')[1][1:3] + '00')
+                    except (IndexError, ValueError, TypeError) as e:
+                        skipped_files.append(af_name)
+                        logger.debug(
+                            'Skipping unparseable file in %s: %s (%s)',
+                            dir_list[i_index], af_name, e)
+                if skipped_files:
+                    logger.warning('Skipped %d unparseable file(s) in %s: %s',
+                                   len(skipped_files), dir_list[i_index], skipped_files[:5])
 
                 files = [dir_list[i_index] + '//' + i for i in files]
 
@@ -1020,14 +1203,21 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
             # Append files to master
             list_files.append(files)
 
-        list_files = sum(list_files, [])
-
+    except (SystemExit, KeyboardInterrupt):
+        raise
     except Exception as e:
-        logger.error('Problem with list_of_files, check model directory')
-        logger.error('Exception message: %s', e)
+        logger.error(
+            'Unexpected error in list_of_files while processing directories. '
+            'ofs=%s, whichcast=%s, filetype=%s, dirs_searched=%d, '
+            'partial_results=%d. Exception: %s',
+            prop.ofs, prop.whichcast, prop.ofsfiletype,
+            len(dir_list),
+            len(list_files) if isinstance(list_files, list) else 0,
+            e,
+            exc_info=True
+        )
 
-    # Ensure list_files is properly flattened (handle any edge cases)
-    # This must happen OUTSIDE try/except so it runs even if there was an exception
+    # Flatten list_files (each entry is a list from one directory)
     flattened = []
     for item in list_files:
         if isinstance(item, list):
@@ -1036,9 +1226,18 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
             flattened.append(item)
     list_files = flattened
 
-    if list_files == []:
-        logger.error('Problem in list_of_files.py; no files found! Aborting program')
-        raise SystemExit()
+    if not list_files:
+        logger.error(
+            'No model files found after scanning all directories. '
+            'ofs=%s, whichcast=%s, filetype=%s, '
+            'directories_searched=%s, s3_fallback=%s, '
+            'startdate=%s, enddate=%s',
+            prop.ofs, prop.whichcast, prop.ofsfiletype,
+            dir_list, use_s3_fallback,
+            getattr(prop, 'startdate', 'N/A'),
+            getattr(prop, 'enddate', 'N/A')
+        )
+        raise SystemExit(1)
 
     # Now check individual files and use S3 fallback if enabled
     if use_s3_fallback:
@@ -1060,12 +1259,12 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     missing_count += 1
                 else:
                     logger.error(f'Could not construct S3 URL for: {file_path}')
-                    final_list.append(file_path)  # Keep original, will fail downstream
 
         if missing_count > 0:
             logger.info(f'Using S3 URLs for {missing_count} missing local files')
         else:
-            logger.info('All model files found locally')
+            logger.info('All model files found locally, or are unavailable '
+                        'on the S3 bucket!')
 
         return final_list
     else:

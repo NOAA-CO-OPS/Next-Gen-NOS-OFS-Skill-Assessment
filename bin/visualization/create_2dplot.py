@@ -30,6 +30,7 @@ Arguments:
                         '20230808-05:05:05'
   -ws whichcast, --Whichcast
                        'Nowcast', 'Forecast_A', 'Forecast_B'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Author Name:  FC       Creation Date:  03/19/2024
 
@@ -76,7 +77,8 @@ def validate_and_initialize_parameters(prop):
         logger (logging.Logger): Initialized logger.
     """
     # Setup logger
-    config_file = utils.Utils().get_config_file()
+    _conf = getattr(prop, 'config_file', None)
+    config_file = utils.Utils(_conf).get_config_file()
     log_config_file = (Path(__file__).parent.parent.parent / 'conf' / 'logging.conf').resolve()
 
     if not os.path.isfile(log_config_file):
@@ -91,7 +93,12 @@ def validate_and_initialize_parameters(prop):
     logger.info('--- Starting Visualization Process ---')
 
     # Load directory parameters
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+
+    # Model source/OFS validation
+    if prop.model_source.lower() == 'adcirc':
+        logger.error('ADCIRC is not currently supported for 2D visualizations.')
+        raise NotImplementedError('ADCIRC is not currently supported for 2D visualizations.')
 
     # Date validation
     try:
@@ -126,12 +133,15 @@ def validate_and_initialize_parameters(prop):
     prop.whichcasts = prop.whichcasts.replace(']', '')
     prop.whichcasts = prop.whichcasts.split(',')
     for whichcast in prop.whichcasts:
-        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b'}:
-            logger.error("Invalid whichcast value: '%s'. Abort!",prop.whichcasts)
+        if whichcast not in {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}:
+            logger.error("Invalid whichcast value: '%s'. Abort!", whichcast)
             sys.exit(-1)
 
-    if prop.whichcasts == 'forecast_a' and prop.forecast_hr is None:
-        logger.error('Forecast_Hr is required if Whichcast is forecast_a. Abort!')
+    if 'forecast_a' in prop.whichcasts and prop.forecast_hr is None:
+        logger.error(
+            'Forecast_Hr (e.g., "now", "06z", "12z") is required '
+            'if Whichcast is forecast_a. Abort!'
+        )
         sys.exit(-1)
 
     # Create necessary directories
@@ -395,6 +405,8 @@ if __name__ == '__main__':
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument('-ws', '--whichcasts', required=True,
         help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
+    parser.add_argument('-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -407,6 +419,7 @@ if __name__ == '__main__':
     prop1.whichcasts = args.whichcasts.lower()
     prop1.model_source = get_model_source(args.ofs)
     prop1.ofsfiletype='fields' #hardcoding - 2d always uses fields
+    prop1.config_file = args.config
 
     ''' Set up paths & assign to prop1, do date validation '''
     prop1, logger = validate_and_initialize_parameters(prop1)

@@ -8,13 +8,61 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 import ofs_skill.visualization.plotting_functions as plotting_functions
+
+
+def combine_obs_across_casts(now_fores_paired, prop):
+    """Combine observations from multiple casts, dedup, and filter by date range."""
+    obs_df = None
+    for i in range(len(now_fores_paired)):
+        obs_df = pd.concat([obs_df, now_fores_paired[i]], ignore_index=True)
+        obs_df = obs_df.drop_duplicates(subset=['DateTime'], ignore_index=True)
+        if 'nowcast' in prop.whichcasts and 'forecast_a' in prop.whichcasts:
+            pass
+        else:
+            try:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y%m%d-%H:%M:%S')
+            except ValueError:
+                start_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                end_dt = datetime.strptime(prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ')
+            obs_df = obs_df.loc[((obs_df['DateTime'] >= start_dt) & (obs_df['DateTime'] <= end_dt))]
+            now_fores_paired[i] = now_fores_paired[i].loc[((
+                now_fores_paired[i].DateTime >= start_dt) & (now_fores_paired[i].DateTime <= end_dt))]
+    return obs_df, now_fores_paired
+
+
+def add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=1):
+    """Add nowcast-forecast transition line to matplotlib axes."""
+    max_datetime = now_fores_paired[0].DateTime.max().replace(tzinfo=UTC)
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = now_fores_paired[i].DateTime.max().replace(tzinfo=UTC)
+    if max_datetime > datetime.now(UTC) and 'nowcast' in prop.whichcasts:
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        if nrows == 1:
+            axes_list = [axs]
+        else:
+            axes_list = [axs[i] for i in range(nrows)]
+        for ax in axes_list:
+            ax.axvline(x=dt_n, color='r', linestyle='--', lw=1)
+            ax.annotate('Nowcast-forecast transition',
+                xy=(dt_n, ax.get_ylim()[1]),
+                xytext=(85, 0),
+                textcoords='offset points',
+                ha='right',
+                va='bottom',
+                fontsize=10,
+                color='r')
 
 
 def get_title_static(prop, node, station_id, name_var, logger):
@@ -76,6 +124,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         ncolors, 2.5, 0.9, 0.65,
     )
     image_type = 'png'
+    dpi = 100
 
     # Get target error range
     if name_var != 'ice_conc':
@@ -99,15 +148,18 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         prop, node, station_id, name_var, logger,
     )
 
+    # Combine obs from different casts into one main obs array
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
+
     # --- Do plots, huzzah --------------------------------------------
-    fig, axs = plt.subplots(2, 1)
-    fig.set_figheight(8)
+    fig, axs = plt.subplots(1, 1)
+    fig.set_figheight(5)
     fig.set_figwidth(12)
     fig.suptitle(figtitle, fontsize=16)
     # -----------------------------------------------------------------
-    axs[0].plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS),
+    axs.plot(
+        list(obs_df.DateTime),
+        list(obs_df.OBS),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
@@ -116,80 +168,33 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         # Series names
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
-            sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance,\n' + prop.forecast_hr[:-1] +\
                 'z cycle'
-            sdboxName = 'Forecast_a - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
-            sdboxName = 'Nowcast - Obs.'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
-            sdboxName = 'unknown'
 
-        axs[0].plot(
+        axs.plot(
             list(now_fores_paired[i].DateTime),
             list(now_fores_paired[i].OFS),
             label=seriesname,
             color=palette[i+1],
         )
-        axs[1].plot(
-            list(now_fores_paired[i].DateTime),
-            [
-                ofs - obs for ofs, obs in zip(
-                    now_fores_paired[i].OFS,
-                    now_fores_paired[i].OBS,
-                )
-            ],
-            label=sdboxName,
-            color=palette[i+1],
-            linestyle='--',
-        )
-    axs[1].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='orange',
-        label='Target error range',
-    )
-    axs[1].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='red',
-        label='2x target error range',
-    )
 
-    axs[0].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[0].legend(
+    axs.grid(True, color='grey', linestyle='--', linewidth=0.5)
+    axs.legend(
         loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
         frameon=False,
     )
-    axs[0].set_ylabel(plot_name, fontsize=16)
-    axs[0].set_yticks(axs[0].get_yticks()[::1])
-    axs[0].tick_params(axis='both', which='major', labelsize=12)
-    plt.gcf().autofmt_xdate()
+    axs.set_ylabel(plot_name, fontsize=14)
+    axs.set_yticks(axs.get_yticks()[::1])
+    axs.tick_params(axis='both', which='major', labelsize=12)
+    axs.set_xlabel('Time', fontsize=14)
 
-    axs[1].axhline(y=0, color='black', linewidth=1)
-    axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    axs[1].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[1].legend(
-        loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
-        frameon=False,
-    )
-    axs[1].set_ylim([-X1*3, X1*3])
-    error_units = plot_name.split(' ')[-1]
-    axs[1].set_ylabel('Error ' + error_units, fontsize=16)
-    axs[1].set_xlabel('Time', fontsize=16)
-    axs[1].set_yticks(axs[1].get_yticks()[::1])
-    axs[1].tick_params(axis='y', which='major', labelsize=12)
-    axs[1].tick_params(axis='x', which='major', labelsize=12)
-
+    # Check if end datetime is > current date
+    add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=1)
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()
     fig.align_ylabels()
@@ -197,7 +202,7 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     filename = f'{prop.ofs}_{station_id[0]}_{save_name}_timeseries_' +\
         f'{naming_ws}_{prop.ofsfiletype}.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=200, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
 
 
 def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
@@ -216,33 +221,38 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         ncolors, 2.5, 0.9, 0.65,
     )
     image_type = 'png'
+    dpi = 100
 
     # Get target error range
     if name_var != 'ice_conc':
         X1, _ = plotting_functions.get_error_range(name_var, prop, logger)
+
+    # Combine obs from different casts into one main obs array
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
 
     figtitle = get_title_static(
         prop, node, station_id, name_var, logger,
     )
 
     # --- Do plots, huzzah --------------------------------------------
-    fig, axs = plt.subplots(3, 1)
-    fig.set_figheight(10)
+    nrows = 2
+    fig, axs = plt.subplots(nrows, 1)
+    fig.set_figheight(8)
     fig.set_figwidth(12)
     fig.suptitle(figtitle, fontsize=16)
     # -----------------------------------------------------------------
 
     axs[0].plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS_SPD),
+        list(obs_df.DateTime),
+        list(obs_df.OBS_SPD),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
         linestyle='--',
     )
     axs[1].plot(
-        list(now_fores_paired[0].DateTime),
-        list(now_fores_paired[0].OBS_DIR),
+        list(obs_df.DateTime),
+        list(obs_df.OBS_DIR),
         label='Observations',
         color=palette[0],
         linewidth=1.5,
@@ -252,17 +262,13 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         # Series names
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
-            sdboxName = 'Forecast - Obs.'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance,\n' + prop.forecast_hr[:-1] +\
                 'z cycle'
-            sdboxName = 'Forecast_a - Obs.'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
-            sdboxName = 'Nowcast - Obs.'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
-            sdboxName = 'unknown'
 
         axs[0].plot(
             list(now_fores_paired[i].DateTime),
@@ -276,36 +282,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
             label=seriesname,
             color=palette[i+1],
         )
-        axs[2].plot(
-            list(now_fores_paired[i].DateTime),
-            [
-                ofs - obs for ofs, obs in zip(
-                    now_fores_paired[i].OFS_SPD,
-                    now_fores_paired[i].OBS_SPD,
-                )
-            ],
-            label=sdboxName,
-            color=palette[i+1],
-            linestyle='--',
-        )
-    axs[2].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='orange',
-        label='Target error range',
-    )
-    axs[2].fill_between(
-        list(now_fores_paired[i].DateTime),
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*X1,
-        np.ones(len(list(now_fores_paired[i].DateTime)))*2*-X1,
-        alpha=0.1,
-        linewidth=0,
-        facecolor='red',
-        label='2x target error range',
-    )
+
 
     axs[0].grid(True, color='grey', linestyle='--', linewidth=0.5)
     axs[0].legend(
@@ -322,24 +299,13 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
         loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
         frameon=False,
     )
-    axs[1].set_ylabel('Current direction\n(0-360 deg.)', fontsize=16)
+    axs[1].set_ylabel('Current direction\n(0-360 deg.)', fontsize=14)
     axs[1].set_yticks(axs[1].get_yticks()[::1])
     axs[1].tick_params(axis='both', which='major', labelsize=12)
     plt.gcf().autofmt_xdate()
+    add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=nrows)
 
-    axs[2].axhline(y=0, color='black', linewidth=1)
-    axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    axs[2].grid(True, color='grey', linestyle='--', linewidth=0.5)
-    axs[2].legend(
-        loc='center left', bbox_to_anchor=(1, 0.5), fontsize=12,
-        frameon=False,
-    )
-    axs[2].set_ylim([-X1*3, X1*3])
-    axs[2].set_ylabel('Speed error\n(m/s)', fontsize=16)
-    axs[2].set_xlabel('Time', fontsize=16)
-    axs[2].set_yticks(axs[2].get_yticks()[::1])
-    axs[2].tick_params(axis='y', which='major', labelsize=12)
-    axs[2].tick_params(axis='x', which='major', labelsize=12)
+    axs[1].set_xlabel('Time', fontsize=16)
 
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()
@@ -348,7 +314,7 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     filename = f'{prop.ofs}_{station_id[0]}_currents_timeseries_{naming_ws}_' \
         + f'{prop.ofsfiletype}.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=200, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
     plt.close('all')
 
 
@@ -360,6 +326,7 @@ def bar_plots(data, info, ytitle, prop, logger):
     '''
 
     image_type = 'png'
+    dpi = 100
 
     #Format y axis label
     ytitle=ytitle.replace('<br>', '\n').replace('<i>','').replace(' or error','')
@@ -493,5 +460,5 @@ def bar_plots(data, info, ytitle, prop, logger):
     plt.tight_layout(pad=3)
     filename = f'{prop.ofs}_{info[2]}_{info[7]}_{namestat}_bars.{image_type}'
     filepath = os.path.join(prop.om_files, filename)
-    fig.savefig(filepath, format=image_type, dpi=300, bbox_inches='tight')
+    fig.savefig(filepath, format=image_type, dpi=dpi, bbox_inches='tight')
     plt.close('all')

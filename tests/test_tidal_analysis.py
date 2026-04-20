@@ -35,7 +35,7 @@ class TestConstituents:
             NOS_37_CONSTITUENTS,
         )
         missing = [c for c in NOS_37_CONSTITUENTS if c not in CONSTITUENT_SPEEDS]
-        assert missing == [], f"Missing speeds for: {missing}"
+        assert missing == [], f'Missing speeds for: {missing}'
 
     def test_m2_speed(self):
         """M2 speed must be approximately 28.984 deg/hr."""
@@ -50,7 +50,7 @@ class TestConstituents:
         for name in semidiurnal:
             speed = CONSTITUENT_SPEEDS[name]
             assert 27.0 < speed < 32.0, (
-                f"{name} speed {speed} out of semidiurnal range"
+                f'{name} speed {speed} out of semidiurnal range'
             )
 
 
@@ -136,7 +136,7 @@ class TestHarmonicAnalysis:
         """Create a synthetic M2+K1 tidal signal."""
         n_points = int(duration_days * 24 * 60 / dt_minutes)
         times = pd.date_range(
-            '2024-01-01', periods=n_points, freq=f"{dt_minutes}min"
+            '2024-01-01', periods=n_points, freq=f'{dt_minutes}min'
         )
         hours = np.arange(n_points) * dt_minutes / 60.0
 
@@ -268,7 +268,7 @@ class TestTidalPrediction:
         predicted = predict_tide(times, result['coef'])
 
         rmse = np.sqrt(np.mean((predicted - original) ** 2))
-        assert rmse < 0.01, f"RMSE {rmse:.4f} exceeds 0.01"
+        assert rmse < 0.01, f'RMSE {rmse:.4f} exceeds 0.01'
 
     def test_predict_from_constants_m2(self):
         """predict_from_constants with M2 only produces a tidal signal."""
@@ -388,6 +388,18 @@ class TestImports:
         from ofs_skill.tidal_analysis import write_constituent_table_csv
         assert callable(write_constituent_table_csv)
 
+    def test_import_compute_constituent_summary_stats(self):
+        from ofs_skill.tidal_analysis import compute_constituent_summary_stats
+        assert callable(compute_constituent_summary_stats)
+
+    def test_import_flag_constituent_exceedances(self):
+        from ofs_skill.tidal_analysis import flag_constituent_exceedances
+        assert callable(flag_constituent_exceedances)
+
+    def test_import_compute_prediction_verification(self):
+        from ofs_skill.tidal_analysis import compute_prediction_verification
+        assert callable(compute_prediction_verification)
+
 
 # =======================================================================
 # Phase 2 Tests
@@ -500,11 +512,11 @@ class TestExtremes:
 
         # High water peaks should be close to 1.0
         for amp in result['high_water_amplitudes']:
-            assert amp > 0.9, f"HW amplitude {amp} too low"
+            assert amp > 0.9, f'HW amplitude {amp} too low'
 
         # Low water troughs should be close to -1.0
         for amp in result['low_water_amplitudes']:
-            assert amp < -0.9, f"LW amplitude {amp} too high"
+            assert amp < -0.9, f'LW amplitude {amp} too high'
 
     def test_find_slack_water_basic(self):
         """Current speed with known zero crossings produces slack events."""
@@ -553,7 +565,7 @@ class TestCurrentAnalysis:
         # Should be near 45° or 225° (ambiguous 180° flip)
         diff = min(abs(direction - 45.0), abs(direction - 225.0))
         assert diff < 10.0, (
-            f"Principal direction {direction:.1f}° not near 45° or 225°"
+            f'Principal direction {direction:.1f}° not near 45° or 225°'
         )
 
     def test_current_harmonic_analysis(self):
@@ -565,7 +577,7 @@ class TestCurrentAnalysis:
         # 30 days of 6-min data with M2 current along 0° (N-S)
         dt_minutes = 6
         n = int(30 * 24 * 60 / dt_minutes)
-        times = pd.date_range('2024-01-01', periods=n, freq=f"{dt_minutes}min")
+        times = pd.date_range('2024-01-01', periods=n, freq=f'{dt_minutes}min')
         hours = np.arange(n) * dt_minutes / 60.0
         m2_speed = 28.9841042
 
@@ -625,8 +637,8 @@ class TestPersistence:
         valid_idx = np.where(valid)[0]
         mid = valid_idx[len(valid_idx) // 2]
         assert abs(forecast[mid] - (tide[mid] + offset)) < 0.05, (
-            f"Forecast {forecast[mid]:.3f} vs expected "
-            f"{tide[mid] + offset:.3f}"
+            f'Forecast {forecast[mid]:.3f} vs expected '
+            f'{tide[mid] + offset:.3f}'
         )
 
     def test_persistence_forecast_shape(self):
@@ -733,7 +745,7 @@ class TestConstituentTable:
         """Create a synthetic M2+K1 tidal signal."""
         n_points = int(duration_days * 24 * 60 / dt_minutes)
         times = pd.date_range(
-            '2024-01-01', periods=n_points, freq=f"{dt_minutes}min"
+            '2024-01-01', periods=n_points, freq=f'{dt_minutes}min'
         )
         hours = np.arange(n_points) * dt_minutes / 60.0
         m2_speed = 28.9841042
@@ -1014,3 +1026,340 @@ class TestConstituentTable:
         text = csv_path.read_text()
         assert '# OFS: CBOFS' in text
         assert '# Period: 2024-01-01 to 2024-01-31' in text
+
+    def test_write_csv_with_summary_stats(self, tmp_path):
+        """Summary stats appear as footer comments in CSV."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            build_constituent_table,
+            compute_constituent_summary_stats,
+            write_constituent_table_csv,
+        )
+
+        model_time, model_values = self._make_synthetic_signal()
+        accepted = {
+            'amplitudes': {'M2': 0.50, 'K1': 0.20},
+            'phases': {'M2': 45.0, 'K1': 120.0},
+        }
+
+        table = build_constituent_table(
+            model_time=model_time,
+            model_values=model_values,
+            latitude=37.0,
+            data_type='water_level',
+            station_id='8454000',
+            accepted_constants=accepted,
+            constit=['M2', 'K1'],
+        )
+        stats = compute_constituent_summary_stats(table)
+
+        csv_path = tmp_path / 'test_stats.csv'
+        write_constituent_table_csv(
+            table, str(csv_path),
+            station_id='8454000',
+            data_type='water_level',
+            summary_stats=stats,
+        )
+
+        text = csv_path.read_text()
+        assert '# mean_vector_diff:' in text
+        assert '# n_valid:' in text
+
+
+# -----------------------------------------------------------------------
+# Prediction + Residual CSV tests
+# -----------------------------------------------------------------------
+
+class TestPredictionResidualCSV:
+    """Tests for combined prediction/residual CSV output."""
+
+    def test_combined_csv_columns(self, tmp_path):
+        """Combined CSV has DateTime, Tidal_Prediction, Nontidal_Residual columns."""
+        csv_path = tmp_path / 'test_pred_resid.csv'
+        times = pd.date_range('2024-01-01', periods=10, freq='6min')
+        prediction = np.random.rand(10)
+        residual = np.random.rand(10)
+
+        df = pd.DataFrame({
+            'DateTime': times,
+            'Tidal_Prediction': prediction,
+            'Nontidal_Residual': residual,
+        })
+        df.to_csv(csv_path, index=False)
+
+        reloaded = pd.read_csv(csv_path)
+        assert list(reloaded.columns) == ['DateTime', 'Tidal_Prediction', 'Nontidal_Residual']
+        assert len(reloaded) == 10
+
+    def test_combined_csv_values_roundtrip(self, tmp_path):
+        """Values survive a write/read roundtrip."""
+        csv_path = tmp_path / 'test_roundtrip.csv'
+        times = pd.date_range('2024-01-01', periods=5, freq='6min')
+        prediction = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        residual = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+
+        df = pd.DataFrame({
+            'DateTime': times,
+            'Tidal_Prediction': prediction,
+            'Nontidal_Residual': residual,
+        })
+        df.to_csv(csv_path, index=False)
+
+        reloaded = pd.read_csv(csv_path)
+        np.testing.assert_allclose(
+            reloaded['Tidal_Prediction'].values, prediction, atol=1e-10,
+        )
+        np.testing.assert_allclose(
+            reloaded['Nontidal_Residual'].values, residual, atol=1e-10,
+        )
+
+
+# -----------------------------------------------------------------------
+# Constituent summary stats tests
+# -----------------------------------------------------------------------
+
+class TestConstituentSummaryStats:
+    """Tests for compute_constituent_summary_stats."""
+
+    def test_basic_stats(self):
+        """Summary stats are computed for a simple table."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            compute_constituent_summary_stats,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2', 'S2', 'K1', 'O1'],
+            'Amp_Diff': [0.02, 0.03, 0.01, 0.04],
+            'Phase_Diff': [5.0, 8.0, 3.0, 12.0],
+            'Vector_Diff': [0.03, 0.04, 0.02, 0.05],
+        })
+
+        stats = compute_constituent_summary_stats(table)
+        assert stats['n_valid'] == 4
+        assert stats['n_major_valid'] == 4
+        assert np.isfinite(stats['mean_vector_diff'])
+        assert np.isfinite(stats['rmse_amp'])
+        assert np.isfinite(stats['rmse_phase'])
+
+    def test_major_filter(self):
+        """Only major constituents counted in *_major stats."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            compute_constituent_summary_stats,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2', 'S2', 'MF', 'MM'],
+            'Amp_Diff': [0.02, 0.03, 0.10, 0.08],
+            'Phase_Diff': [5.0, 8.0, 30.0, 25.0],
+            'Vector_Diff': [0.03, 0.04, 0.12, 0.10],
+        })
+
+        stats = compute_constituent_summary_stats(table)
+        assert stats['n_valid'] == 4
+        assert stats['n_major_valid'] == 2  # Only M2, S2
+
+    def test_all_nan(self):
+        """All-NaN vector diffs produce NaN stats."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            compute_constituent_summary_stats,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2', 'K1'],
+            'Amp_Diff': [np.nan, np.nan],
+            'Phase_Diff': [np.nan, np.nan],
+            'Vector_Diff': [np.nan, np.nan],
+        })
+
+        stats = compute_constituent_summary_stats(table)
+        assert stats['n_valid'] == 0
+        assert np.isnan(stats['mean_vector_diff'])
+
+
+# -----------------------------------------------------------------------
+# Prediction verification tests
+# -----------------------------------------------------------------------
+
+class TestPredictionVerification:
+    """Tests for compute_prediction_verification."""
+
+    def test_identical_predictions(self):
+        """Identical time series → RMSE=0, corr=1."""
+        from ofs_skill.tidal_analysis.ha_comparison import (
+            compute_prediction_verification,
+        )
+
+        values = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = compute_prediction_verification(values, values)
+
+        assert abs(result['rmse']) < 1e-10
+        assert abs(result['mean_diff']) < 1e-10
+        assert abs(result['max_abs_diff']) < 1e-10
+        assert abs(result['correlation'] - 1.0) < 1e-10
+
+    def test_known_offset(self):
+        """Constant offset → RMSE = |offset|, mean_diff = offset."""
+        from ofs_skill.tidal_analysis.ha_comparison import (
+            compute_prediction_verification,
+        )
+
+        model = np.array([1.0, 2.0, 3.0, 4.0])
+        official = np.array([1.1, 2.1, 3.1, 4.1])  # offset of -0.1
+        result = compute_prediction_verification(model, official)
+
+        assert abs(result['rmse'] - 0.1) < 1e-10
+        assert abs(result['mean_diff'] - (-0.1)) < 1e-10
+        assert abs(result['correlation'] - 1.0) < 1e-6
+
+    def test_length_mismatch_raises(self):
+        """Mismatched arrays raise ValueError."""
+        from ofs_skill.tidal_analysis.ha_comparison import (
+            compute_prediction_verification,
+        )
+
+        with pytest.raises(ValueError, match='same length'):
+            compute_prediction_verification(np.ones(5), np.ones(3))
+
+    def test_all_nan(self):
+        """All NaN → NaN results."""
+        from ofs_skill.tidal_analysis.ha_comparison import (
+            compute_prediction_verification,
+        )
+
+        result = compute_prediction_verification(
+            np.full(5, np.nan), np.full(5, np.nan),
+        )
+        assert np.isnan(result['rmse'])
+
+
+# -----------------------------------------------------------------------
+# Exceedance flag tests
+# -----------------------------------------------------------------------
+
+class TestExceedanceFlags:
+    """Tests for flag_constituent_exceedances."""
+
+    def test_no_exceedances(self):
+        """Small diffs → no flags."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2', 'K1'],
+            'Amp_Diff': [0.01, 0.02],
+            'Phase_Diff': [2.0, 3.0],
+            'Vector_Diff': [0.01, 0.02],
+        })
+
+        result = flag_constituent_exceedances(table)
+        assert all(result['Exceeds_Threshold'] == '')
+
+    def test_amp_exceedance(self):
+        """Large amplitude diff → AMP flag."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [0.10],
+            'Phase_Diff': [2.0],
+            'Vector_Diff': [0.02],
+        })
+
+        result = flag_constituent_exceedances(table)
+        assert 'AMP' in result['Exceeds_Threshold'].iloc[0]
+
+    def test_phase_exceedance(self):
+        """Large phase diff → PHASE flag."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [0.01],
+            'Phase_Diff': [15.0],
+            'Vector_Diff': [0.02],
+        })
+
+        result = flag_constituent_exceedances(table)
+        assert 'PHASE' in result['Exceeds_Threshold'].iloc[0]
+
+    def test_vector_diff_exceedance(self):
+        """Large vector diff → VD flag."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [0.01],
+            'Phase_Diff': [2.0],
+            'Vector_Diff': [0.10],
+        })
+
+        result = flag_constituent_exceedances(table)
+        assert 'VD' in result['Exceeds_Threshold'].iloc[0]
+
+    def test_multiple_exceedances(self):
+        """Multiple thresholds exceeded → comma-separated codes."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [0.10],
+            'Phase_Diff': [15.0],
+            'Vector_Diff': [0.10],
+        })
+
+        result = flag_constituent_exceedances(table)
+        flags = result['Exceeds_Threshold'].iloc[0]
+        assert 'AMP' in flags
+        assert 'PHASE' in flags
+        assert 'VD' in flags
+
+    def test_custom_thresholds(self):
+        """Custom thresholds are respected."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [0.03],
+            'Phase_Diff': [5.0],
+            'Vector_Diff': [0.03],
+        })
+
+        # Default thresholds: should not flag
+        result_default = flag_constituent_exceedances(table)
+        assert result_default['Exceeds_Threshold'].iloc[0] == ''
+
+        # Tighter thresholds: should flag
+        result_tight = flag_constituent_exceedances(
+            table, amp_threshold=0.02, phase_threshold=3.0,
+            vector_diff_threshold=0.02,
+        )
+        flags = result_tight['Exceeds_Threshold'].iloc[0]
+        assert 'AMP' in flags
+        assert 'PHASE' in flags
+        assert 'VD' in flags
+
+    def test_nan_not_flagged(self):
+        """NaN values are not flagged as exceedances."""
+        from ofs_skill.tidal_analysis.constituent_table import (
+            flag_constituent_exceedances,
+        )
+
+        table = pd.DataFrame({
+            'Constituent': ['M2'],
+            'Amp_Diff': [np.nan],
+            'Phase_Diff': [np.nan],
+            'Vector_Diff': [np.nan],
+        })
+
+        result = flag_constituent_exceedances(table)
+        assert result['Exceeds_Threshold'].iloc[0] == ''

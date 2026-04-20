@@ -83,12 +83,16 @@ if __name__ == '__main__':
         action='store_true',
         help='Input custom coordinates for model time series extraction? '
         'True or False (boolean)')
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
 
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS.lower()
     prop1.path = args.Path
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.whichcast = args.Whichcast

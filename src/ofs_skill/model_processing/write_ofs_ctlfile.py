@@ -18,7 +18,7 @@ write_ofs_ctlfile : Main function to create or verify model control files
 Notes
 -----
 This module is called by get_node_ofs.py when the OFS control file is not found.
-It handles multiple model sources (FVCOM, ROMS, SCHISM) and file types (fields, stations).
+It handles multiple model sources (FVCOM, ROMS, SCHISM, ADCIRC) and file types (fields, stations).
 
 Control file format (space-delimited):
 node_index layer_index latitude longitude station_id depth
@@ -79,7 +79,8 @@ def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
     >>> print(station_info[1][0])  # First station data fields
     ['36.85', '-76.01', '5.0', 0, 'NAVD88']
     """
-    xy_path = (utils.Utils().read_config_section('user_xy_inputs', logger)
+    _conf = getattr(prop, 'config_file', None)
+    xy_path = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
                ['user_xy_path'])
     lines = []
     try:
@@ -150,7 +151,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
         - user_input_location : bool
             True to use user-specified locations instead of observation stations
         - model_source : str
-            Model type ('fvcom', 'roms', 'schism')
+            Model type ('fvcom', 'roms', 'schism', 'adcirc')
     model : xarray.Dataset
         Model dataset containing grid information
     logger : Logger
@@ -166,7 +167,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     - Control files are named: {ofs}_{var}_model.ctl (fields) or {ofs}_{var}_model_station.ctl (stations)
     - Variable name mappings: water_level->wl, water_temperature->temp, salinity->salt, currents->cu
     - If observation control file is blank, creates blank model control file
-    - Different coordinate extraction methods for FVCOM, ROMS, and SCHISM models
+    - Different coordinate extraction methods for FVCOM, ROMS, SCHISM, and ADCIRC models
     - Skips stations where no matching model node can be found
 
     Examples
@@ -174,7 +175,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     >>> model = write_ofs_ctlfile(prop, model, logger)
     INFO:root:Model Control File for water_level created successfully
     """
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     prop.model_path = os.path.join(
         dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir']
@@ -246,22 +248,22 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                 if prop.ofsfiletype == 'fields':
                     list_of_nearest_node = \
                         indexing.index_nearest_node(
-                        extract[-1],
-                        model,
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            extract[-1],
+                            model,
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
                     list_of_nearest_layer, list_of_depths = \
                         indexing.index_nearest_depth(
-                        prop,
-                        list_of_nearest_node,
-                        model,
-                        extract[-1],
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            prop,
+                            list_of_nearest_node,
+                            model,
+                            extract[-1],
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
                 elif prop.ofsfiletype == 'stations':
                     list_of_nearest_node = \
                         indexing.index_nearest_station(
@@ -275,14 +277,14 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     )
                     list_of_nearest_layer, list_of_depths = \
                         indexing.index_nearest_depth(
-                        prop,
-                        list_of_nearest_node,
-                        model,
-                        extract[-1],
-                        prop.model_source,
-                        name_var,
-                        logger,
-                    )
+                            prop,
+                            list_of_nearest_node,
+                            model,
+                            extract[-1],
+                            prop.model_source,
+                            name_var,
+                            logger,
+                        )
 
                 logger.info('Extracting data found in the Model Control File')
 
@@ -347,58 +349,58 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
                                 if name_var == 'wl':
-                                   x_var = model['SCHISM_hgrid_node_x']
-                                   y_var = model['SCHISM_hgrid_node_y']
+                                    x_var = model['SCHISM_hgrid_node_x']
+                                    y_var = model['SCHISM_hgrid_node_y']
 
-                                   if 'time' in x_var.dims:
-                                       for t in range(x_var.sizes['time']):
-                                           test_slice = x_var.isel(time=t)
-                                           if not test_slice.isnull().all():
-                                              break
-                                       x_val = x_var.isel(time=t,
-                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                       y_val = y_var.isel(time=t,
-                                                          nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                   else:
-                                       x_val = x_var.isel(
-                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                       y_val = y_var.isel(
-                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                    if 'time' in x_var.dims:
+                                        for t in range(x_var.sizes['time']):
+                                            test_slice = x_var.isel(time=t)
+                                            if not test_slice.isnull().all():
+                                                break
+                                        x_val = x_var.isel(time=t,
+                                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        y_val = y_var.isel(time=t,
+                                                           nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                    else:
+                                        x_val = x_var.isel(
+                                            nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        y_val = y_var.isel(
+                                            nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
 
-                                   model_ctl_file.append(
-                                       f'{list_of_nearest_node[i]} '
-                                       f'{list_of_nearest_layer[i]} '
-                                       f'{y_val:.3f}  '
-                                       f'{x_val:.3f}  '
-                                       f'{station_id[i]}  0.0\n'
-                                   )
+                                    model_ctl_file.append(
+                                        f'{list_of_nearest_node[i]} '
+                                        f'{list_of_nearest_layer[i]} '
+                                        f'{y_val:.3f}  '
+                                        f'{x_val:.3f}  '
+                                        f'{station_id[i]}  0.0\n'
+                                    )
 
                                 else:
-                                   if not np.isnan(list_of_nearest_node[i]):
-                                      x_var = model['SCHISM_hgrid_node_x']
-                                      y_var = model['SCHISM_hgrid_node_y']
+                                    if not np.isnan(list_of_nearest_node[i]):
+                                        x_var = model['SCHISM_hgrid_node_x']
+                                        y_var = model['SCHISM_hgrid_node_y']
 
-                                      if 'time' in x_var.dims:
-                                          for t in range(x_var.sizes['time']):
-                                              test_slice = x_var.isel(time=t)
-                                              if not test_slice.isnull().all():
-                                                 break
-                                          x_val = x_var.isel(time=t,
-                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                          y_val = y_var.isel(time=t,
-                                                             nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                      else:
-                                          x_val = x_var.isel(
-                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                          y_val = y_var.isel(
-                                              nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
-                                      model_ctl_file.append(
-                                          f'{list_of_nearest_node[i]} '
-                                          f'{list_of_nearest_layer[i]} '
-                                          f'{y_val:.3f}  '
-                                          f'{x_val:.3f}  '
-                                          f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
-                                      )
+                                        if 'time' in x_var.dims:
+                                            for t in range(x_var.sizes['time']):
+                                                test_slice = x_var.isel(time=t)
+                                                if not test_slice.isnull().all():
+                                                    break
+                                            x_val = x_var.isel(time=t,
+                                                               nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                            y_val = y_var.isel(time=t,
+                                                               nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        else:
+                                            x_val = x_var.isel(
+                                                nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                            y_val = y_var.isel(
+                                                nSCHISM_hgrid_node=list_of_nearest_node[i]).values.item()
+                                        model_ctl_file.append(
+                                            f'{list_of_nearest_node[i]} '
+                                            f'{list_of_nearest_layer[i]} '
+                                            f'{y_val:.3f}  '
+                                            f'{x_val:.3f}  '
+                                            f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                        )
                             elif prop.ofsfiletype == 'stations':
                                 if 'stofs' not in prop.ofs:
                                     model_ctl_file.append(
@@ -448,6 +450,27 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
+
+                elif prop.model_source == 'adcirc':
+                    if prop.ofs == 'stofs_2d_glo':
+                        for i in range(length):
+                            if ~np.isnan(list_of_nearest_node[i]):
+                                # Note the 0 and 0.0 values because STOFS-2D has no layers/depths.
+                                model_ctl_file.append(
+                                    f'{list_of_nearest_node[i]} '
+                                    f'0 '
+                                    f"{model['y'][0, list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f"{model['x'][0, list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f'{station_id[i]}  0.0\n'
+                                )
+                            else:
+                                logger.info('No matching model station found for '
+                                            'obs station %s.', station_id[i])
+                    else:
+                        # STOFS-2D-Global is the only ADCIRC implemented, so it's
+                        # not clear how someone would even get here, but we raise
+                        # an exception just in case.
+                        raise NotImplementedError('ADCIRC control file writing not yet implemented for models other than STOFS-2D-Global.')
 
                 if prop.ofsfiletype == 'fields':
                     with open(

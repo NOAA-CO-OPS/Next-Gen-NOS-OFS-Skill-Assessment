@@ -105,6 +105,11 @@ class ModelProperties:
         self.startdate: str = ''
         self.enddate: str = ''
         self.ofsfiletype: str = ''
+        self.stationowner: str = ''
+        self.user_input_location: str = ''
+        self.horizonskill: str = ''
+        self.var_list: str = ''
+        self.filecheck: str = ''
 
         # Path attributes
         self.control_files_path: str = ''
@@ -122,7 +127,9 @@ class ModelProperties:
         self.visuals_1d_station_path: str = ''
         self.visuals_2d_station_path: str = ''
 
-        # Ice-specific paths
+        # Ice-specific paths & variables
+        self.ice_dt: str = ''
+        self.dailyavg: str = ''
         self.data_skill_ice1dpair_path: str = ''
         self.visuals_maps_ice_path: str = ''
         self.visuals_1d_ice_path: str = ''
@@ -131,6 +138,7 @@ class ModelProperties:
         self.data_model_ice_path: str = ''
 
         self.model_source: str = ''
+        self.config_file = None
 
     def __repr__(self) -> str:
         """String representation of ModelProperties."""

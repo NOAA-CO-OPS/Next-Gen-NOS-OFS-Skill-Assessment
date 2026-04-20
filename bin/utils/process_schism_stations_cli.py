@@ -39,7 +39,12 @@ def parameter_validation(prop, dir_params, logger):
                         f"'{prop.path}'. Abort!"
         logger.error(error_message)
         sys.exit(-1)
-    # OFS validation
+    # OFS validation.
+    if prop.model_source.lower() != 'schism':
+        error_message = f"OFS '{prop.ofs}' is not a SCHISM model! " \
+                        f'Please check your OFS input.'
+        logger.error(error_message)
+        raise ValueError(error_message)
     shapefile = f'{ofs_extents_path}/{prop.ofs}.shp'
     if not os.path.isfile(shapefile):
         error_message = f"Shapefile '{prop.ofs}' " \
@@ -310,7 +315,7 @@ def make_ofs_dir_list(prop, basepath, logger):
         year = date.year
         month = date.month
         # Add stofs directory structure
-        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_global', 'stofs_3d_pac']:
+        if prop.ofs in ['stofs_3d_atl', 'stofs_2d_glo', 'stofs_3d_pac']:
             day = date.day
             model_dir = f'{basepath}{prop.model_path}/{prop.ofs}.{year}' +\
                         f'{month:02}{day:02}'
@@ -379,7 +384,8 @@ def process_schism_stations(prop, logger):
 
     logger.info('--- Start loading SCHISM station output text files ---')
     # Directory parameters
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Parameter validation
     parameter_validation(prop, dir_params, logger)
 
@@ -619,9 +625,14 @@ if __name__ == '__main__':
         #default='nowcast,forecast_b,hindcast',
         help="Choose one 'cast': 'nowcast', 'forecast', 'hindcast'", )
 
+    parser.add_argument(
+        '-c',
+        '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()
-    args = parser.parse_args()
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate
     prop1.end_date_full = args.EndDate
     prop1.path = args.Path

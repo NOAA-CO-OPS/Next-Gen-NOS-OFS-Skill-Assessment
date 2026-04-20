@@ -22,9 +22,7 @@ Last Modified: 10/2025 - Split ice plotting into separate file
 """
 from __future__ import annotations
 
-import configparser
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -32,11 +30,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.make_static_plots as make_static_plots
-from ofs_skill.obs_retrieval import (
-    find_nearest_tidal_stations,
-    retrieve_tidal_predictions,
-)
-from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
+from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
+from ofs_skill.visualization.make_static_plots import combine_obs_across_casts
 from ofs_skill.visualization.plotting_functions import (
     find_max_data_gap,
     get_error_range,
@@ -93,6 +88,7 @@ def oned_scalar_plot(
     # Get target error range
     X1, X2 = get_error_range(name_var, prop, logger)
 
+
     """
     Adjust marker sizes dynamically based on the number of data points.
     If the number of DateTime entries in the first element of now_fores_paired
@@ -106,22 +102,26 @@ def oned_scalar_plot(
     data_count = 48
     min_size = 1
     gap_length = 10
-    if len(list(now_fores_paired[0].DateTime)) > data_count:
+    marker_size = 6
+    marker_size_obs = 9
+
+    # Combine obs from different casts into one main obs array
+    obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
+
+    if len(list(obs_df.DateTime)) > data_count:
         marker_size = (
-            6**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+            marker_size**(
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
         marker_size_obs = (
-            9**(
-                data_count/len(list(now_fores_paired[0].DateTime))
+            marker_size_obs**(
+                data_count/len(list(obs_df.DateTime))
             )
         ) + (min_size-1)
-    else:
-        marker_size = 6
-        marker_size_obs = 9
+
     # Check for long data gaps
-    if find_max_data_gap(now_fores_paired[0].OBS) > gap_length:
+    if find_max_data_gap(obs_df.OBS) > gap_length:
         connectgaps = False
     else:
         connectgaps = True
@@ -161,13 +161,13 @@ def oned_scalar_plot(
         shared_yaxes=True, horizontal_spacing=0.05,
         vertical_spacing=0.05,
         shared_xaxes=xaxis_share,
-        # subplot_titles = ['Observed','OFS Model'],
     )
 
     fig.add_trace(
         go.Scattergl(
-            x=list(now_fores_paired[0].DateTime),
-            y=list(now_fores_paired[0].OBS), name=obsname,
+            x=list(obs_df.DateTime),
+            y=list(obs_df.OBS),
+            name=obsname,
             hovertemplate='%{y:.2f}',
             mode=modetype,
             opacity=lineopacity,
@@ -184,7 +184,7 @@ def oned_scalar_plot(
     # Adding boxplots
     fig.add_trace(
         go.Box(
-            y=now_fores_paired[0]['OBS'], boxmean='sd',
+            y=obs_df.OBS, boxmean='sd',
             name=obsname, showlegend=False, legendgroup='obs',
             width=.7, line=dict(color=palette[0], width=1.5),
             # fillcolor = 'black',
@@ -198,13 +198,14 @@ def oned_scalar_plot(
         if prop.whichcasts[i][-1].capitalize() == 'B':
             seriesname = 'Model Forecast Guidance'
         elif prop.whichcasts[i][-1].capitalize() == 'A':
-            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-2] +\
+            seriesname = 'Model Forecast Guidance, ' + prop.forecast_hr[:-1] +\
                 'z cycle'
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
             seriesname = prop.whichcasts[i].capitalize() + ' Guidance'
         # Parse filenames from key
+        namekey = None
         try:
             namekey = [datetime.strftime(datetime.strptime(name.split('.')[2], '%Y%m%d'), '%m-%d-%Y')\
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
@@ -245,7 +246,11 @@ def oned_scalar_plot(
                 ),
             ), 1, 1,
         )
-
+        if 'z' in seriesname:
+            seriesname = seriesname.split(' ')[1] + ' ' +\
+                seriesname.split(' ')[3]
+        else:
+            seriesname = seriesname.split(' ')[1]
         fig.add_trace(
             go.Box(
                 y=now_fores_paired[i]['OFS'], boxmean='sd',
@@ -267,150 +272,84 @@ def oned_scalar_plot(
     #  Add tidal predictions for water level plots excluding glofs     ##
     #####################################################################
     if name_var == 'wl' and prop.ofs[0] != 'l':
-      try:
-          import os
+        # Full 4-key default so the except-path / debug-logger at end-of-block
+        # never KeyErrors regardless of where retrieval fails.
+        tidal_info = {
+            'tidal_station_id': None,
+            'tidal_station_name': None,
+            'tidal_station_distance': None,
+            'used_datum': None,
+        }
+        try:
+            data_times = obs_df.DateTime
+            start_dt = data_times.min().to_pydatetime()
+            end_dt = data_times.max().to_pydatetime()
+            tidal_data, tidal_info = get_station_tidal_data(
+                start_dt, end_dt, prop, station_id[0], logger
+            )
 
-          retrieve_input = RetrieveProperties()
-          obs_station_id = str(station_id[0])
-          station_source = str(station_id[2]) if len(station_id) > 2 else 'CO-OPS'
+            if tidal_data is not None and len(tidal_data) > 0:
+                # Build hover text with source information including distance
+                if tidal_info['tidal_station_name']:
+                    source_text = (
+                        f'CO-OPS Station {tidal_info["tidal_station_id"]} '
+                        f'({tidal_info["tidal_station_name"]})'
+                    )
+                else:
+                    source_text = (
+                        f'CO-OPS Station {tidal_info["tidal_station_id"]}'
+                    )
 
-          # Get date range from actual paired data to ensure tidal predictions cover plotted range
-          data_times = now_fores_paired[0].DateTime
-          start_dt = data_times.min().to_pydatetime()
-          end_dt = data_times.max().to_pydatetime()
-          #start_dt = datetime.strptime(prop.start_date_full, "%Y-%m-%dT%H:%M:%SZ")
-          #end_dt = datetime.strptime(prop.end_date_full, "%Y-%m-%dT%H:%M:%SZ")
-          retrieve_input.start_date = start_dt.strftime('%Y%m%d%H%M%S')
-          retrieve_input.end_date = end_dt.strftime('%Y%m%d%H%M%S')
-          #if (end_dt - start_dt) > timedelta(hours=48):
-          #      raise ValueError("Run is more than 48 hours - skipping tide retrieval.")
+                distance = tidal_info['tidal_station_distance']
+                if distance is not None and distance > 0:
+                    distance_text = f'<br>Distance: {distance:.1f} km'
+                else:
+                    distance_text = ''
 
-          # Try requested datum first, then fallback datums if needed
-          requested_datum = prop.datum
-          fallback_datums = ['MLLW', 'MHHW', 'MHW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B']
-          # Read fallback datums from config file
-          config = configparser.ConfigParser()
-          config_file = Path(__file__).resolve().parent.parent.parent.parent / 'conf' / 'ofs_dps.conf'
-          try:
-                config.read(config_file)
-                if config.has_option('datums', 'datum_list'):
-                    datum_list_str = config.get('datums', 'datum_list')
-                    fallback_datums = [d.strip() for d in datum_list_str.split()]
-          except Exception as ex:
-                logger.warning('Could not read datum_list from config, using defaults: %s',ex)
+                used_datum = tidal_info['used_datum']
+                if used_datum == prop.datum:
+                    datum_text = f'<br>Datum: {used_datum}'
+                else:
+                    datum_text = (
+                        f'<br>Datum: {used_datum} (requested: {prop.datum})'
+                    )
+                hover_text = (
+                    f'Tidal Prediction: %{{y:.2f}}'
+                    f'<br><i>Source: {source_text}{distance_text}{datum_text}'
+                    f'<i><extra></extra>'
+                )
 
-          datums_to_try = [requested_datum] + [d for d in fallback_datums if d != requested_datum]
+                fig.add_trace(
+                    go.Scattergl(
+                        x=list(tidal_data.DateTime),
+                        y=list(tidal_data.TIDE),
+                        name='Tidal Predictions',
+                        hovertemplate=hover_text,
+                        mode='lines',
+                        opacity=0.7,
+                        line=dict(color=palette[-1], width=1.5, dash='dot'),
+                        legendgroup='tide',
+                        marker=dict(size=0)), 1, 1)
+                logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
+                           str(station_id[0]), tidal_info['tidal_station_id'], tidal_info['used_datum'])
+                # Adding boxplots for tides
+                fig.add_trace(
+                    go.Box(
+                          y=tidal_data['TIDE'], boxmean='sd',
+                          name='Tidal Prediction', showlegend=False, legendgroup='tide',
+                          width=.7, line=dict(color=palette[-1], width=1.5),
+                          # fillcolor = 'black',
+                          marker=dict(color=palette[-1]),
+                    ), 1, 2,
+                 )
 
-          tidal_data = None
-          used_datum = None
-          tidal_station_id = None
-          tidal_station_name = None
-          tidal_station_distance = None
+        except Exception as ex:
+            logger.warning('Could not retrieve tidal predictions for station %s: %s',
+                          station_id[0], ex)
 
-          # Helper function to try getting tidal data from a station
-          def try_get_tidal_data(station_id_to_try):
-              retrieve_input.station = station_id_to_try
-              for datum in datums_to_try:
-                  retrieve_input.datum = datum
-                  data = retrieve_tidal_predictions(
-                      retrieve_input, logger)
-                  if data is False:
-                      # Station doesn't support predictions
-                      return None, None
-                  if data is not None and len(data) > 0:
-                      return data, datum
-              return None, None
+        logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s.',
+             str(tidal_info['tidal_station_id']), tidal_info['used_datum'])
 
-          # Get station coordinates from control file
-          lat, lon = None, None
-          try:
-              ctl_file = os.path.join(prop.control_files_path, f'{prop.ofs}_wl_station.ctl')
-              with open(ctl_file) as f:
-                  lines = f.readlines()
-              for i, line in enumerate(lines):
-                  if line.strip().startswith(obs_station_id):
-                      coords = lines[i+1].split()
-                      lat, lon = float(coords[0]), float(coords[1])
-                      break
-          except Exception as ex:
-              logger.warning('Could not find coordinates for station %s: %s', obs_station_id, ex)
-
-          # For CO-OPS stations, try the station itself first
-          if station_source.upper() in ['CO-OPS', 'COOPS', 'TC', 'TAC']:
-              tidal_data, used_datum = try_get_tidal_data(obs_station_id)
-              if tidal_data is not None:
-                  tidal_station_id = obs_station_id
-                  tidal_station_distance = 0.0
-
-          # If no data yet (non-CO-OPS or CO-OPS failed), try nearby tidal stations
-          if tidal_data is None and lat is not None and lon is not None:
-              logger.info('Finding nearby tidal stations for %s station %s...',
-                         station_source, obs_station_id)
-              nearby_stations = find_nearest_tidal_stations(
-                  lat, lon, logger, max_stations=10)
-
-              for candidate_id, candidate_name, candidate_dist in nearby_stations:
-                  # Skip if same as observation station (already tried for CO-OPS)
-                  if candidate_id == obs_station_id:
-                      continue
-                  logger.info('Trying tidal station %s (%s) at %.1f km...',
-                             candidate_id, candidate_name, candidate_dist)
-                  tidal_data, used_datum = try_get_tidal_data(candidate_id)
-                  if tidal_data is not None:
-                      tidal_station_id = candidate_id
-                      tidal_station_name = candidate_name
-                      tidal_station_distance = candidate_dist
-                      logger.info('Using tidal station %s (%s) at %.1f km for station %s',
-                                 tidal_station_id, tidal_station_name, tidal_station_distance, obs_station_id)
-                      break
-
-          if tidal_data is not None and len(tidal_data) > 0:
-              # Build hover text with source information including distance
-              if tidal_station_name:
-                  source_text = f'CO-OPS Station {tidal_station_id} ({tidal_station_name})'
-              else:
-                  source_text = f'CO-OPS Station {tidal_station_id}'
-
-              if tidal_station_distance is not None and tidal_station_distance > 0:
-                  distance_text = f'<br>Distance: {tidal_station_distance:.1f} km'
-              else:
-                  distance_text = ''
-
-              if used_datum == requested_datum:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}<i><extra></extra>'
-              else:
-                    hover_text = f'Tidal Prediction: %{{y:.2f}}<br><i>Source: {source_text}{distance_text}<br>Datum: {used_datum}(requested: {requested_datum})<i><extra></extra>'
-
-              fig.add_trace(
-                  go.Scattergl(
-                      x=list(tidal_data.DateTime),
-                      y=list(tidal_data.TIDE),
-                      name='Tidal Predictions',
-                      hovertemplate=hover_text,
-                      mode='lines',
-                      opacity=0.7,
-                      line=dict(color=palette[-1], width=1.5, dash='dot'),
-                      legendgroup='tide',
-                      marker=dict(size=0)), 1, 1)
-              logger.info('Tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-                         obs_station_id, tidal_station_id, used_datum)
-              # Adding boxplots for tides
-              fig.add_trace(
-                  go.Box(
-                        y=tidal_data['TIDE'], boxmean='sd',
-                        name='Tidal Prediction', showlegend=False, legendgroup='tide',
-                        width=.7, line=dict(color=palette[-1], width=1.5),
-                        # fillcolor = 'black',
-                        marker=dict(color=palette[-1]),
-                  ), 1, 2,
-               )
-
-      except Exception as ex:
-          logger.warning('Could not retrieve tidal predictions for station %s: %s',
-                        station_id[0], ex)
-
-      logger.debug('Finished adding tidal predictions added to water level plot for station %s using tidal station %s (datum:%s)',
-           obs_station_id, tidal_station_id, used_datum)
     #####################################################################
     ## Done tide retrieval and plotting                                ##
     #####################################################################
@@ -418,9 +357,10 @@ def oned_scalar_plot(
     for i in range(len(prop.whichcasts)):
         if prop.whichcasts[i].capitalize() == 'Nowcast':
             sdboxName = 'Nowcast - Obs.'
-        elif (prop.whichcasts[i].capitalize() == 'Forecast_b' or
-              prop.whichcasts[i].capitalize() == 'Forecast_a'):
+        elif prop.whichcasts[i].capitalize() == 'Forecast_b':
             sdboxName = 'Forecast - Obs.'
+        elif prop.whichcasts[i].capitalize() == 'Forecast_a':
+            sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'z - Obs.'
         else:
             sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
@@ -450,54 +390,6 @@ def oned_scalar_plot(
             ), 2,
             1,
         )
-
-        fig.add_hline(
-            y=0, line_width=1,
-            line_color='black',
-            # line_dash='dash',
-            row=2, col=1,
-        )
-        fig.add_hline(
-            y=X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=2, col=1,
-        )
-        fig.add_hline(
-            y=-X1, line_color='orange',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='Target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=2, col=1,
-        )
-        fig.add_hline(
-            y=X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='top left',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=2, col=1,
-        )
-        fig.add_hline(
-            y=-X1*2, line_color='red',
-            line_width=0.75,
-            line_dash='dash',
-            annotation_text='2x target error range',
-            annotation_position='bottom right',
-            annotation_font_color='black',
-            annotation_font_size=12,
-            row=2, col=1,
-        )
-
         fig.add_trace(
             go.Box(
                 y=[
@@ -519,6 +411,85 @@ def oned_scalar_plot(
             ),
             2, 2,
         )
+
+    # Add target error ranges to diff plot
+    # Target error range (yellow, center band: -X1 to +X1)
+    x_data = obs_df.DateTime
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,165,0,0.15)',
+        name='Target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=2, col=1)
+    # 2x error range upper (red, +X1 to +2*X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
+        name='2x target error range',
+        showlegend=True, hoverinfo='skip',
+    ), row=2, col=1)
+    # 2x error range lower (red, -2*X1 to -X1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        showlegend=False, hoverinfo='skip',
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_data, y=[-2*X1]*len(x_data),
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(255,0,0,0.15)',
+        showlegend=False, hoverinfo='skip',
+    ), row=2, col=1)
+
+    fig.add_hline(
+        y=0, line_width=1,
+        line_color='black',
+        row=2, col=1,
+    )
+
+    # Check if end datetime is > current date
+    max_datetime = now_fores_paired[0].DateTime.max().replace(tzinfo=UTC)
+    for i in range(len(now_fores_paired)):
+        if now_fores_paired[i].DateTime.max() > now_fores_paired[0].DateTime.max():
+            max_datetime = now_fores_paired[i].DateTime.max().replace(tzinfo=UTC)
+    if max_datetime > datetime.now(UTC):
+        try:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            dt_n = datetime.strptime(prop.start_date_full, '%Y%m%d-%H:%M:%S')
+        if 'nowcast' in prop.whichcasts:
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=1,
+                line_color='gray',
+                annotation_text='Forecast >',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top right',
+                row=1, col=1
+            )
+            fig.add_vline(
+                x=dt_n.timestamp() * 1000,
+                line_width=0,
+                line_color='gray',
+                annotation_text='< Nowcast',
+                annotation_font_color='black',
+                annotation_font_size=12,
+                annotation_position='top left',
+                row=1, col=1
+            )
 
     # Figure Config
     figheight = 700
@@ -603,6 +574,23 @@ def oned_scalar_plot(
                 showarrow=False,
                 row=1, col=1,
             )
+
+    # Add annotation if assumed surface depth (no depth data from API)
+    if name_var != 'wl' and len(station_id) > 3:
+        try:
+            obs_depth = float(station_id[3])
+            if obs_depth == 0.0:
+                fig.add_annotation(
+                    text='<b>Note: no obs depth<br>available from API.<br>'
+                         'Assumed surface (0 m)</b>',
+                    xref='x domain', yref='y domain',
+                    font=dict(size=12, color='#E68A00'),
+                    x=0, y=0.0,
+                    showarrow=False,
+                    row=1, col=1,
+                )
+        except (ValueError, TypeError):
+            pass
 
     # Set x-axis moving bar
     fig.update_xaxes(
