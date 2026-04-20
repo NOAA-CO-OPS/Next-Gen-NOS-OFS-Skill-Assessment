@@ -19,8 +19,15 @@ from ofs_skill.open_boundary.obc_processing import (
     transform_to_z,
 )
 
+# Shared Plotly styling. Kept as module constants to avoid rebuilding identical
+# dict literals at every axis update and to make font tweaks a single-site edit.
+_TITLE_FONT = dict(family='Open Sans', size=20, color='black')
+_AXIS_FONT = dict(family='Open Sans', size=16, color='black')
+# Max frames rendered in time-animated plots (Plotly slider degrades past this).
+_TIME_SLIDER_CAP = 55
 
-def plot_fvcom_obc(prop,ds,logger):
+
+def plot_fvcom_obc(prop, ds, logger):
     """
     Generates a comprehensive suite of plots for FVCOM open boundary conditions.
 
@@ -48,7 +55,7 @@ def plot_fvcom_obc(prop,ds,logger):
     logger.info('Plotting FVCOM temp & salt transects')
     nrows = 1
     ncols = 1
-    for name_var in ['temp','salinity']:
+    for name_var in ['temp', 'salinity']:
         if name_var == 'temp':
             cbar_title = 'Water Temperature<br>(\u00b0C)'
             plot_title_name = 'temperature'
@@ -66,9 +73,9 @@ def plot_fvcom_obc(prop,ds,logger):
         var = str(matches[0])
 
         # Make x-axis labels
-        x_labels = make_x_labels(ds,logger)
+        x_labels = make_x_labels(ds, logger)
         # Transform sigma layers to z-coordinates & interpolate transect
-        z, y_labels, x_labels = transform_to_z(ds,var,x_labels,logger)
+        z, y_labels, x_labels = transform_to_z(ds, var, x_labels, logger)
 
         # Figures
         fig = make_subplots(rows=nrows, cols=ncols)
@@ -88,24 +95,16 @@ def plot_fvcom_obc(prop,ds,logger):
                 color_continuous_scale='Turbo',
                 title=plot_title
                 )
-        for i,step in enumerate(fig.layout.sliders[0].steps):
-            step.label = datetime.strftime(time_dt[i],'%m/%d/%Y %H:%M:%S')
+        for i, step in enumerate(fig.layout.sliders[0].steps):
+            step.label = datetime.strftime(time_dt[i], '%m/%d/%Y %H:%M:%S')
         fig.update_layout(
             plot_bgcolor='white',
             paper_bgcolor='white',
-            title_font=dict(
-                family='Open Sans',
-                size=20,
-                color='black'
-            )
+            title_font=_TITLE_FONT
         )
         # Update the x-axis title font
         fig.update_xaxes(
-            title_font=dict(
-                family='Open Sans',
-                size=16,
-                color='black'
-            ),
+            title_font=_AXIS_FONT,
             showline=True,
             linewidth=1,
             linecolor='black',
@@ -117,11 +116,7 @@ def plot_fvcom_obc(prop,ds,logger):
         )
         # Update the y-axis title font
         fig.update_yaxes(
-            title_font=dict(
-                family='Open Sans',
-                size=16,
-                color='black'
-            ),
+            title_font=_AXIS_FONT,
             showline=True,
             linewidth=1,
             linecolor='black',
@@ -138,7 +133,7 @@ def plot_fvcom_obc(prop,ds,logger):
 
     # Now do water level
     logger.info('Plotting FVCOM water level transect')
-    time_iterator = int(np.ceil(len(ds['time'])/55))
+    time_iterator = int(np.ceil(len(ds['time']) / _TIME_SLIDER_CAP))
     try:
         z = np.asarray(ds['elevation'])
     except KeyError:
@@ -146,24 +141,25 @@ def plot_fvcom_obc(prop,ds,logger):
     try:
         nodes = np.asarray(ds['obc_nodes'])
     except KeyError:
-        nodes = np.linspace(0,len(ds['lat'])-1,len(ds['lat']))
+        nodes = np.linspace(0, len(ds['lat']) - 1, len(ds['lat']))
         nodes = nodes.astype(int)
     # Make x-axis labels
-    x_labels = make_x_labels(ds,logger)
-    # Build big dataframe
-    df = None
-    for t in range(0,len(time_dt),time_iterator):
-        temp_ = pd.DataFrame(
+    x_labels = make_x_labels(ds, logger)
+    # Build big dataframe — accumulate per-timestep frames in a list and
+    # concat once (avoids O(n^2) copy + pandas FutureWarning on concat(None)).
+    frames = []
+    for t in range(0, len(time_dt), time_iterator):
+        frames.append(pd.DataFrame(
             {
-            'Time': time_dt[t],
-            'Distance along boundary (km)': x_labels,
-            'Water level (m)': z[t,:],
-            'Node': nodes
+                'Time': time_dt[t],
+                'Distance along boundary (km)': x_labels,
+                'Water level (m)': z[t, :],
+                'Node': nodes,
             }
-        )
-        df = pd.concat([df, temp_], ignore_index=True)
-        df['Time'] = df['Time'].dt.round('1s')
-        df['Node'] = df['Node'].astype('string')
+        ))
+    df = pd.concat(frames, ignore_index=True)
+    df['Time'] = df['Time'].dt.round('1s')
+    df['Node'] = df['Node'].astype('string')
 
     # Figures
     nrows = 1
@@ -192,19 +188,11 @@ def plot_fvcom_obc(prop,ds,logger):
     fig.update_layout(
         plot_bgcolor='white',
         paper_bgcolor='white',
-        title_font=dict(
-            family='Open Sans',
-            size=20,
-            color='black'
-        )
+        title_font=_TITLE_FONT
     )
     # Update the x-axis title font
     fig.update_xaxes(
-        title_font=dict(
-            family='Open Sans',
-            size=16,
-            color='black'
-        ),
+        title_font=_AXIS_FONT,
         showline=True,
         linewidth=1,
         linecolor='black',
@@ -216,11 +204,7 @@ def plot_fvcom_obc(prop,ds,logger):
     )
     # Update the y-axis title font
     fig.update_yaxes(
-        title_font=dict(
-            family='Open Sans',
-            size=16,
-            color='black'
-        ),
+        title_font=_AXIS_FONT,
         showline=True,
         linewidth=1,
         linecolor='black',
@@ -236,17 +220,17 @@ def plot_fvcom_obc(prop,ds,logger):
 
     # Now make time series plot with dropdown menu
     logger.info('Plotting FVCOM water level node-by-node time series')
-    df = None
+    frames = []
     for n in range(len(nodes)):
-        temp = pd.DataFrame(
+        frames.append(pd.DataFrame(
             {
-            'Time': time_dt,
-            'Water level (m)': z[:,n],
-            'Node': nodes[n]
+                'Time': time_dt,
+                'Water level (m)': z[:, n],
+                'Node': nodes[n],
             }
-        )
-        df = pd.concat([df, temp], ignore_index=True)
-        df['Time'] = df['Time'].dt.round('1s')
+        ))
+    df = pd.concat(frames, ignore_index=True)
+    df['Time'] = df['Time'].dt.round('1s')
     fig = make_subplots(rows=nrows, cols=ncols)
     plot_title = prop.ofs.upper() + ' open boundary water levels, ' +\
         prop.start_date_full.split('T')[0] + ' ' + \
@@ -302,19 +286,11 @@ def plot_fvcom_obc(prop,ds,logger):
         margin={'t': 125, 'b': 50, 'l': 50, 'r': 50},
         plot_bgcolor='white',
         paper_bgcolor='white',
-        title_font=dict(
-            family='Open Sans',
-            size=20,
-            color='black'
-        )
+        title_font=_TITLE_FONT
     )
     # Update the x-axis title font
     fig.update_xaxes(
-        title_font=dict(
-            family='Open Sans',
-            size=16,
-            color='black'
-        ),
+        title_font=_AXIS_FONT,
         showline=True,
         linewidth=1,
         linecolor='black',
@@ -326,11 +302,7 @@ def plot_fvcom_obc(prop,ds,logger):
     )
     # Update the y-axis title font
     fig.update_yaxes(
-        title_font=dict(
-            family='Open Sans',
-            size=16,
-            color='black'
-        ),
+        title_font=_AXIS_FONT,
         showline=True,
         linewidth=1,
         linecolor='black',
@@ -346,12 +318,15 @@ def plot_fvcom_obc(prop,ds,logger):
 
     # Map of OBC nodes
     logger.info('Mapping FVCOM OBC nodes')
-    df = None
+    # Normalize lon from 0..360 to -180..180 so Pacific-basin FVCOM grids
+    # (e.g. SSCOFS) render on carto-positron without wrapping across the map.
+    lon_raw = np.asarray(ds['lon'])
+    lon = ((lon_raw + 180.0) % 360.0) - 180.0
     df = pd.DataFrame(
         {
-        'X': np.asarray(ds['lon']),
-        'Y': np.asarray(ds['lat']),
-        'Node': nodes
+            'X': lon,
+            'Y': np.asarray(ds['lat']),
+            'Node': nodes,
         }
     )
     df['Node'] = df['Node'].astype('string')
@@ -372,13 +347,9 @@ def plot_fvcom_obc(prop,ds,logger):
                      )
     # update layout to include the dropdown menu
     fig.update_layout(
-        title_font=dict(
-            family='Open Sans',
-            size=20,
-            color='black'
-        )
+        title_font=_TITLE_FONT
     )
     filename = prop.ofs + '_OBC_node_map.html'
     savepath = os.path.join(prop.visuals_1d_station_path, filename)
-    fig.write_html(savepath,config={'scrollZoom': True})
+    fig.write_html(savepath, config={'scrollZoom': True})
     logger.info('Done with FVCOM plotting!')

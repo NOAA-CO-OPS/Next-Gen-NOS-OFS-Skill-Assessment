@@ -13,11 +13,25 @@ import argparse
 import logging
 import logging.config
 import os
+import re
 import sys
 
 from ofs_skill.model_processing import model_properties, model_source
 from ofs_skill.open_boundary.obc_plotting import plot_fvcom_obc
 from ofs_skill.open_boundary.obc_processing import load_obc_file, parameter_validation
+
+# Canonical list of OFS identifiers recognized by model_source. Duplicated here
+# (rather than introspected) so --help / validation errors stay stable if a new
+# OFS is added upstream without rippling surprises into this CLI.
+_SUPPORTED_OFS = (
+    'cbofs', 'dbofs', 'gomofs', 'tbofs', 'ciofs', 'wcofs',
+    'nyofs', 'sjrofs',
+    'necofs', 'ngofs2', 'ngofs', 'leofs', 'lmhofs', 'loofs',
+    'lsofs', 'sfbofs', 'sscofs',
+    'stofs_3d_atl', 'stofs_3d_pac', 'loofs2',
+    'stofs_2d_glo',
+)
+_CYCLE_RE = re.compile(r'^\d{2}$')
 
 
 def make_open_boundary_transects(prop, logger=None):
@@ -79,7 +93,7 @@ def make_open_boundary_transects(prop, logger=None):
         sys.exit(-1)
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(
         prog='python make_open_boundary_transect.py', usage='%(prog)s',
         description='Run open boundary condition transect maker'
@@ -111,11 +125,34 @@ if __name__ == '__main__':
         help="Model cycle to assess, e.g. '02', '06', '12', '24' ... ",
     )
     args = parser.parse_args()
+
+    # Input validation — fail fast with argparse-style exit(2) rather than a
+    # cryptic traceback when model_source raises ValueError or a stray path is
+    # later touched deep in the pipeline.
+    ofs_lower = args.OFS.lower() if args.OFS else ''
+    if ofs_lower not in _SUPPORTED_OFS:
+        parser.error(
+            f"unsupported OFS '{args.OFS}'. Valid options: "
+            f"{', '.join(_SUPPORTED_OFS)}"
+        )
+
+    if args.Cycle_Hr is not None and not _CYCLE_RE.match(args.Cycle_Hr):
+        parser.error(
+            f"invalid cycle '{args.Cycle_Hr}'; must be two digits, e.g. '06'"
+        )
+
+    if args.Path is not None and not os.path.isdir(args.Path):
+        parser.error(f'path does not exist or is not a directory: {args.Path}')
+
     prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.OFS
+    prop1.ofs = ofs_lower
     prop1.path = args.Path
     prop1.start_date_full = args.StartDate_full
     prop1.model_cycle = args.Cycle_Hr
     prop1.model_source = model_source.model_source(prop1.ofs)
 
     make_open_boundary_transects(prop1, None)
+
+
+if __name__ == '__main__':
+    main()

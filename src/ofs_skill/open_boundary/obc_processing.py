@@ -20,6 +20,10 @@ from ofs_skill.obs_retrieval import utils
 _ZETA_MISSING_WARNED = False
 _TIME_FALLBACK_WARNED = False
 _MJD_EPOCH = '1858-11-17'
+_MAX_SIGLAY_ROWS = 300
+_MAX_X_COLS = 300
+_TIME_SLIDER_CAP = 55
+_X_SPACING_KM = 0.25
 
 
 def _decode_time(ds, logger):
@@ -71,7 +75,7 @@ def _decode_time(ds, logger):
     return [epoch + timedelta(days=float(t)) for t in np.asarray(ds['time'])]
 
 
-def parameter_validation(prop,logger):
+def parameter_validation(prop, logger):
     """
     Validates input parameters and initializes the directory structure for processing.
 
@@ -136,32 +140,9 @@ def parameter_validation(prop,logger):
     # model cycle validation -- wait to do this until forecast horizon skill
     # is merged to main and borrow functions from get_forecast_hours
 
-    # Set up directory tree
-    prop.control_files_path = os.path.join(
-        prop.path, dir_params['control_files_dir']
-    )
-    os.makedirs(prop.control_files_path, exist_ok=True)
-
-    prop.data_observations_1d_station_path = os.path.join(
-        prop.path, dir_params['data_dir'], dir_params['observations_dir'],
-        dir_params['1d_station_dir'], )
-    os.makedirs(prop.data_observations_1d_station_path, exist_ok=True)
-
-    prop.data_model_1d_node_path = os.path.join(
-        prop.path, dir_params['data_dir'], dir_params['model_dir'],
-        dir_params['1d_node_dir'], )
-    os.makedirs(prop.data_model_1d_node_path, exist_ok=True)
-
-    prop.data_skill_1d_pair_path = os.path.join(
-        prop.path, dir_params['data_dir'], dir_params['skill_dir'],
-        dir_params['1d_pair_dir'], )
-    os.makedirs(prop.data_skill_1d_pair_path, exist_ok=True)
-
-    prop.data_skill_stats_path = os.path.join(
-        prop.path, dir_params['data_dir'], dir_params['skill_dir'],
-        dir_params['stats_dir'], )
-    os.makedirs(prop.data_skill_stats_path, exist_ok=True)
-
+    # Set up directory tree. Only the visuals dir is consumed by the OBC
+    # pipeline (plot_fvcom_obc writes HTML there); the 1D skill-assessment
+    # dirs are unused here.
     prop.visuals_1d_station_path = os.path.join(
         prop.path, dir_params['data_dir'], dir_params['visual_dir'], )
     os.makedirs(prop.visuals_1d_station_path, exist_ok=True)
@@ -203,7 +184,7 @@ def haversine(lat1, lon1, lat2, lon2):
     distance = R * c
     return distance
 
-def load_obc_file(prop,logger):
+def load_obc_file(prop, logger):
     """
     Constructs the file path and loads the OBC netCDF file into an xarray Dataset.
 
@@ -234,7 +215,7 @@ def load_obc_file(prop,logger):
         decode = True
         if (model_source.model_source(prop.ofs) == 'fvcom'):
             decode = False
-        ds = xr.open_dataset(file_path,decode_times=decode)
+        ds = xr.open_dataset(file_path, decode_times=decode)
     except FileNotFoundError:
     # Catch the FileNotFoundError if the file is not found
         logger.error('Error: The OBC file was not found. Quitting...')
@@ -246,7 +227,7 @@ def load_obc_file(prop,logger):
 
     return ds
 
-def mask_distance_gaps(x_orig,x_interp,z,logger):
+def mask_distance_gaps(x_orig, x_interp, z, logger):
     """
     Identifies large spatial gaps in the original boundary coordinates and
     masks the interpolated data with NaNs in those regions.
@@ -281,7 +262,7 @@ def mask_distance_gaps(x_orig,x_interp,z,logger):
 
     return z
 
-def transform_to_z(ds,var,x_labels,logger):
+def transform_to_z(ds, var, x_labels, logger):
     """
     Transforms model data from sigma layers to vertical z-coordinates (depth)
     and interpolates onto a regular spatial grid.
@@ -329,13 +310,11 @@ def transform_to_z(ds,var,x_labels,logger):
     siglay_len = int(np.ceil(np.nanmax(h) / np.nanmin(h / n_sig)))
     # Need to reduce spatial and temporal resolution for plotting
     # with a time slider!
-    max_rows = 300
-    max_cols = 300
-    if siglay_len > max_rows:
-        siglay_len = int(siglay_len/(np.ceil(siglay_len/max_rows)))
+    if siglay_len > _MAX_SIGLAY_ROWS:
+        siglay_len = int(siglay_len / (np.ceil(siglay_len / _MAX_SIGLAY_ROWS)))
     time_iterator = 1
-    if n_time > 55:
-        time_iterator = int(np.ceil(n_time / 55))
+    if n_time > _TIME_SLIDER_CAP:
+        time_iterator = int(np.ceil(n_time / _TIME_SLIDER_CAP))
 
     ref_depth = np.linspace(0, np.nanmax(h), siglay_len, endpoint=True)
 
@@ -370,18 +349,18 @@ def transform_to_z(ds,var,x_labels,logger):
 
     # Now loop through each time and each row and assign z values
     # across each depth
-    x_spacing = 0.25 #km
-    dist_len = int(np.ceil(np.nanmax(x_labels)/x_spacing))
-    if dist_len > max_cols:
-        dist_len = int(dist_len/(np.ceil(dist_len/max_cols)))
-    x_grid = np.linspace(0,x_labels[-1],dist_len)
+    dist_len = int(np.ceil(np.nanmax(x_labels) / _X_SPACING_KM))
+    if dist_len > _MAX_X_COLS:
+        dist_len = int(dist_len / (np.ceil(dist_len / _MAX_X_COLS)))
+    x_grid = np.linspace(0, x_labels[-1], dist_len)
     # Make new z array for the interpolated x-axis length
     z_dist_single = np.array(np.full((z_depth_all.shape[1], len(x_grid)),
                          np.nan))
     z_dist_all = []
     for i in range(z_depth_all.shape[0]):
         for j in range(z_depth_all.shape[1]):
-            z_dist_single[j,:] = np.interp(x_grid,x_labels,z_depth_all[i,j,:])
+            z_dist_single[j, :] = np.interp(
+                x_grid, x_labels, z_depth_all[i, j, :])
         z_dist_all.append(z_dist_single)
         z_dist_single = np.array(np.full((z_depth_all.shape[1], len(x_grid)),
                              np.nan))
@@ -391,12 +370,12 @@ def transform_to_z(ds,var,x_labels,logger):
     z_mask = mask_distance_gaps(x_labels, x_grid, z_dist_all, logger)
 
     # New ref_depth
-    ref_depth = np.linspace(0,np.nanmax(np.array(ds['h'])),z_dist_all.shape[1],
-                            endpoint=True)
+    ref_depth = np.linspace(
+        0, np.nanmax(np.array(ds['h'])), z_dist_all.shape[1], endpoint=True)
 
     return z_mask, ref_depth, x_grid
 
-def make_x_labels(ds,logger):
+def make_x_labels(ds, logger):
     """
     Calculates the cumulative distance along the open boundary nodes.
 

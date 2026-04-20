@@ -367,10 +367,12 @@ class TestParameterValidation:
         ofs_ext.mkdir()
         (ofs_ext / 'leofs.shp').write_bytes(b'')
         op.parameter_validation(prop, logger)
-        assert os.path.isdir(prop.control_files_path)
+        # Only visuals_1d_station_path is consumed by the OBC pipeline;
+        # the 1D skill-pipeline dirs are intentionally no longer created.
         assert os.path.isdir(prop.visuals_1d_station_path)
-        assert os.path.isdir(prop.data_model_1d_node_path)
         assert hasattr(prop, 'model_obc_path')
+        assert not hasattr(prop, 'control_files_path')
+        assert not hasattr(prop, 'data_model_1d_node_path')
 
 
 # ---------------------------------------------------------------------------
