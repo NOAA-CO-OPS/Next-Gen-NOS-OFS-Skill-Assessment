@@ -5,7 +5,7 @@ Created on Wed Apr  1 11:09:54 2026
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,11 @@ import plotly.express as px
 import plotly.io as pio
 from plotly.subplots import make_subplots
 
-from ofs_skill.open_boundary.obc_processing import make_x_labels, transform_to_z
+from ofs_skill.open_boundary.obc_processing import (
+    _decode_time,
+    make_x_labels,
+    transform_to_z,
+)
 
 
 def plot_fvcom_obc(prop,ds,logger):
@@ -36,13 +40,9 @@ def plot_fvcom_obc(prop,ds,logger):
         logger (logging.Logger): Logger for status updates.
     """
     logger.info('Starting FVCOM plots...')
-    # Convert time to datetime object. Units of time are:
-    # days since 1858-11-17 00:00:00
-    time_dt = []
-    time_0 = datetime.strptime('1858-11-17','%Y-%m-%d')
-    for t in np.array(ds['time']):
-        delta = timedelta(days=float(t))
-        time_dt.append(time_0 + delta)
+    # Decode time via CF metadata (units/calendar), FVCOM Itime/Itime2,
+    # or legacy MJD fallback — see obc_processing._decode_time.
+    time_dt = _decode_time(ds, logger)
 
     # First do temp & salt
     logger.info('Plotting FVCOM temp & salt transects')
@@ -57,12 +57,13 @@ def plot_fvcom_obc(prop,ds,logger):
             plot_title_name = 'salinity'
 
         # Figure out dataset variable name
-        try:
-            var=str([item for item in list(ds.keys()) if name_var in item][0])
-        except Exception as e_x:
-            logger.error('Cannot find variable in xarray dataset. Error: %s',
-                         e_x)
+        matches = [item for item in ds.keys() if name_var in item]
+        if not matches:
+            logger.error(
+                "Variable containing '%s' not found in dataset; skipping.",
+                name_var)
             continue
+        var = str(matches[0])
 
         # Make x-axis labels
         x_labels = make_x_labels(ds,logger)

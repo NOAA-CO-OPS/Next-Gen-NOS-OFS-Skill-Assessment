@@ -6,17 +6,69 @@ Created on Wed Apr  1 11:02:36 2026
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from ofs_skill.model_processing import model_source
 from ofs_skill.obs_retrieval import utils
 
 _ZETA_MISSING_WARNED = False
+_TIME_FALLBACK_WARNED = False
+_MJD_EPOCH = '1858-11-17'
+
+
+def _decode_time(ds, logger):
+    """
+    Decode the OBC dataset's time coordinate into a list of ``datetime`` objects.
+
+    Resolution order:
+    1. If ``ds['time']`` has a CF ``units`` attr, use
+       ``xr.coding.times.decode_cf_datetime``.
+    2. Else if FVCOM's ``Itime`` (integer days since MJD epoch) and ``Itime2``
+       (milliseconds past midnight) are present, compose them.
+    3. Else fall back to the legacy MJD assumption
+       (``_MJD_EPOCH`` + days), logging a one-shot WARNING.
+
+    Args:
+        ds (xarray.Dataset): OBC dataset with a ``time`` variable.
+        logger (logging.Logger): Logger for fallback warnings.
+
+    Returns:
+        list[datetime.datetime]: One entry per time step.
+    """
+    global _TIME_FALLBACK_WARNED
+    units = ds['time'].attrs.get('units') if 'time' in ds else None
+    calendar = ds['time'].attrs.get('calendar', 'standard') if 'time' in ds else 'standard'
+
+    if units:
+        try:
+            decoded = xr.coding.times.decode_cf_datetime(
+                np.asarray(ds['time'].values), units=units, calendar=calendar)
+            return [pd.Timestamp(t).to_pydatetime() for t in np.asarray(decoded)]
+        except (ValueError, TypeError) as e_x:
+            logger.warning(
+                'CF time decode failed (%s); trying Itime/Itime2 or MJD fallback.',
+                e_x)
+
+    if 'Itime' in ds.variables and 'Itime2' in ds.variables:
+        epoch = datetime.strptime(_MJD_EPOCH, '%Y-%m-%d')
+        itime = np.asarray(ds['Itime']).astype('int64')
+        itime2 = np.asarray(ds['Itime2']).astype('int64')
+        return [epoch + timedelta(days=int(d), milliseconds=int(ms))
+                for d, ms in zip(itime, itime2)]
+
+    if not _TIME_FALLBACK_WARNED:
+        logger.warning(
+            "OBC time has no CF 'units' and no Itime/Itime2; "
+            'falling back to MJD epoch %s with days unit.', _MJD_EPOCH)
+        _TIME_FALLBACK_WARNED = True
+    epoch = datetime.strptime(_MJD_EPOCH, '%Y-%m-%d')
+    return [epoch + timedelta(days=float(t)) for t in np.asarray(ds['time'])]
 
 
 def parameter_validation(prop,logger):
@@ -187,9 +239,9 @@ def load_obc_file(prop,logger):
     # Catch the FileNotFoundError if the file is not found
         logger.error('Error: The OBC file was not found. Quitting...')
         sys.exit(-1)
-    except Exception as e_x:
-    # Catch any other potential exceptions during file operations
-        logger.error(f'An unexpected error occurred: {e_x}')
+    except (OSError, ValueError, KeyError, RuntimeError) as e_x:
+    # Narrowed: netCDF / xarray open failures; re-raise other programming errors
+        logger.exception('Failed to open OBC dataset: %s', e_x)
         sys.exit(-1)
 
     return ds
@@ -211,15 +263,21 @@ def mask_distance_gaps(x_orig,x_interp,z,logger):
     Returns:
         numpy.ndarray: The masked data array.
     """
-    gap_length = np.nanpercentile(np.diff(x_orig), 99) # Set maximum gap length in km
-    dx = np.argwhere(np.diff(x_orig) > gap_length) # Locate gap indices
-    gaps = np.array([x_orig[dx],x_orig[dx+1]]) # Assign distance ranges to gaps
+    # Robust threshold: median + 3*IQR is stable when one real gap dominates
+    # the distribution (percentile-based thresholds degenerate there) and still
+    # flags multiple similarly-sized gaps on unstructured FVCOM boundaries.
+    diffs = np.diff(x_orig)
+    q75 = np.nanpercentile(diffs, 75)
+    q25 = np.nanpercentile(diffs, 25)
+    gap_length = np.nanmedian(diffs) + 3.0 * (q75 - q25)
+    dx = np.flatnonzero(diffs > gap_length)  # 1-D indices
+    gaps = np.array([x_orig[dx], x_orig[dx + 1]])  # shape (2, N)
 
     # now loop and fill gaps with NaNs
     for i in range(gaps.shape[1]):
-        to_fill = np.argwhere(
-            (x_interp > gaps[0,i]) & (x_interp < gaps[1,i]))
-        z[:,:,to_fill] = np.nan
+        to_fill = np.flatnonzero(
+            (x_interp > gaps[0, i]) & (x_interp < gaps[1, i]))
+        z[:, :, to_fill] = np.nan
 
     return z
 

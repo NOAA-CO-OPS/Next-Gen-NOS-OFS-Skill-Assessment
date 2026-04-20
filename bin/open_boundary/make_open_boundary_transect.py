@@ -20,7 +20,7 @@ from ofs_skill.open_boundary.obc_plotting import plot_fvcom_obc
 from ofs_skill.open_boundary.obc_processing import load_obc_file, parameter_validation
 
 
-def make_open_boundary_transects(prop,logger):
+def make_open_boundary_transects(prop, logger=None):
     """
     Orchestrates the validation, loading, and plotting of open boundary transects.
 
@@ -49,6 +49,9 @@ def make_open_boundary_transects(prop,logger):
 
         # Check if log file exists
         if not os.path.isfile(log_config_file):
+            print(
+                f'ERROR: logging config file not found at {log_config_file}',
+                file=sys.stderr)
             sys.exit(-1)
 
         # Creater logger
