@@ -5,7 +5,6 @@ Open boundary transect subpackage imports
 
 from ofs_skill.open_boundary.obc_plotting import (
     plot_fvcom_obc,
-    plot_roms_obc,
 )
 from ofs_skill.open_boundary.obc_processing import (
     haversine,

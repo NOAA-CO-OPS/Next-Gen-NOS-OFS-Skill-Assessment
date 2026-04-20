@@ -16,21 +16,25 @@ from plotly.subplots import make_subplots
 from ofs_skill.open_boundary.obc_processing import make_x_labels, transform_to_z
 
 
-def plot_roms_obc(prop,ds,logger):
-    '''
-    '''
-    logger.info('Starting ROMS plots...')
-    # Convert time to datetime object. Units of time are:
-    # days since 1858-11-17 00:00:00
-    time_dt = []
-    time_0 = datetime.strptime('1858-11-17','%Y-%m-%d')
-    for t in np.array(ds['time']):
-        delta = timedelta(days=float(t))
-        time_dt.append(time_0 + delta)
-
 def plot_fvcom_obc(prop,ds,logger):
-    '''
-    '''
+    """
+    Generates a comprehensive suite of plots for FVCOM open boundary conditions.
+
+    This function produces:
+    1. Temperature and Salinity vertical transects (animated over time).
+    2. Water level (elevation/zeta) spatial transects along the boundary.
+    3. Node-by-node water level time series with a dropdown selection menu.
+    4. An interactive Mapbox map showing the geographic locations of OBC nodes.
+
+    The resulting plots are saved as interactive HTML files in the directory
+    defined by 'prop.visuals_1d_station_path'.
+
+    Args:
+        prop (ModelProperties): Configuration object containing model metadata
+            and output paths.
+        ds (xarray.Dataset): The FVCOM OBC netCDF dataset.
+        logger (logging.Logger): Logger for status updates.
+    """
     logger.info('Starting FVCOM plots...')
     # Convert time to datetime object. Units of time are:
     # days since 1858-11-17 00:00:00
@@ -64,11 +68,6 @@ def plot_fvcom_obc(prop,ds,logger):
         x_labels = make_x_labels(ds,logger)
         # Transform sigma layers to z-coordinates & interpolate transect
         z, y_labels, x_labels = transform_to_z(ds,var,x_labels,logger)
-
-        # Some OFS repeat themselves -- set boundaries
-        # if prop.ofs == 'sfbofs':
-        #     z = z[:,:,:100]
-        #     x_labels = x_labels[:100]
 
         # Figures
         fig = make_subplots(rows=nrows, cols=ncols)
@@ -164,11 +163,6 @@ def plot_fvcom_obc(prop,ds,logger):
         df = pd.concat([df, temp_], ignore_index=True)
         df['Time'] = df['Time'].dt.round('1s')
         df['Node'] = df['Node'].astype('string')
-
-    # Some OFS repeat themselves -- set boundaries
-    # if prop.ofs == 'ngofs2':
-    #     z = z[:,:,:171]
-    #     x_labels = x_labels[:171]
 
     # Figures
     nrows = 1

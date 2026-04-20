@@ -18,8 +18,33 @@ from ofs_skill.obs_retrieval import utils
 
 
 def parameter_validation(prop,logger):
+    """
+    Validates input parameters and initializes the directory structure for processing.
 
+    Performs the following checks:
+    - Validates that the 'StartDate_full' matches the ISO format.
+    - Verifies the existence of the OFS extents directory and the specific
+      shapefile for the model.
+    - Automatically creates necessary subdirectories for control files,
+      observations, model data, skill stats, and visuals.
+    - Sets the full path to the OBC input files.
+
+    Args:
+        prop (ModelProperties): Configuration object to be validated and updated.
+        logger (logging.Logger): Logger for error reporting.
+
+    Raises:
+        SystemExit: If date format is invalid or required directories/files
+            are missing.
+    """
     dir_params = utils.Utils().read_config_section('directories', logger)
+
+    # Model source validation
+    if 'roms' in prop.model_source:
+        logger.error('ROMS OBC plotting is not currently supported! '
+                     'Try an FVCOM OFS.')
+        sys.exit(-1)
+
     # Start Date and End Date validation
     try:
         datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
@@ -125,8 +150,20 @@ def haversine(lat1, lon1, lat2, lon2):
     return distance
 
 def load_obc_file(prop,logger):
-    '''
-    '''
+    """
+    Constructs the file path and loads the OBC netCDF file into an xarray Dataset.
+
+    The path is built using the model's 'ofs' name, cycle, and start date.
+    Time decoding is disabled specifically for FVCOM models to handle
+    custom time formats.
+
+    Args:
+        prop (ModelProperties): Object containing model name, cycle, and path info.
+        logger (logging.Logger): Logger for error reporting.
+
+    Returns:
+        xarray.Dataset: The loaded netCDF data.
+    """
     # path /opt/archive/prod/{prop.ofs}/input/{yyyymm}
     # filename {prop.ofs}.t{cycle}z.{yyyymmdd}.obc.nc
 
@@ -156,8 +193,22 @@ def load_obc_file(prop,logger):
     return ds
 
 def mask_distance_gaps(x_orig,x_interp,z,logger):
-    '''
-    '''
+    """
+    Identifies large spatial gaps in the original boundary coordinates and
+    masks the interpolated data with NaNs in those regions.
+
+    This prevents the plotting of artificial "interpolated" data across
+    discontinuous boundary segments.
+
+    Args:
+        x_orig (array-like): Original cumulative distance labels.
+        x_interp (array-like): The new interpolated x-grid.
+        z (numpy.ndarray): The 3D data array (time, depth, distance) to mask.
+        logger (logging.Logger): Logger for status updates.
+
+    Returns:
+        numpy.ndarray: The masked data array.
+    """
     gap_length = np.nanpercentile(np.diff(x_orig), 99) # Set maximum gap length in km
     dx = np.argwhere(np.diff(x_orig) > gap_length) # Locate gap indices
     gaps = np.array([x_orig[dx],x_orig[dx+1]]) # Assign distance ranges to gaps
@@ -171,9 +222,27 @@ def mask_distance_gaps(x_orig,x_interp,z,logger):
     return z
 
 def transform_to_z(ds,var,x_labels,logger):
-    '''
-    '''
+    """
+    Transforms model data from sigma layers to vertical z-coordinates (depth)
+    and interpolates onto a regular spatial grid.
 
+    The process involves:
+    1. Calculating a new vertical z-grid based on maximum depth.
+    2. Interpolating the variable from sigma layers to fixed depth levels.
+    3. Interpolating the spatial dimension to a regular horizontal spacing (0.25km).
+    4. Reducing temporal and spatial resolution if necessary to optimize for
+       web-based plotting.
+
+    Args:
+        ds (xarray.Dataset): The source dataset.
+        var (str): The name of the variable to transform (e.g., 'temp').
+        x_labels (array-like): Cumulative distances along the boundary.
+        logger (logging.Logger): Logger for status updates.
+
+    Returns:
+        tuple: (z_mask, ref_depth, x_grid) containing the 3D data array,
+            the depth axis, and the horizontal distance axis.
+    """
     # Set new siglay length from max depth & min dz
     siglay_len = int(np.ceil(np.nanmax(np.array(ds['h']))/\
                              np.nanmin(np.array(ds['h'])/len(ds['siglay']))))
@@ -242,8 +311,21 @@ def transform_to_z(ds,var,x_labels,logger):
     return z_mask, ref_depth, x_grid
 
 def make_x_labels(ds,logger):
-    '''
-    '''
+    """
+    Calculates the cumulative distance along the open boundary nodes.
+
+    Iterates through the latitude and longitude of the boundary nodes and
+    uses the Haversine formula to determine the distance between
+    consecutive points.
+
+    Args:
+        ds (xarray.Dataset): Dataset containing 'lat' and 'lon' coordinates.
+        logger (logging.Logger): Logger for status updates.
+
+    Returns:
+        numpy.ndarray: An array of cumulative distances in kilometers,
+            starting from 0.
+    """
     x_labels = []
     for i in range(len(ds['lat'])-1):
         x_labels.append(haversine(np.array(ds['lat'])[i],
