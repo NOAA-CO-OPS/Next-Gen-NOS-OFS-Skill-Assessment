@@ -76,17 +76,17 @@ def make_open_boundary_transects(prop, logger=None):
     logger.info('--- Starting open boundary transect ---')
 
     # Do parameter validation
-    parameter_validation(prop,logger)
+    parameter_validation(prop, logger)
 
     # Load file(s)
-    ds = load_obc_file(prop,logger)
+    ds = load_obc_file(prop, logger)
 
     # Plot OBC netcdf file
     if model_source.model_source(prop.ofs) == 'roms':
         logger.error('ROMS OBC processing and plotting is not yet available!')
         sys.exit(-1)
     elif model_source.model_source(prop.ofs) == 'fvcom':
-        plot_fvcom_obc(prop,ds,logger)
+        plot_fvcom_obc(prop, ds, logger)
     else:
         logger.error('Model source %s not found!',
                      model_source.model_source(prop.ofs))
@@ -136,7 +136,7 @@ def main():
             f"{', '.join(_SUPPORTED_OFS)}"
         )
 
-    if args.Cycle_Hr is not None and not _CYCLE_RE.match(args.Cycle_Hr):
+    if args.Cycle_Hr is not None and not _CYCLE_RE.fullmatch(args.Cycle_Hr):
         parser.error(
             f"invalid cycle '{args.Cycle_Hr}'; must be two digits, e.g. '06'"
         )

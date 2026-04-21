@@ -148,9 +148,13 @@ def parameter_validation(prop, logger):
     os.makedirs(prop.visuals_1d_station_path, exist_ok=True)
 
     # Assign path to OBC files
-    prop.model_obc_path = os.path.join(
-        dir_params['model_obc_dir'], prop.ofs, 'input'
-    )
+    model_obc_dir = dir_params.get('model_obc_dir')
+    if not model_obc_dir:
+        logger.error(
+            "'model_obc_dir' is not set in conf/ofs_dps.conf. "
+            'Copy the key from conf/ofs_dps.conf.example and retry. Abort!')
+        sys.exit(-1)
+    prop.model_obc_path = os.path.join(model_obc_dir, prop.ofs, 'input')
     prop.model_obc_path = Path(prop.model_obc_path).as_posix()
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -204,8 +208,8 @@ def load_obc_file(prop, logger):
 
     # Get next directory name from input date and then set full file path
     date_dt = datetime.strptime(prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
-    dir_name = datetime.strftime(date_dt,'%Y%m')
-    file_date = datetime.strftime(date_dt,'%Y%m%d')
+    dir_name = datetime.strftime(date_dt, '%Y%m')
+    file_date = datetime.strftime(date_dt, '%Y%m%d')
     file_name = f'{prop.ofs}.t{prop.model_cycle}z.{file_date}.obc.nc'
     file_path = os.path.join(prop.model_obc_path, dir_name, file_name)
     file_path = Path(file_path).as_posix() # Done with file path
@@ -227,7 +231,7 @@ def load_obc_file(prop, logger):
 
     return ds
 
-def mask_distance_gaps(x_orig, x_interp, z, logger):
+def mask_distance_gaps(x_orig, x_interp, z):
     """
     Identifies large spatial gaps in the original boundary coordinates and
     masks the interpolated data with NaNs in those regions.
@@ -239,7 +243,6 @@ def mask_distance_gaps(x_orig, x_interp, z, logger):
         x_orig (array-like): Original cumulative distance labels.
         x_interp (array-like): The new interpolated x-grid.
         z (numpy.ndarray): The 3D data array (time, depth, distance) to mask.
-        logger (logging.Logger): Logger for status updates.
 
     Returns:
         numpy.ndarray: The masked data array.
@@ -339,9 +342,11 @@ def transform_to_z(ds, var, x_labels, logger):
             vals_sorted = var_arr[i, :, j][order]
             interp = np.interp(ref_depth, depth_sorted, vals_sorted,
                                left=np.nan, right=np.nan)
-            # Mask above free surface and below seafloor
+            # Mask above the free surface. The below-seafloor mask uses h[j]
+            # (not h+zeta) because ref_depth lives in the MSL frame; at low
+            # tide (zeta<0) the bottom of the water column is still at h[j].
             interp[ref_depth < -zeta_arr[i, j]] = np.nan
-            interp[ref_depth > total_depth] = np.nan
+            interp[ref_depth > h[j]] = np.nan
             z_depth_single[:, j] = interp
         z_depth_all.append(z_depth_single)
 
@@ -367,7 +372,7 @@ def transform_to_z(ds, var, x_labels, logger):
     z_dist_all = np.stack(z_dist_all)
 
     # Finally we need to mask distance gaps with NaNs
-    z_mask = mask_distance_gaps(x_labels, x_grid, z_dist_all, logger)
+    z_mask = mask_distance_gaps(x_labels, x_grid, z_dist_all)
 
     # New ref_depth
     ref_depth = np.linspace(
@@ -375,7 +380,7 @@ def transform_to_z(ds, var, x_labels, logger):
 
     return z_mask, ref_depth, x_grid
 
-def make_x_labels(ds, logger):
+def make_x_labels(ds):
     """
     Calculates the cumulative distance along the open boundary nodes.
 
@@ -385,7 +390,6 @@ def make_x_labels(ds, logger):
 
     Args:
         ds (xarray.Dataset): Dataset containing 'lat' and 'lon' coordinates.
-        logger (logging.Logger): Logger for status updates.
 
     Returns:
         numpy.ndarray: An array of cumulative distances in kilometers,

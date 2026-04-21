@@ -73,7 +73,7 @@ def plot_fvcom_obc(prop, ds, logger):
         var = str(matches[0])
 
         # Make x-axis labels
-        x_labels = make_x_labels(ds, logger)
+        x_labels = make_x_labels(ds)
         # Transform sigma layers to z-coordinates & interpolate transect
         z, y_labels, x_labels = transform_to_z(ds, var, x_labels, logger)
 
@@ -144,7 +144,7 @@ def plot_fvcom_obc(prop, ds, logger):
         nodes = np.linspace(0, len(ds['lat']) - 1, len(ds['lat']))
         nodes = nodes.astype(int)
     # Make x-axis labels
-    x_labels = make_x_labels(ds, logger)
+    x_labels = make_x_labels(ds)
     # Build big dataframe — accumulate per-timestep frames in a list and
     # concat once (avoids O(n^2) copy + pandas FutureWarning on concat(None)).
     frames = []

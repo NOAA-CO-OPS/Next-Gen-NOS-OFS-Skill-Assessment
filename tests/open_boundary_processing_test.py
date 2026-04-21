@@ -202,7 +202,7 @@ class TestMaskDistanceGaps:
         x_orig = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 15.0, 16.0, 17.0, 18.0])
         x_interp = np.linspace(0.0, 18.0, 200)
         z = np.ones((2, 3, 200))
-        out = op.mask_distance_gaps(x_orig, x_interp, z.copy(), logger)
+        out = op.mask_distance_gaps(x_orig, x_interp, z.copy())
         # Cells strictly inside (5, 15) must be NaN
         inside = (x_interp > 5.0) & (x_interp < 15.0)
         assert np.all(np.isnan(out[:, :, inside]))
@@ -214,7 +214,7 @@ class TestMaskDistanceGaps:
         x_orig = np.linspace(0.0, 10.0, 11)
         x_interp = np.linspace(0.0, 10.0, 200)
         z = np.ones((2, 3, 200))
-        out = op.mask_distance_gaps(x_orig, x_interp, z.copy(), logger)
+        out = op.mask_distance_gaps(x_orig, x_interp, z.copy())
         assert not np.any(np.isnan(out))
 
     def test_two_gaps_both_masked(self, logger):
@@ -222,7 +222,7 @@ class TestMaskDistanceGaps:
         x_orig = np.array([0.0, 1.0, 2.0, 12.0, 13.0, 14.0, 24.0, 25.0, 26.0])
         x_interp = np.linspace(0.0, 26.0, 300)
         z = np.ones((1, 2, 300))
-        out = op.mask_distance_gaps(x_orig, x_interp, z.copy(), logger)
+        out = op.mask_distance_gaps(x_orig, x_interp, z.copy())
         first_gap = (x_interp > 2.0) & (x_interp < 12.0)
         second_gap = (x_interp > 14.0) & (x_interp < 24.0)
         assert np.all(np.isnan(out[:, :, first_gap]))
@@ -234,7 +234,7 @@ class TestMaskDistanceGaps:
 # ---------------------------------------------------------------------------
 class TestTransformToZ:
     def test_happy_path_shape(self, synth_ds, logger):
-        x_labels = op.make_x_labels(synth_ds, logger)
+        x_labels = op.make_x_labels(synth_ds)
         z, ref_depth, x_grid = op.transform_to_z(synth_ds, 'temp', x_labels, logger)
         # (n_time_subset, siglay_len, len(x_grid))
         assert z.ndim == 3
@@ -246,7 +246,7 @@ class TestTransformToZ:
 
     def test_seafloor_mask_at_shallow_node(self, synth_ds, logger):
         # Node 0 has h=5 m. Rows where ref_depth > 5+zeta should be NaN.
-        x_labels = op.make_x_labels(synth_ds, logger)
+        x_labels = op.make_x_labels(synth_ds)
         z, ref_depth, x_grid = op.transform_to_z(synth_ds, 'temp', x_labels, logger)
         # Nearest column index to x_grid[0]
         col0 = 0
@@ -255,7 +255,7 @@ class TestTransformToZ:
 
     def test_no_zeta_path_warns(self, synth_ds_no_zeta, logger, caplog):
         op._ZETA_MISSING_WARNED = False
-        x_labels = op.make_x_labels(synth_ds_no_zeta, logger)
+        x_labels = op.make_x_labels(synth_ds_no_zeta)
         with caplog.at_level(logging.WARNING, logger=logger.name):
             z, ref_depth, x_grid = op.transform_to_z(
                 synth_ds_no_zeta, 'temp', x_labels, logger)
@@ -271,8 +271,8 @@ class TestTransformToZ:
         ds_u['temp'] = (('time', 'siglay', 'node'), temp_fixed)
         ds_s['temp'] = (('time', 'siglay', 'node'), temp_fixed)
 
-        x_u = op.make_x_labels(ds_u, logger)
-        x_s = op.make_x_labels(ds_s, logger)
+        x_u = op.make_x_labels(ds_u)
+        x_s = op.make_x_labels(ds_s)
         z_u, _, _ = op.transform_to_z(ds_u, 'temp', x_u, logger)
         z_s, _, _ = op.transform_to_z(ds_s, 'temp', x_s, logger)
 
@@ -285,7 +285,7 @@ class TestTransformToZ:
         ds = _make_ds()
         # All zeta = -0.5 so -zeta = +0.5; ref_depth < 0.5 masked.
         ds['zeta'].values[...] = -0.5
-        x_labels = op.make_x_labels(ds, logger)
+        x_labels = op.make_x_labels(ds)
         z, ref_depth, x_grid = op.transform_to_z(ds, 'temp', x_labels, logger)
         shallow_rows = ref_depth < 0.49
         # All shallow rows must be NaN (above free surface)
@@ -297,15 +297,15 @@ class TestTransformToZ:
 # ---------------------------------------------------------------------------
 class TestMakeXLabels:
     def test_starts_at_zero(self, synth_ds, logger):
-        x = op.make_x_labels(synth_ds, logger)
+        x = op.make_x_labels(synth_ds)
         assert x[0] == 0.0
 
     def test_length_matches_nodes(self, synth_ds, logger):
-        x = op.make_x_labels(synth_ds, logger)
+        x = op.make_x_labels(synth_ds)
         assert len(x) == N_NODE
 
     def test_monotone(self, synth_ds, logger):
-        x = op.make_x_labels(synth_ds, logger)
+        x = op.make_x_labels(synth_ds)
         assert np.all(np.diff(x) >= 0.0)
 
     def test_three_point_triangle(self, logger):
@@ -317,7 +317,7 @@ class TestMakeXLabels:
                 'lat': (('node',), np.array([0.0, 0.0, 1.0])),
             },
         )
-        x = op.make_x_labels(ds, logger)
+        x = op.make_x_labels(ds)
         assert len(x) == 3
         assert x[0] == pytest.approx(0.0)
         assert x[1] == pytest.approx(111.19, abs=0.5)
