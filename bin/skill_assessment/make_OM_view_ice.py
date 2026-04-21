@@ -204,7 +204,7 @@ def make_bar_plots(df1, df2, prop, cast, logger):
     # prop.stat = prop.stat.rstrip('*')
     output_file = (
         f'{prop.om_files}/bars_ice_{cast}_'
-        f'_all_GLOFS'
+        f'all_GLOFS'
         )
     fig_config = {
     'toImageButtonOptions': {
