@@ -1,47 +1,45 @@
-"""Generate extent shapefile from ADCIRC grid file.
+"""Script to find the boundary edges of the STOFS-2D-Global mesh and save them as a shapefile.
 
-The format of the input grid files is described in 
-the documentation at:
-    https://adcirc.org/home/documentation/users-manual-v53/parameter-definitions#NOPE
-
-Example input grid file format for STOFS-2D-Global:
-
-OceanMesh2D
-24875336 12785004
-< 12785004 lines of:
-    NodeID Longitude Latitude Depth
->
-< 24875336 lines of:
-    ElementID NodeID1 NodeID2 NodeID3
->
-0 = Number of open boundaries
-0 = Total number of open boundary nodes
-262 = Number of land boundaries
-12421 = Total number of land boundary nodes
-< 262 groups of:
-    Either (type-24, internal boundary):
-        < 1 line per boundary node of:
-            NodeID BackFaceNodeID BarrierHeight BarrierCoefficient BarrierCoefficient
-        >
-    or (type-20, external boundary):
-        < 1 line per boundary node of:
-            NodeID     
-        >
->
+This workflow is broken into quite a lot of  functions, which are called in 
+sequence at the bottom of the script. This is really for readability 
+and modularity, since the workflow is quite complex and there are a lot of steps.
+However, the individual functions are not really meant to be used independently.
+So, beware if re-using these functions elsewhere!
 
 """
 
 
+
 import pandas as pd
+import numpy as np
 import shapely
+from shapely.ops import unary_union
 import geopandas as gpd
-import argparse
 import tempfile
+import time
+import requests
 
 
 STOFS_2D_GLO_V2P1_GRID_URL = "https://noaa-gestofs-pds.s3.amazonaws.com/staticfiles/v2.1/stofs_2d_glo_grid"
-STOFS_2D_GLO_V2P1_GRID_FILENAME = "/home/jre/data/noaa-gestofs-pds/staticfiles/v2.1/stofs_2d_glo_grid"
+STOFS_2D_GLO_V2P1_GRID_FILENAME = None # Set this to the file path of the grid file if you have it downloaded, or leave as None to download it to a temporary location each time (slow).
 BOUNDARY_HEADER_STRING = "= Number of nodes "
+
+
+def get_grid_filepath():
+    """Get the file path for the grid file."""
+    if STOFS_2D_GLO_V2P1_GRID_FILENAME is not None:
+        return STOFS_2D_GLO_V2P1_GRID_FILENAME
+    # If the file path is not set, download the file to a temporary location and return the path.
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file: 
+        print('Variable STOFS_2D_GLO_V2P1_GRID_FILENAME is not set. Downloading grid file to temporary location. Move the temporary file somewhere safe and edit the script to set the variable if you want to avoid downloading the file every time.')
+        print(f"Downloading grid file from {STOFS_2D_GLO_V2P1_GRID_URL} to temporary file {tmp_file.name}...")
+        print('Pausing for 10 seconds to abort if this is not intended...')
+        time.sleep(10)
+        print('Downloading now...')
+        response = requests.get(STOFS_2D_GLO_V2P1_GRID_URL)
+        response.raise_for_status()  # Check if the download was successful
+        tmp_file.write(response.content)
+        return tmp_file.name
 
 
 def get_number_elements_nodes(line):
@@ -58,14 +56,20 @@ def parse_boundary_header_line(line):
 
 
 def parse_grid_file_line_by_line(filename):
+    """Parse the STOFS-2D-Global grid file line by line to extract node and edge information.
+    
+    This returns the 'node_dict' used by several other functions, which contains
+    lists of node IDs, latitudes, longitudes, and edge node pairs. 
+    
+    We parse the file line by line to avoid memory issues with loading the entire 
+    file at once, since it is very large.
+
+    """
     node_id = []
     node_lat = []
     node_lon = []
-    boundary_id = []
-    boundary_n_nodes = []
-    boundary_type = []
-    boundary_node_list = []
-    boundary_section = False
+    edge_node_1 = []
+    edge_node_2 = []
     with open(filename, 'r', encoding='utf-8') as file:
         for line_num, line in enumerate(file):
             # Print every 100000 lines.
@@ -85,39 +89,21 @@ def parse_grid_file_line_by_line(filename):
                 node_lon.append(float(parts[1]))
                 node_lat.append(float(parts[2]))
                 continue
-            # Identify lines that start a boundary section.
-            if BOUNDARY_HEADER_STRING in line:
-                print(f"Found boundary header on line {line_num}: {line.strip()}")
-                boundary_section = True
-                b_nodes = []
-                (b, b_n_nodes, b_type) = parse_boundary_header_line(line)
-                boundary_id.append(b)
-                boundary_n_nodes.append(b_n_nodes)
-                boundary_type.append(b_type)
-                boundary_line_num = line_num
-                boundary_lines_start = boundary_line_num + 1
-                boundary_lines_end = boundary_line_num + b_n_nodes
+            elif line_num <= N_nodes + 1 + N_e:
+                parts = line.strip().split()
+                element_node_count = int(parts[1])
+                node_ids = [int(parts[i]) for i in range(2, 2 + element_node_count)]
+                for i in range(element_node_count):
+                    for j in range(i + 1, element_node_count):
+                        edge_node_1.append(min(node_ids[i], node_ids[j]))
+                        edge_node_2.append(max(node_ids[i], node_ids[j]))
                 continue
-            # If we are in a boundary section, parse the node info.
-            if boundary_section and line_num >= boundary_lines_start and line_num < boundary_lines_end:
-                b_nodes.append(int(line.strip().split()[0]))
-                continue
-            # If we are at the end of the boundary section, parse the node info,
-            # append the node list to the list of node lists, and set boundary_section 
-            # back to False.
-            if boundary_section and line_num == boundary_lines_end :
-                    b_nodes.append(int(line.strip().split()[0]))
-                    boundary_node_list.append(b_nodes)
-                    boundary_section = False
-                    continue
     return {
         'node_id': node_id,
         'node_lat': node_lat,
         'node_lon': node_lon,
-        'boundary_id': boundary_id,
-        'boundary_node_list': boundary_node_list,
-        'boundary_type': boundary_type,
-        'boundary_n_nodes': boundary_n_nodes
+        'edge_node_1': edge_node_1,
+        'edge_node_2': edge_node_2
     }
 
 
@@ -139,170 +125,302 @@ def get_node_data_frame(node_dict):
     return df
 
 
-def get_node_geo_data_frame(df_node):
-    gdf = gpd.GeoDataFrame(
-        df_node, 
-        geometry=gpd.points_from_xy(
-            df_node.node_lon, 
-            df_node.node_lat
-        ), 
-        crs="EPSG:4326"
-    )
+def remove_duplicate_edges_in_chunks(node_dict):
+    """Remove duplicate edges from the edge lists in the node dictionary, in chunks to avoid memory issues.
+    
+    The purpose of this is simply to find the edges that are on the boundary 
+    of the mesh, which are the edges that only appear once in the edge list.
+    
+    """
+    df_boundary_edges = pd.DataFrame()
+    n_edges = len(node_dict['edge_node_1'])
+    chunk_size = 1000000
+    for i in range(0, n_edges, chunk_size):
+        print(f"Processing edges {i} to {min(i + chunk_size, n_edges)}")
+        chunk = pd.DataFrame({
+            'node_id1': node_dict['edge_node_1'][i:i + chunk_size],
+            'node_id2': node_dict['edge_node_2'][i:i + chunk_size]
+        })
+        # Check for duplicates in the chunk.
+        # We use keep=False to mark all duplicates, not just the first occurrence.
+        duplicates = chunk.duplicated(subset=['node_id1', 'node_id2'], keep=False)
+        keep = chunk[~duplicates]
+        print(f"Keeping {len(keep)} edges from this chunk.")
+        # Add non-duplicate edges to the boundary edge data frame.
+        df_boundary_edges = pd.concat([df_boundary_edges, keep], ignore_index=True)
+        # Check combined data frame for duplicates.
+        # We use keep=False to mark all duplicates, not just the first occurrence.
+        grand_duplicates = df_boundary_edges.duplicated(subset=['node_id1', 'node_id2'], keep=False)
+        df_boundary_edges = df_boundary_edges[~grand_duplicates]
+        print(f"Total boundary edges so far: {len(df_boundary_edges)}")
+    return df_boundary_edges
+
+
+def get_boundary_edges_geopandas(df_boundary_edges, df_node):
+    """Get GeoPandas data frame containing boundary edges."""
+    gdf = gpd.GeoDataFrame(df_boundary_edges)
+    gdf['geometry'] = gdf.apply(lambda row: shapely.geometry.LineString([
+        (df_node.loc[row['node_id1'], 'node_lon'], df_node.loc[row['node_id1'], 'node_lat']),
+        (df_node.loc[row['node_id2'], 'node_lon'], df_node.loc[row['node_id2'], 'node_lat'])
+    ]), axis=1)
+    gdf = gdf.set_geometry('geometry')
     return gdf
 
 
-def boundary_to_polygon(
-    boundary_node_list,
-    df_node
-):
-    """Convert a list of boundary nodes to a polygon."""
-    coords = []
-    # Loop over the boundary nodes and get their coordinates from the data frame.
-    for node_id in boundary_node_list:
-        coords.append((df_node.loc[node_id, 'node_lon'], df_node.loc[node_id, 'node_lat']))
-    # If necessary, add the first node again to close the polygon.
-    if coords[0] != coords[-1]:
-        print('Appending first node to end of coordinates to close the polygon.')
-        coords.append((df_node.loc[boundary_node_list[0], 'node_lon'], df_node.loc[boundary_node_list[0], 'node_lat']))
-    else:
-        print('First and last coordinates are the same, no need to append first node again.')
-    return shapely.geometry.Polygon(coords)
+def split_df_at_antimeridian(gdf):
+    """Format dataframe by splitting any 2-node LineStrings that cross the antimeridian.
+
+    Adds new nodes at the crossing points on the map edges (180 or -180 longitude) 
+    and creates two new LineStrings that stop at the map edges.
+
+    """
+    result = gdf.copy()
+    len_orig = len(gdf)
+    # Extract the LineStrings that cross the anitmeridian.
+    lon_span = gdf['geometry'].apply(lambda geom: abs(geom.coords[0][0] - geom.coords[1][0]))
+    to_replace = result[lon_span > 180]
+    
+    # Iterate over rows and get new rows for each crossing edge.
+    rows_to_add = pd.DataFrame()
+    for index, row in to_replace.iterrows():
+        max_node_id = max(result['node_id1'].max(), result['node_id2'].max())
+        new_rows = split_linestring_at_antimeridian(row, max_node_id)
+        # Replace the original row with the new rows.
+        print(f'Replacing row\n {row.to_frame().T} \nwith new rows\n {new_rows}.')
+        rows_to_add = pd.concat([rows_to_add, new_rows], ignore_index=True)
+   
+    # Add all the new rows and drop the old ones.
+    result = pd.concat([result[lon_span <= 180], rows_to_add], ignore_index=True)
+    len_new = len(result)
+    print(f"Split {len(to_replace)} edges that crossed the antimeridian into {len_new - len_orig} new edges.")
+    print(f"Total edges before splitting: {len_orig}.\nTotal edges after splitting: {len_new}.")
+   
+    # Check for longitude jumps > 180 in the result, and print a warning if any are found.
+    result_lon_span = result['geometry'].apply(lambda geom: abs(geom.coords[0][0] - geom.coords[1][0]))
+    if (result_lon_span > 180).any():
+        print("Warning: Found edges that still cross the antimeridian after splitting. This may indicate an issue with the splitting logic.")
+    return result
 
 
-def boundaries_to_shapefile(boundaries_nodes, shapefile_name):
-    """Create a shapefile from boundary and node data."""  
-    # Convery node data to a data frame for easier access.
-    df_nodes = get_node_data_frame(stofs_boundaries_nodes)
-    geometries = []
-    for boundary_node_list in boundaries_nodes['boundary_node_list']:
-        geometries.append(boundary_to_polygon(boundary_node_list, df_nodes))
-    # Create a geodataframe.
-    # Note we truncate columns names to 10 characters for shapefile compatibility.
-    gdf = gpd.GeoDataFrame(
-        data = {
-            'boundaryID': boundaries_nodes['boundary_id'],
-            'type': boundaries_nodes['boundary_type'],
-            'N_nodes': boundaries_nodes['boundary_n_nodes']
-        },
-        geometry=geometries,
-        crs="EPSG:4326"
-    )
-    gdf.to_file(shapefile_name)
-    return gdf
+def split_linestring_at_antimeridian(row, max_node_id):
+    """Split a LineString into two LineStrings if it crosses the antimeridian
+    
+    ...and calculate new nodes at the crossing points on the map edges (180 
+    or -180 longitude).
+
+    Parameters:
+        row: A row from the GeoDataFrame containing the LineString to split. 
+        Must have columns 'node_id1', 'node_id2', and 'geometry'.
+        max_node_id: The maximum node ID currently in the data frame, used to 
+        assign new node IDs for the crossing points.
+
+    Returns: A new data frame containing the two new rows to replace the original 
+    row, with new node IDs and geometries for the split LineStrings. If the 
+    original row does not cross the antimeridian, returns a data frame containing
+    just the original row.
+    
+    """
+    # Get the geometry of the row, which should be a LineString.
+    geom = row['geometry']
+    # Extract coordinates from the geometry
+    coords = list(geom.coords)
+    (existing_node_lon1, existing_node_lat1), (existing_node_lon2, existing_node_lat2) = coords
+    # Get the node IDs.
+    existing_node_id1 = row['node_id1']
+    existing_node_id2 = row['node_id2']
+    
+    # Failsafe: Only apply to exactly 2-node linestrings
+    if len(coords) != 2:
+        print(f"Warning: Geometry with node IDs {existing_node_id1} and {existing_node_id2} does not have exactly 2 nodes. Skipping.")
+        print(row)
+        return geom
+    
+    # A longitude jump of > 180 degrees indicates an antimeridian crossing
+    if abs(existing_node_lon1 - existing_node_lon2) > 180:
+        if existing_node_lon1 > 0:
+            # Segment originates in the Eastern Hemisphere and crosses East (e.g., 170 to -170)
+            new_node_lon1 = 180.0
+            new_node_lon2 = -180.0
+            dist1 = 180.0 - existing_node_lon1
+            dist2 = existing_node_lat2 + 180.0 # equivalent to lon2 - (-180.0)
+        else:
+            # Segment originates in the Western Hemisphere and crosses West (e.g., -170 to 170)
+            new_node_lon1 = -180.0
+            new_node_lon2 = 180.0
+            dist1 = existing_node_lon1 + 180.0 # equivalent to lon1 - (-180.0)
+            dist2 = 180.0 - existing_node_lon2
+            
+        total_dist = dist1 + dist2
+        
+        # Interpolate the latitude at the exact crossing point (+/- 180)
+        fraction = dist1 / total_dist if total_dist != 0 else 0.5
+        new_node_lat = existing_node_lat1 + fraction * (existing_node_lat2 - existing_node_lat1)
+        
+        # Create the two new broken LineStrings that stop at the map edges
+        segment1 = shapely.LineString([
+            (existing_node_lon1, existing_node_lat1), 
+            (new_node_lon1, new_node_lat)
+        ])
+        segment2 = shapely.LineString([
+            (new_node_lon2, new_node_lat), 
+            (existing_node_lon2, existing_node_lat2)
+        ])
+
+        # Put everything together into a new data frame to replace row.
+        new_node_id1 = max_node_id + 1
+        new_node_id2 = max_node_id + 2
+        new_rows = pd.DataFrame({
+            'node_id1': [existing_node_id1, new_node_id2],
+            'node_id2': [new_node_id1, existing_node_id2],
+            'geometry': [segment1, segment2]
+        })
+        
+        # Package back into a MultiLineString
+        return new_rows
+        
+    # If it doesn't cross, return the original geometry
+    return row.to_frame().T
 
 
-def boundary_nodes_to_shapefile(boundaries_nodes):
-    """Create a shapefile that has all boundary nodes as individual points."""
-    shapefile_name = "/home/jre/dev-Next-Gen-NOS-OFS-Skill-Assessment/ofs_extents/stofs_2d_glo_points.shp"
-    # Convery node data to a data frame for easier access.
-    df_nodes = get_node_data_frame(stofs_boundaries_nodes)
-    geometries = []
-    bID_list = []
-    btyp_list = []
-    bnn_list = []
-    for ib, boundary_node_list in enumerate(boundaries_nodes['boundary_node_list']):
-        for node in boundary_node_list:
-            geometries.append(shapely.geometry.Point(df_nodes.loc[node, 'node_lon'], df_nodes.loc[node, 'node_lat']))
-            bID_list.append(boundaries_nodes['boundary_id'][ib])
-            btyp_list.append(boundaries_nodes['boundary_type'][ib])
-            bnn_list.append(boundaries_nodes['boundary_n_nodes'][ib])
-    # Create a geodataframe.
-    # Note we truncate columns names to 10 characters for shapefile compatibility.
-    gdf = gpd.GeoDataFrame(
-        data = {
-            'boundaryID': bID_list,
-            'type': btyp_list,
-            'N_nodes': bnn_list
-        },
-        geometry=geometries,
-        crs="EPSG:4326"
-    )
-    gdf.to_file(shapefile_name)
-    return gdf
+def add_north_pole_edge(gdf):
+    """Add a LineString edge across the north pole to help in polygonization.
+    
+    Not currently used.
+    """
+    north_pole_node_id1 = max(gdf['node_id1'].max(), gdf['node_id2'].max()) + 1
+    north_pole_node_id2 = north_pole_node_id1 + 1
+    north_pole_edge = shapely.LineString([(-180.0, 90.0), (180.0, 90.0)])
+    north_pole_row = pd.DataFrame({
+        'node_id1': [north_pole_node_id1],
+        'node_id2': [north_pole_node_id2],
+        'geometry': [north_pole_edge]
+    })
+    result = pd.concat([gdf, north_pole_row], ignore_index=True)
+    return result
 
 
-def write_global_extent_shapefile(shapefile_name):
-    """Write a shapefile containing the global extent of the STOFS-2D-Global grid."""
-    # Define the global extent as a polygon.
-    global_extent_polygon = shapely.geometry.Polygon([
-        (-180, -90),
-        (-180, 90),
-        (180, 90),
-        (180, -90),
-        (-180, -90)
-    ])
-    # Create a geodataframe.
-    gdf = gpd.GeoDataFrame(
-        data = {
-            'name': ['STOFS-2D-Global Extent']
-        },
-        geometry=[global_extent_polygon],
-        crs="EPSG:4326"
-    )
-    gdf.to_file(shapefile_name)
+def add_south_pole_edge(gdf):
+    """Add a LineString edge along the south pole to ensure that Antarctica is included in the polygonization."""
+    south_pole_node_id1 = max(gdf['node_id1'].max(), gdf['node_id2'].max()) + 1
+    south_pole_node_id2 = south_pole_node_id1 + 1
+    south_pole_edge = shapely.LineString([(-180.0, -90.0), (180.0, -90.0)])
+    south_pole_row = pd.DataFrame({
+        'node_id1': [south_pole_node_id1],
+        'node_id2': [south_pole_node_id2],
+        'geometry': [south_pole_edge]
+    })
+    result = pd.concat([gdf, south_pole_row], ignore_index=True)
+    return result
+
+
+def join_antimeridian_edges(gdf):
+    """Closes the open loops at the antimeridian.
+    
+    After splitting edges at the antimeridian, we have pairs of edges that touch 
+    the -180 and 180 longitude lines. We need to join these up with new 
+    north-south edges to create closed loops for polygonization.
+    
+    We start at the south pole and work northwards, because we know Antartica 
+    is the first land area. We assume that the edges are well-behaved and 
+    that we can just join up the first two edges that touch the -180 longitude 
+    line, then the next two, etc. We do the same for the 180 longitude line. 
+    If this is not the case, we print a warning and continue anyway, 
+    which may lead to issues with polygonization.
+    """
+    # Get the edges that touch the -180 longitude edge.
+    west_edges = gdf[gdf['geometry'].apply(lambda geom: geom.coords[0][0] == -180.0 or geom.coords[1][0] == -180.0)]
+    # Order them by latitude, increasing from the south pole to the north pole.
+    west_edges = west_edges.sort_values(by='geometry', ascending=True, key=lambda geoms: geoms.apply(lambda geom: max(geom.coords[0][1], geom.coords[1][1])))
+    # Get the edges that touch the 180 longitude edge.
+    east_edges = gdf[gdf['geometry'].apply(lambda geom: geom.coords[0][0] == 180.0 or geom.coords[1][0] == 180.0)]
+    # Order them by latitude, increasing from the south pole to the north pole.
+    east_edges = east_edges.sort_values(by='geometry', ascending=True, key=lambda geoms: geoms.apply(lambda geom: max(geom.coords[0][1], geom.coords[1][1])))
+    # Check that len of east_edges and west_edges is the same, and that both are even.
+    if len(west_edges) != len(east_edges):
+        print(f"Warning: Number of west edges ({len(west_edges)}) does not match number of east edges ({len(east_edges)}). This may indicate an issue with the data.")
+    if len(west_edges) % 2 != 0:
+        print(f"Warning: Number of west edges ({len(west_edges)}) is not even. This may indicate an issue with the data.")
+    # We now assume that everything is nicely behaved, so we can work
+    # down the list of west and east edges and join 0 to 1, 2 to 3, etc. at the north pole.
+    for (edge_set, edge_lon) in zip([east_edges, west_edges], [180.0, -180.0]):
+        for i in range(0, len(edge_set), 2):
+            edge1 = edge_set.iloc[i]
+            edge2 = edge_set.iloc[i + 1]
+            # Create a new LineString that goes from the point on the first edge that is on the antimeridian, to the point on the second edge that is on the antimeridian.
+            edge1_coords = list(edge1['geometry'].coords)
+            edge2_coords = list(edge2['geometry'].coords)
+            if edge1_coords[0][0] == edge_lon:
+                edge1_antimeridian_point = edge1_coords[0]
+                edge1_antimeridian_node = edge1['node_id1']
+            else:
+                edge1_antimeridian_point = edge1_coords[1]
+                edge1_antimeridian_node = edge1['node_id2']
+            if edge2_coords[0][0] == edge_lon:
+                edge2_antimeridian_point = edge2_coords[0]
+                edge2_antimeridian_node = edge2['node_id1']
+            else:                
+                edge2_antimeridian_point = edge2_coords[1]
+                edge2_antimeridian_node = edge2['node_id2']
+            new_edge = shapely.LineString([edge1_antimeridian_point, edge2_antimeridian_point])
+            # Add the new edge to the data frame.
+            new_row = pd.DataFrame({
+                'node_id1': [edge1_antimeridian_node],
+                'node_id2': [edge2_antimeridian_node],
+                'geometry': [new_edge]
+            })
+            print(f'Adding new edge to join antimeridian edges:\n {new_row}.')
+            gdf = pd.concat([gdf, new_row], ignore_index=True)
+    return gdf   
+
+
+def create_global_extent_geodataframe():
+    # Create a GeoDataFrame with a polygon that covers the entire globe.
+    global_extent_edge = shapely.LineString([(-180.0, -90.0), (-180.0, 90.0), (180.0, 90.0), (180.0, -90.0), (-180.0, -90.0)])
+    global_extent_edge = shapely.Polygon(global_extent_edge)
+    gdf_global_extent = gpd.GeoDataFrame({'id': ['global_extent'], 'geometry': [global_extent_edge]})
+    gdf_global_extent.crs = "EPSG:4326"
+    return gdf_global_extent                     
+
+
+def poylgonize_global_extent(gdf):
+    """Convert geopandas data frame containing edges to polygons."""
+    # Split any edges that cross the antimeridian into two edges.
+    print('Splitting edges that cross the antimeridian...')
+    gdf = split_df_at_antimeridian(gdf)
+    # Add north pole nodes (south pole already dealt with by Antarctic boundary edges).
+    print('Adding south pole...')
+    gdf = add_south_pole_edge(gdf)
+    # Join up the -180 and 180 edges at the north pole to create a closed loop for polygonization.
+    print('Joining edges at the antimeridian...')
+    gdf = join_antimeridian_edges(gdf)
+    # Polygonize the edges.
+    (
+        valid,
+        cut_edges,
+        dangles,
+        invalid
+    ) = gdf['geometry'].polygonize(node=False, full=True)
+    if len(invalid) > 0:
+        print(f"Warning: Found {len(invalid)} invalid geometries during polygonization.")
+    if len(dangles) > 0:
+        print(f"Warning: Found {len(dangles)} dangles during polygonization.")
+    if len(cut_edges) > 0:
+        print(f"Warning: Found {len(cut_edges)} cut edges during polygonization.")
+    # Subtract the valid polygons from the global extent to get the final combined 
+    # GeoDataFrame of valid polygons and remaining holes.
+    valid.crs = "EPSG:4326"   
+    gdf_global_extent = create_global_extent_geodataframe()
+    gdf_combined = gpd.overlay(gdf_global_extent, valid.to_frame(), how='difference')
+    return gdf_combined
 
 
 if __name__ == "__main__":
-    raise NotImplementedError('This script it not yet ready to use. '
-                              'STOFS-2D-Global currently has a copy of the '
-                              'GOMOFS extent file, for testing purposes.')
-    # Parse arguments.
-    parser = argparse.ArgumentParser(description='Generate extent shapefile from ADCIRC grid file.')
-
-    # Grid file path.
-    # (Ignored for now since we are hardcoding the path to the STOFS-2D-Global grid file.)
-    parser.add_argument('grid_file', type=str, default=None, help='Path to the ADCIRC grid file.')
-    
-    # Output shapefile path.
-    # (Ignored for now since we are hardcoding the path to the output shapefile.)
-    parser.add_argument('shapefile_path', type=str, default=None, help='Path to the output shapefile.')
-
-    # Model name (e.g., STOFS-2D-Global).
-    # Could be used to download grid file if not provided.
-    # (Ignored for now since we are hardcoding the path to the STOFS-2D-Global grid file.)
-    parser.add_argument('model_name', type=str, default=None, help='Name of the model (e.g., STOFS-2D-Global).')
-
-    # Get the arguments.
-    args = parser.parse_args()
-
-    # Validate the arguments.
-    if args.model_name is not None:
-        if args.grid_file is not None:
-            raise ValueError("Cannot specify both grid_file and model_name.")
-        else:
-            # We could add stuff here to temporarily download the grid file based on the model name, but that's for another day.
-            raise NotImplementedError("Downloading grid file based on model name argument is not implemented yet. Please specify the grid file path directly.")
-    else:
-        if args.grid_file is None:
-            # Usually this would cause an error, but we are hard-coding for now so just commenting this out.
-            # If we get this working properly eventually, uncomment this line
-            # \/   \/   \/   \/
-            #raise ValueError("Must specify either grid_file or model_name.")
-            # /\   /\   /\   /\
-            pass
-        else:
-            grid_file_path = args.grid_file
-
-    if args.shapefile_path is not None:
-        shapefile_path = args.shapefile_path
-    else:
-        if args.model_name is None:
-            # Usually this would cause an error, but we are hard-coding for now so just commenting this out.
-                # If we get this working properly eventually, uncomment this line
-                # \/   \/   \/   \/
-            #raise ValueError("Must specify shapefile_path (unless you specify model_name, in which case shapefile_path is constructed from it).")
-                # /\   /\   /\   /\
-            shapefile_path = "/home/jre/dev-Next-Gen-NOS-OFS-Skill-Assessment/ofs_extents/stofs_2d_glo.shp"
-        else:
-            shapefile_path = f"/home/jre/dev-Next-Gen-NOS-OFS-Skill-Assessment/ofs_extents/{args.model_name}.shp"
-    #
-
-    if (
-        (args.shapefile_name is None) and 
-        (args.model_name is None) and 
-        (args.grid_file is None)
-    ):
-        write_global_extent_shapefile(shapefile_path)
-    else:
-        stofs_boundaries_nodes = parse_grid_file_line_by_line(grid_file_path)
-        gdf = boundaries_to_shapefile(stofs_boundaries_nodes, shapefile_path)
+    grid_filepath = get_grid_filepath()
+    node_dict = parse_grid_file_line_by_line(grid_filepath)
+    df_boundary_edges = remove_duplicate_edges_in_chunks(node_dict)
+    df_node = get_node_data_frame(node_dict)
+    gdf_boundary_edges = get_boundary_edges_geopandas(df_boundary_edges, df_node)
+    gdf_combined = poylgonize_global_extent(gdf_boundary_edges)
+    filename = "stofs_2d_glo.shp"
+    print(f"Saving to shapefile {filename}...")
+    gdf_combined.to_file(filename)
