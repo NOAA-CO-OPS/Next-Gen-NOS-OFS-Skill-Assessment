@@ -169,7 +169,7 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
-                idx = int(nearby_nodes[dist.index(min(dist))])
+                idx = int(nearby_nodes[dist.index(min(dist))].item())
                 coord_cache[key] = idx
                 index_min_dist.append(idx)
                 logger.info(

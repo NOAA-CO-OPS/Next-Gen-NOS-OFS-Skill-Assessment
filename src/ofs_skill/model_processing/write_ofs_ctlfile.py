@@ -94,8 +94,8 @@ def _model_bathymetry_at_node(
                     return float(abs(arr[0, int(node_idx), -1]))
                 if arr.ndim != 1:
                     logger.debug(
-                        "Bathymetry lookup: SCHISM key %r is %d-D "
-                        "(expected 1-D nodal array); skipping",
+                        'Bathymetry lookup: SCHISM key %r is %d-D '
+                        '(expected 1-D nodal array); skipping',
                         key, arr.ndim)
                     continue
                 return float(abs(arr[int(node_idx)]))
@@ -456,6 +456,9 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     continue
                 length = len(list_of_nearest_node)
                 if prop.model_source=='fvcom':
+                    lon_wrap = 360
+                    if 'necofs' in prop.ofs:
+                        lon_wrap = 0
                     for i in range(0, length):
                         if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
@@ -464,7 +467,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
                                         f"{model['latc'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lonc'][list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                        f"{model['lonc'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                                 else:
@@ -472,7 +475,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
                                         f"{model['lat'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lon'][list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                        f"{model['lon'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                             else:
@@ -480,7 +483,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                     f'{list_of_nearest_node[i]} '
                                     f'{list_of_nearest_layer[i]} '
                                     f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                    f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                     f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                 )
                         else:
