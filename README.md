@@ -899,6 +899,13 @@ When the downloads are complete, make sure your conda environment is activated (
 
 🚨 Then, to ensure all output is created, open the file `/bin/visualization/plotting_2d.py`, and search for the variable `make_plotly_maps`. Then set `make_plotly_maps = True`, and save it. This will tell the skill assessment to create plotly maps of all 2D skill statistics and outputs ([Section 3.9.4](#394-1d-and-2d-skill-statistics)). 🚨
 
+Optionally, to also generate static PNG maps of model output (SST, SSH, SSS, and current vectors), set `static_plots=True` in the `[settings]` section of `conf/ofs_dps.conf`:
+```ini
+[settings]
+static_plots=True
+```
+When enabled, static maps are automatically generated at the end of each 2D skill assessment run and saved to `/working_directory/data/visual/2d/` ([Section 3.9.6](#396-static-2d-maps)).
+
 Next, download the SST satellite data for SFBOFS from GOES-18/West:
 
 ```
@@ -932,14 +939,14 @@ Here you will find the concatenated and clipped netCDF file storing satellite da
 ### 3.9.2 Hourly and daily-averaged SST satellite JSON maps
 `/working_directory/data/observations/2d/`
 
-All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
+All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make static PNG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
 
 ![daily_averaged_l3c](./readme_images/daily_l3c_example.png)
 
 ### 3.9.3 Hourly and daily-averaged SST model JSON maps
 `/working_directory/data/model/2d/`
 
-All hourly SST model JSON files are stored here. If the 2D skill assessment is run for at least 24 hours, then a daily-averaged model JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the model data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names convention is the same as described above in Section 3.8.2.
+All hourly model JSON files are stored here for SST, SSH, SSS, SSU (eastward velocity), and SSV (northward velocity). If the 2D skill assessment is run for at least 24 hours, then daily-averaged model JSON files will also be generated. The JSON files contain latitude, longitude, and data values, and can be used to make static PNG maps with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file name convention is the same as described above in Section 3.9.2, with the variable name embedded in the filename (e.g., `cbofs_20250701-00z_ssh_model.nowcast.json`).
 
 ### 3.9.4 2D skill statistics
 `/working_directory/data/skill/stats/`
@@ -975,7 +982,58 @@ In the second map, the mean error is color-coded by target error range in segmen
 
 ![plotly_express_map](./readme_images/2d_skill_target_example.png)
 
-### 3.9.6 Logging
+### 3.9.6 Static 2D maps
+`/working_directory/data/visual/2d/`
+
+When `static_plots=True` is set in the `[settings]` section of `conf/ofs_dps.conf`, the 2D skill assessment automatically generates static PNG maps of model output at the end of each run. These are georeferenced cartopy maps with coastlines, land masking, state boundaries, and a colorbar.
+
+The following map types are generated for each hourly time step (and daily averages when available):
+
+|Variable|Description|Colormap|Units|
+|:---|:---|:---|:---|
+|**SST**|Sea surface temperature|coolwarm|°C|
+|**SSH**|Sea surface height|viridis|m|
+|**SSS**|Sea surface salinity|YlGnBu|psu|
+|**Currents**|Current speed (magnitude) with quiver arrows showing flow direction|cividis|m/s|
+
+Current vector maps combine paired SSU and SSV model output: the background shows current magnitude as a color fill, and subsampled quiver arrows overlay the flow direction and speed. A reference arrow (0.5 m/s) is included in the legend.
+
+Output filenames follow the pattern `{ofs}_{date}_{variable}.png`, for example:
+* `sfbofs_20250601-00z_sst.png`
+* `sfbofs_20250601-00z_currents.png`
+
+#### Standalone usage with `plot_leafletJSON.py`
+
+The script `/bin/utils/plot_leafletJSON.py` can also be run as a standalone command-line tool to generate static maps from any JSON grid file in `data/model/2d/` or `data/observations/2d/` _after_ the 2D pipeline has been run. This is useful for generating maps of individual time steps or variables without re-running the full skill assessment.
+
+**Scalar map** (single variable — SST, SSH, SSS, SSU, or SSV):
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sst_model.nowcast.json
+```
+
+The variable is auto-detected from the filename. To override the variable or specify a custom output path:
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sss_model.nowcast.json -v sss -o ./output/cbofs_sss.png
+```
+
+**Current quiver map** (paired SSU + SSV velocity components):
+```
+python ./bin/utils/plot_leafletJSON.py \
+    -fu data/model/2d/cbofs_20250701-00z_ssu_model.nowcast.json \
+    -fv data/model/2d/cbofs_20250701-00z_ssv_model.nowcast.json
+```
+
+Arguments:
+
+|Flag|Description|
+|:---|:---|
+|`-f`, `--filename`|Path to a single JSON file (scalar map mode)|
+|`-fu`, `--filename_u`|Path to SSU (eastward velocity) JSON file (quiver mode)|
+|`-fv`, `--filename_v`|Path to SSV (northward velocity) JSON file (quiver mode)|
+|`-v`, `--variable`|Variable name override: sst, ssh, sss, ssu, ssv|
+|`-o`, `--output`|Output PNG file path (default: input filename + .png)|
+
+### 3.9.7 Logging
 `/working_directory/log/`
 
 As in the 1D skill assessment, run-time information, warnings, and errors are recorded in a log file ([Section 3.6.7](#367-logging)).

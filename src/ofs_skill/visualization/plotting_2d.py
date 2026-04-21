@@ -26,8 +26,10 @@ Date          Author     Description
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
+from logging import Logger
 
 import numpy as np
 import pandas as pd
@@ -35,6 +37,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from ofs_skill.skill_assessment import make_2d_skill_maps, metrics_two_d
+
+# Default colormaps and labels for 2D scalar maps
+VARIABLE_MAP_DEFAULTS = {
+    'sst': {'cmap': 'coolwarm', 'label': 'SST (\u00b0C)'},
+    'ssh': {'cmap': 'viridis', 'label': 'SSH (m)'},
+    'sss': {'cmap': 'YlGnBu', 'label': 'SSS (psu)'},
+    'ssu': {'cmap': 'seismic', 'label': 'SSU (m/s)'},
+    'ssv': {'cmap': 'seismic', 'label': 'SSV (m/s)'},
+}
 
 # Lazy import to avoid pyinterp dependency issues on Windows
 # from ofs_skill.visualization.processing_2d import write_2d_arrays_to_json
@@ -609,3 +620,221 @@ def plot_2d(prop1,logger):
         else:
             logger.error('Only %s %s satellite times available, skipping statistics.',
                          len(sat_dates), sat_source)
+
+
+def load_json_grid(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load a single JSON grid file produced by write_2d_arrays_to_json.
+
+    Args:
+        filepath: Path to JSON file
+
+    Returns:
+        Tuple of (lons, lats, data) as 2D numpy arrays
+    """
+    with open(filepath) as f:
+        jsondata = json.load(f)
+    lons = np.array(jsondata['lons'], dtype=float)
+    lats = np.array(jsondata['lats'], dtype=float)
+    data = np.array(jsondata['sst'], dtype=float)
+    return lons, lats, data
+
+
+def plot_2d_scalar_map(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    data: np.ndarray,
+    variable: str,
+    title: str,
+    output_path: str,
+    logger: Logger,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    cmap: str | None = None,
+) -> None:
+    """
+    Generate a static cartopy map for a 2D scalar field.
+
+    Args:
+        lons: 2D longitude array
+        lats: 2D latitude array
+        data: 2D data array
+        variable: Variable name ('sst', 'ssh', 'sss', 'ssu', 'ssv')
+        title: Plot title
+        output_path: Output PNG file path
+        logger: Logger instance
+        vmin: Minimum colorbar value (auto if None)
+        vmax: Maximum colorbar value (auto if None)
+        cmap: Colormap name (uses variable default if None)
+    """
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import matplotlib.pyplot as plt
+
+    defaults = VARIABLE_MAP_DEFAULTS.get(variable, {})
+    if cmap is None:
+        cmap = defaults.get('cmap', 'viridis')
+    label = defaults.get('label', variable)
+
+    if vmin is None:
+        vmin = np.nanmin(data)
+    if vmax is None:
+        vmax = np.nanmax(data)
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+
+    mesh = ax.pcolormesh(
+        lons, lats, data, cmap=cmap,
+        vmin=vmin, vmax=vmax,
+        transform=ccrs.PlateCarree(), zorder=1,
+    )
+    # Land on top of data to cover interpolation bleed-through
+    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=2)
+    ax.coastlines(resolution='10m', zorder=3)
+    ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=3)
+    ax.gridlines(draw_labels=True)
+    plt.colorbar(mesh, orientation='vertical', label=label, pad=0.10)
+    plt.title(title)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    logger.info('Saved static map: %s', output_path)
+
+
+def plot_2d_current_quiver_map(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    ssu: np.ndarray,
+    ssv: np.ndarray,
+    title: str,
+    output_path: str,
+    logger: Logger,
+    stride: int = 5,
+) -> None:
+    """
+    Generate a static cartopy map with current magnitude and quiver arrows.
+
+    Args:
+        lons: 2D longitude array
+        lats: 2D latitude array
+        ssu: 2D eastward velocity array (u component)
+        ssv: 2D northward velocity array (v component)
+        title: Plot title
+        output_path: Output PNG file path
+        logger: Logger instance
+        stride: Subsample factor for quiver arrows (default 5)
+    """
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import matplotlib.pyplot as plt
+
+    magnitude = np.sqrt(ssu**2 + ssv**2)
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+
+    mesh = ax.pcolormesh(
+        lons, lats, magnitude, cmap='cividis',
+        vmin=0, vmax=np.nanmax(magnitude),
+        transform=ccrs.PlateCarree(), zorder=1,
+    )
+    plt.colorbar(mesh, orientation='vertical',
+                 label='Current Speed (m/s)', pad=0.10)
+
+    # Subsample for quiver to avoid clutter
+    s = stride
+    q = ax.quiver(
+        lons[::s, ::s], lats[::s, ::s],
+        ssu[::s, ::s], ssv[::s, ::s],
+        transform=ccrs.PlateCarree(),
+        scale=15, width=0.002, color='black', alpha=0.7, zorder=2,
+    )
+    # Land on top of data to cover interpolation bleed-through
+    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=3)
+    ax.coastlines(resolution='10m', zorder=4)
+    ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=4)
+    ax.gridlines(draw_labels=True)
+    ax.quiverkey(q, 0.9, 1.02, 0.5, '0.5 m/s', labelpos='E')
+
+    plt.title(title)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    logger.info('Saved current quiver map: %s', output_path)
+
+
+def generate_offline_maps(
+    json_dir: str,
+    output_dir: str,
+    prop1,
+    logger: Logger,
+    variables: tuple[str, ...] = ('sst', 'ssh', 'sss'),
+    include_currents: bool = True,
+) -> None:
+    """
+    Generate static PNG maps for all model variables from JSON grid files.
+
+    Produces scalar pcolormesh maps for each variable and a current vector
+    quiver map from paired ssu/ssv files.
+
+    Args:
+        json_dir: Directory containing model JSON files
+        output_dir: Directory for output PNG files
+        prop1: Properties object with ofs, whichcast attributes
+        logger: Logger instance
+        variables: Tuple of scalar variable names to plot
+        include_currents: If True, generate quiver maps from ssu/ssv pairs
+    """
+    logger.info('Generating offline static maps from %s', json_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    all_files = os.listdir(json_dir)
+    ofs = prop1.ofs
+    whichcast = prop1.whichcast
+
+    # Pattern: {ofs}_{date}_{var}_model.{whichcast}.json
+    pattern = re.compile(
+        rf'^{re.escape(ofs)}_(\S+?)_(\w+)_model\.{re.escape(whichcast)}\.json$',
+    )
+
+    # Group files by date and variable
+    file_map: dict[str, dict[str, str]] = {}
+    for fname in all_files:
+        m = pattern.match(fname)
+        if m:
+            date_str, var_name = m.group(1), m.group(2)
+            file_map.setdefault(date_str, {})[var_name] = os.path.join(
+                json_dir, fname,
+            )
+
+    for date_str in sorted(file_map):
+        date_files = file_map[date_str]
+        title_date = date_str.replace('-', ' ').replace('z', 'Z')
+
+        # Scalar variable maps
+        for var in variables:
+            if var not in date_files:
+                continue
+            lons, lats, data = load_json_grid(date_files[var])
+            title = f'{ofs.upper()} {whichcast.capitalize()} {var.upper()} - {title_date}'
+            out_path = os.path.join(
+                output_dir, f'{ofs}_{date_str}_{var}.png',
+            )
+            plot_2d_scalar_map(
+                lons, lats, data, var, title, out_path, logger,
+            )
+
+        # Current quiver map
+        if include_currents and 'ssu' in date_files and 'ssv' in date_files:
+            lons, lats, ssu = load_json_grid(date_files['ssu'])
+            _, _, ssv = load_json_grid(date_files['ssv'])
+            title = f'{ofs.upper()} {whichcast.capitalize()} Currents - {title_date}'
+            out_path = os.path.join(
+                output_dir, f'{ofs}_{date_str}_currents.png',
+            )
+            plot_2d_current_quiver_map(
+                lons, lats, ssu, ssv, title, out_path, logger,
+            )
