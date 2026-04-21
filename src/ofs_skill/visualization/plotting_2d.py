@@ -694,7 +694,7 @@ def plot_2d_scalar_map(
     ax.coastlines(resolution='10m', zorder=3)
     ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=3)
     ax.gridlines(draw_labels=True)
-    plt.colorbar(mesh, orientation='vertical', label=label, pad=0.05)
+    plt.colorbar(mesh, orientation='vertical', label=label, pad=0.10)
     plt.title(title)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -741,7 +741,7 @@ def plot_2d_current_quiver_map(
         transform=ccrs.PlateCarree(), zorder=1,
     )
     plt.colorbar(mesh, orientation='vertical',
-                 label='Current Speed (m/s)', pad=0.05)
+                 label='Current Speed (m/s)', pad=0.10)
 
     # Subsample for quiver to avoid clutter
     s = stride
