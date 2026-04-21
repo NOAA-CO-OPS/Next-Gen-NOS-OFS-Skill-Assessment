@@ -81,8 +81,10 @@ def extract_water_level_extrema(
     return {
         'high_water_times': time[hw_idx],
         'high_water_amplitudes': water_level[hw_idx],
+        'high_water_index': hw_idx,
         'low_water_times': time[lw_idx],
         'low_water_amplitudes': water_level[lw_idx],
+        'low_water_index': lw_idx
     }
 
 

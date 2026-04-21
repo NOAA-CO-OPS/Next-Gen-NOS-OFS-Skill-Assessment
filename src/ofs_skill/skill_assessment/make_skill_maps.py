@@ -77,8 +77,14 @@ def make_skill_maps(
             'PO freq pass/fail ': list(zip(*output['skill']))[8],
             'Negative outlier freq ': list(zip(*output['skill']))[9],
             'NO freq pass/fail ': list(zip(*output['skill']))[10],
-            'Mean bias standard dev ': list(zip(*output['skill']))[11],
-            'Target RMSE ': list(zip(*output['skill']))[12],
+            'Max duration PO': list(zip(*output['skill']))[11],
+            'Max duration PO pass/fail': list(zip(*output['skill']))[12],
+            'Max duration NO': list(zip(*output['skill']))[13],
+            'Max duration NO pass/fail': list(zip(*output['skill']))[14],
+            'Worst case outlier freq': list(zip(*output['skill']))[15],
+            'Worst case outlier freq pass/fail': list(zip(*output['skill']))[16],
+            'Mean bias standard dev ': list(zip(*output['skill']))[17],
+            'Target RMSE ': list(zip(*output['skill']))[18],
         }
     )
 
@@ -97,6 +103,12 @@ def make_skill_maps(
                         'PO freq pass/fail ': 'str',
                         'Negative outlier freq ': 'float',
                         'NO freq pass/fail ': 'str',
+                        'Max duration PO': 'float',
+                        'Max duration PO pass/fail': 'str',
+                        'Max duration NO': 'float',
+                        'Max duration NO pass/fail': 'str',
+                        'Worst case outlier freq': 'float',
+                        'Worst case outlier freq pass/fail': 'str',
                         'Mean bias standard dev ': 'float',
                         'Target RMSE ': 'float',
                         })

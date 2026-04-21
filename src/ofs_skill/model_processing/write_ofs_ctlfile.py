@@ -79,7 +79,8 @@ def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
     >>> print(station_info[1][0])  # First station data fields
     ['36.85', '-76.01', '5.0', 0, 'NAVD88']
     """
-    xy_path = (utils.Utils().read_config_section('user_xy_inputs', logger)
+    _conf = getattr(prop, 'config_file', None)
+    xy_path = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
                ['user_xy_path'])
     lines = []
     try:
@@ -174,7 +175,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     >>> model = write_ofs_ctlfile(prop, model, logger)
     INFO:root:Model Control File for water_level created successfully
     """
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     prop.model_path = os.path.join(
         dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir']
@@ -297,6 +299,9 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     continue
                 length = len(list_of_nearest_node)
                 if prop.model_source=='fvcom':
+                    lon_wrap = 360
+                    if 'necofs' in prop.ofs:
+                        lon_wrap = 0
                     for i in range(0, length):
                         if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
@@ -305,7 +310,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
                                         f"{model['latc'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lonc'][list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                        f"{model['lonc'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                                 else:
@@ -313,7 +318,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
                                         f"{model['lat'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lon'][list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                        f"{model['lon'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                             else:
@@ -321,7 +326,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                     f'{list_of_nearest_node[i]} '
                                     f'{list_of_nearest_layer[i]} '
                                     f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                    f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
                                     f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                 )
                         else:
@@ -448,7 +453,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         else:
                             logger.info('No matching model station found for '
                                         'obs station %s.', station_id[i])
-                                
+
                 elif prop.model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
                         for i in range(length):
@@ -465,8 +470,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                 logger.info('No matching model station found for '
                                             'obs station %s.', station_id[i])
                     else:
-                        # STOFS-2D-Global is the only ADCIRC implemented, so it's 
-                        # not clear how someone would even get here, but we raise 
+                        # STOFS-2D-Global is the only ADCIRC implemented, so it's
+                        # not clear how someone would even get here, but we raise
                         # an exception just in case.
                         raise NotImplementedError('ADCIRC control file writing not yet implemented for models other than STOFS-2D-Global.')
 

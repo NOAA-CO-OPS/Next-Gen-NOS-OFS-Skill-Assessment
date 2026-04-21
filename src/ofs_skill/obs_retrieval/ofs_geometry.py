@@ -100,7 +100,8 @@ def get_response_2(
 def ofs_geometry(
     ofs: str,
     path: str,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> tuple[list[tuple[float, float]], float, float, float, float]:
     """
     Read OFS shapefile and extract geometric extent.
@@ -132,7 +133,7 @@ def ofs_geometry(
         study area.
     """
     try:
-        dir_params = utils.Utils().read_config_section('directories', logger)
+        dir_params = utils.Utils(config_file).read_config_section('directories', logger)
         ofs_extents_path = os.path.join(
             path,
             dir_params['ofs_extents_dir'],

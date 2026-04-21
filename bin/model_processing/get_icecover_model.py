@@ -56,12 +56,12 @@ def get_indices_for_day(datetime_list, target_date):
     return [i for i, dt_obj in enumerate(datetime_list) if dt_obj.date() == target_date.date()]
 
 
-def _setup_logger(logger):
+def _setup_logger(logger, config_file=None):
     """Initialize logger if not provided."""
     if logger is not None:
         return logger
 
-    config_file = utils.Utils().get_config_file()
+    config_file = utils.Utils(config_file).get_config_file()
     log_config_file = (Path(__file__).parent.parent.parent / 'conf/logging.conf').resolve()
 
     for file in [log_config_file, config_file]:
@@ -128,8 +128,13 @@ def _process_daily_composite(prop, logger, list_files, list_days, ice_name, x_na
 def get_icecover_model(prop, logger):
     """Main function to retrieve OFS ice cover model data."""
     prop.model_source = model_source.model_source(prop.ofs)
-    logger = _setup_logger(logger)
+    logger = _setup_logger(logger, getattr(prop, 'config_file', None))
     logger.info('--- Starting OFS ice cover process ---')
+
+    # Validate model source.
+    if prop.model_source.lower() == 'adcirc':
+        logger.error('Ice cover retrieval not implemented for ADCIRC.')
+        raise NotImplementedError('Ice cover retrieval not implemented for ADCIRC.')
 
     # Reformat dates
     start_dt = datetime.strptime(prop.start_date_full.replace('-', '').replace('Z', '').replace('T', '-').split('-')[0], '%Y%m%d')
@@ -208,10 +213,14 @@ if __name__ == '__main__':
     parser.add_argument('-w', '--Whichcasts', required=False, help='nowcast, forecast_a, forecast_b')
     parser.add_argument('-f', '--Forecast_Hr', required=False, help="'02hr', '06hr', '12hr', '24hr'")
 
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.OFS
     prop1.path = args.Path
+    prop1.config_file = args.config
     prop1.ofs_extents_path = args.Path + 'ofs_extents/'
     prop1.start_date_full = args.StartDate
     prop1.end_date_full = args.EndDate

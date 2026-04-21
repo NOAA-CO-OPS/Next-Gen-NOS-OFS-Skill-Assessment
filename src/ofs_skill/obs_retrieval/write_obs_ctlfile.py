@@ -28,19 +28,18 @@ logging,
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 import pandas as pd
 from coastalmodeling_vdatum import vdatum
 
 from ofs_skill.obs_retrieval import retrieve_properties, utils
 from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_stations
+from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
 from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
     retrieve_t_and_c_station,
 )
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
-from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 
 _COOPS_MAX_WORKERS = 6
 _NDBC_MAX_WORKERS = 6
@@ -51,7 +50,8 @@ _USGS_MAX_WORKERS_NO_KEY = 2
 
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
-                           datum, datum_list, ofs, logger):
+                           datum, datum_list, ofs, logger,
+                           config_file=None):
     """Process a single CO-OPS station. Returns CTL entry string or None."""
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
@@ -62,7 +62,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
         retrieve_input.datum = datum
         timeseries = \
             retrieve_t_and_c_station(
-                retrieve_input,logger)
+                retrieve_input, logger,
+                config_file=config_file)
         if variable == 'water_level':
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
@@ -92,7 +93,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             all_datums [data]
                         timeseries = \
                             retrieve_t_and_c_station(
-                                retrieve_input, logger)
+                                retrieve_input, logger,
+                                config_file=config_file)
                         if ((isinstance(timeseries, pd.DataFrame) is \
                             True) and
                             (all_datums[data] in accepted_datums)):
@@ -452,53 +454,78 @@ def _process_chs_station(id_number, name, x_value, y_value,
             'CHS %s data found for '
             'station %s.', variable, str(id_number)
             )
-        if 'l' not in ofs[0]:
-            if (str(
-                    data_station['Datum'][1]
-                    ).upper() == datum):
-                zdiff = 0
-            else:
-                ldatum = datum.lower()
-                dummyval = 10
-                _,_,z = vdatum.convert(
-                    data_station['Datum'][1].lower(),
-                    ldatum,
-                    y_value,
-                    x_value,
-                    dummyval, #use dummy value
-                    online=True,
-                    epoch=None)
-                if math.isinf(z):
-                    zdiff = 'RANGE'
+
+        if variable == 'water_level':
+            # CHS IWLS API returns water levels relative to chart datum.
+            # For Great Lakes, chart datum IS the Low Water Datum (LWD).
+            # The Datum column is labeled 'IGLD' for consistency with the
+            # pipeline, but the GL offsets below convert from LWD to IGLD
+            # when the user requests IGLD.
+            if ofs not in [
+                    'leofs', 'lmhofs', 'loofs',
+                    'loofs2', 'lsofs']:
+                if (str(
+                        data_station['Datum'][1]
+                        ).upper() == datum):
+                    zdiff = 0
                 else:
-                    zdiff = round(z-dummyval,2) # datum offset
-        else:
-            if datum == 'IGLD':
-                if ofs == 'leofs':
-                    zdiff = 173.5
-                elif ofs == 'lmhofs':
-                    zdiff = 176.0
-                elif ofs == 'lsofs':
-                    zdiff = 183.2
-                elif ofs == 'loofs' or ofs == 'loofs2':
-                    zdiff = 74.2
-            elif datum == 'LWD':
-                zdiff = 0 # No correction needed
+                    ldatum = datum.lower()
+                    dummyval = 10
+                    _,_,z = vdatum.convert(
+                        data_station['Datum'][1].lower(),
+                        ldatum,
+                        y_value,
+                        x_value,
+                        dummyval, #use dummy value
+                        online=True,
+                        epoch=None)
+                    if math.isinf(z):
+                        zdiff = 'RANGE'
+                    else:
+                        zdiff = round(z-dummyval,2) # datum offset
             else:
-                zdiff = 'UNKNOWN'
-        return (
-            f'{str( id_number )} '
-            f'{str( id_number )}_{name_var}_'
-            f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
-            f'{x_value:.3f} '
-            f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
+                if datum == 'IGLD':
+                    if ofs == 'leofs':
+                        zdiff = 173.5
+                    elif ofs == 'lmhofs':
+                        zdiff = 176.0
+                    elif ofs == 'lsofs':
+                        zdiff = 183.2
+                    elif ofs == 'loofs' or ofs == 'loofs2':
+                        zdiff = 74.2
+                elif datum == 'LWD':
+                    zdiff = 0 # No correction needed
+                else:
+                    zdiff = 'UNKNOWN'
+            return (
+                f'{str( id_number )} '
+                f'{str( id_number )}_{name_var}_'
+                f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
+                f'{x_value:.3f} '
+                f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
+                )
+
+        else:
+            data_station['DEP01'] = data_station[
+                'DEP01'].astype(float)
+            return (
+                f'{str( id_number )} {str( id_number )}_{name_var}_'
+                f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
+                f'{x_value:.3f} 0.0  '
+                f'{data_station["DEP01"].mean():.2f}  '
+                f'0.0\n'
+                )
+    except Exception as ex:
+        logger.info(
+            'CHS %s data not found for '
+            'station %s. Exception: %s', variable,
+            str(id_number), ex
             )
-    except:
-        pass
+    return None
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
-                      control_files_path, logger):
+                      control_files_path, logger, config_file=None):
     """Process all stations for a single variable. Writes .ctl file."""
     var_name_map = {
         'water_level': 'wl',
@@ -533,7 +560,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                     _process_coops_station,
                     row['ID'], row['Name'], row['X'], row['Y'],
                     start_date, end_date, variable, name_var,
-                    datum, datum_list, ofs, logger
+                    datum, datum_list, ofs, logger,
+                    config_file=config_file
                 ))
             for future in futures:
                 result = future.result()
@@ -615,7 +643,7 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
 
 
 def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
-                      var_list, logger):
+                      var_list, logger, config_file=None):
     """
     This function calls the Tid_numberes and Currents, NDBC, and USGS
     retrieval
@@ -626,11 +654,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
     have data
     """
 
-    start_dt = datetime.strptime( start_date , '%Y%m%d' )
-    end_dt = datetime.strptime( end_date , '%Y%m%d' )
-
-    dir_params = utils.Utils().read_config_section( 'directories' , logger )
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    dir_params = utils.Utils(config_file).read_config_section( 'directories' , logger )
+    datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     control_files_path = os.path.join(
@@ -681,7 +706,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 'This might take a couple of minutes'
                 )
             ofs_inventory_stations(
-                ofs , start_date , end_date , path, stationowner, logger
+                ofs , start_date , end_date , path, stationowner, logger,
+                config_file=config_file
                 )
             dtypes = {
                 'ID': 'object',
@@ -747,7 +773,7 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 _process_variable,
                 variable, inventory, var_to_col, start_date, end_date,
                 datum, datum_list, ofs, usgs_max_workers,
-                control_files_path, logger
+                control_files_path, logger, config_file
             ))
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:

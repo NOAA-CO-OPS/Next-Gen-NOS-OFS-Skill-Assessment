@@ -142,7 +142,7 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
-                index_min_dist.append(int(nearby_nodes[dist.index(min(dist))]))
+                index_min_dist.append(int(nearby_nodes[dist.index(min(dist))].item()))
                 logger.info(
                     f'Nearest node found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
@@ -334,7 +334,7 @@ def index_nearest_node(
 
     elif model_source == 'adcirc':
         raise NotImplementedError('ADCIRC indexing not yet implemented.')
-    
+
     else:
         raise ValueError(f'Unknown model source: {model_source}')
 
@@ -394,8 +394,16 @@ def index_nearest_depth(
         length = len(index_min_dist)
 
         if model_source == 'fvcom':
-            zc_np = np.array(model_netcdf['zc'])  # Element center depths
-            z_np = np.array(model_netcdf['z'])    # Node depths
+            if 'zc' in model_netcdf:
+                zc_np = np.array(model_netcdf['zc'])  # Element center depths
+            if 'z' in model_netcdf:
+                z_np = np.array(model_netcdf['z'])    # Node depths
+            else:
+                # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
+                # approximate from sigma coordinates and bathymetry
+                siglay = np.array(model_netcdf['siglay'])
+                h = np.array(model_netcdf['h'])
+                z_np = siglay * h
         elif model_source == 'roms':
             lon_rho_np = np.array(model_netcdf['lon_rho'])
             s_rho_np = np.array(model_netcdf['s_rho'])
@@ -592,17 +600,17 @@ def index_nearest_depth(
                         index_min_depth.append(0)
                         depth_value.append(0.0)
                         logger.info(
-                            'Nearest depth found: node %s of %s', 
+                            'Nearest depth found: node %s of %s',
                             idx + 1, len(index_min_dist)
                         )
                     else:
-                        # We raise en exception here for STOFS-2D-Global non-water level variables 
+                        # We raise en exception here for STOFS-2D-Global non-water level variables
                         # because it does not have depth-wise data, and logic elsewhere should steer users
                         # away from calling this function with STOFS-2D-Global and other variables.
                         raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
                 else:
                     raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
-                
+
     elif prop.ofsfiletype == 'stations':
         if 'stofs' in prop.ofs:
             return [], []
@@ -610,7 +618,25 @@ def index_nearest_depth(
         depth_value = []
         length = len(index_min_dist)
         if model_source == 'fvcom':
-            z_np = np.array(model_netcdf['z'])
+            if name_var == 'wl':
+                # Water level (zeta) is a 2D surface variable — no depth indexing needed
+                for idx in range(length):
+                    if ~np.isnan(index_min_dist[idx]):
+                        index_min_depth.append(0)
+                        depth_value.append(0.0)
+                        logger.info('Nearest depth found: node %s of %s', idx + 1, length)
+                    else:
+                        index_min_depth.append(np.nan)
+                        depth_value.append(np.nan)
+                return index_min_depth, np.abs(depth_value)
+            if 'z' in model_netcdf:
+                z_np = np.array(model_netcdf['z'])
+            else:
+                # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
+                # compute from sigma coordinates and bathymetry
+                siglay = np.array(model_netcdf['siglay'])
+                h = np.array(model_netcdf['h'])
+                z_np = siglay * h
         elif model_source == 'roms':
             s_rho_np = np.array(model_netcdf['s_rho'])
             h_np = np.array(model_netcdf['h'])
@@ -637,7 +663,7 @@ def index_nearest_depth(
                             )
                             continue
                         else:
-                            # We raise en exception here for STOFS-2D-Global non-water level variables 
+                            # We raise en exception here for STOFS-2D-Global non-water level variables
                             # because it does not have depth-wise data, and logic elsewhere should steer users
                             # away from calling this function with STOFS-2D-Global and other variables.
                             raise ValueError('STOFS-2D-Global does not have depth-resolved data, cannot find nearest depth')
