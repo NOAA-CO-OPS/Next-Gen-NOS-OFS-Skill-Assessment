@@ -200,8 +200,12 @@ def _process_station_plot(
                 serieskey = pd.read_csv(filepath)
                 serieskey['DateTime'] = pd.to_datetime(
                     serieskey['DateTime'])
-                paired_data = pd.merge(
-                    paired_data, serieskey, on='DateTime', how='inner')
+                if len(paired_data) == len(serieskey):
+                    paired_data = pd.merge(
+                        paired_data, serieskey, on='DateTime', how='inner')
+                else:
+                    logger.warning('Filename key and time series have different '
+                                   'lengths!')
             except FileNotFoundError:
                 logger.error(
                     'No model series filename key found! Skipping')

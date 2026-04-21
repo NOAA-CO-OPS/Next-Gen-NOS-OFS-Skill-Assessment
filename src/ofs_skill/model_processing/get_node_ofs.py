@@ -95,7 +95,7 @@ def get_time_step(prop, logger):
     # Define your expected frequency in minutes (e.g. 6 minutes)
     exp_freq = 6
     if prop.ofsfiletype == 'fields':
-        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2', 'necofs']:
+        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2']:
             exp_freq = 180
         else:
             exp_freq = 60
