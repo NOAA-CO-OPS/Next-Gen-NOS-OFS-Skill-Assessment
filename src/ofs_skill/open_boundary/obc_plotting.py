@@ -127,9 +127,18 @@ def plot_fvcom_obc(prop, ds, logger):
             zerolinewidth=1
         )
         fig.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 50
-        filename = prop.ofs + '_' + name_var + '_OBC.html'
+        filename = f'{prop.ofs}_{name_var}_OBC'
         savepath = os.path.join(prop.visuals_1d_station_path, filename)
-        fig.write_html(savepath, auto_play=False)
+        fig_config = {
+            'toImageButtonOptions': {
+                'format': 'png',
+                'filename': filename,
+                'height': 700,
+                'width': 1200,
+                'scale': 1,
+            }
+        }
+        fig.write_html(savepath + '.html', config=fig_config, auto_play=False)
 
     # Now do water level
     logger.info('Plotting FVCOM water level transect')
@@ -214,9 +223,18 @@ def plot_fvcom_obc(prop, ds, logger):
         zerolinecolor='black',
         zerolinewidth=1
     )
-    filename = prop.ofs + '_' + 'water_level' + '_OBC.html'
+    filename = f'{prop.ofs}_water_level_OBC'
     savepath = os.path.join(prop.visuals_1d_station_path, filename)
-    fig.write_html(savepath, auto_play=False)
+    fig_config = {
+        'toImageButtonOptions': {
+            'format': 'png',
+            'filename': filename,
+            'height': 700,
+            'width': 1200,
+            'scale': 1,
+        }
+    }
+    fig.write_html(savepath + '.html', config=fig_config, auto_play=False)
 
     # Now make time series plot with dropdown menu
     logger.info('Plotting FVCOM water level node-by-node time series')
@@ -312,9 +330,18 @@ def plot_fvcom_obc(prop, ds, logger):
         zerolinecolor='black',
         zerolinewidth=1
     )
-    filename = prop.ofs + '_' + 'water_level' + '_OBC_node_series.html'
+    filename = f'{prop.ofs}_water_level_OBC_node_series'
     savepath = os.path.join(prop.visuals_1d_station_path, filename)
-    fig.write_html(savepath)
+    fig_config = {
+        'toImageButtonOptions': {
+            'format': 'png',
+            'filename': filename,
+            'height': 700,
+            'width': 1200,
+            'scale': 1,
+        }
+    }
+    fig.write_html(savepath + '.html', config=fig_config)
 
     # Map of OBC nodes
     logger.info('Mapping FVCOM OBC nodes')
@@ -349,7 +376,17 @@ def plot_fvcom_obc(prop, ds, logger):
     fig.update_layout(
         title_font=_TITLE_FONT
     )
-    filename = prop.ofs + '_OBC_node_map.html'
+    filename = f'{prop.ofs}_OBC_node_map'
     savepath = os.path.join(prop.visuals_1d_station_path, filename)
-    fig.write_html(savepath, config={'scrollZoom': True})
+    fig_config = {
+        'scrollZoom': True,
+        'toImageButtonOptions': {
+            'format': 'png',
+            'filename': filename,
+            'height': 700,
+            'width': 1000,
+            'scale': 1,
+        },
+    }
+    fig.write_html(savepath + '.html', config=fig_config)
     logger.info('Done with FVCOM plotting!')
