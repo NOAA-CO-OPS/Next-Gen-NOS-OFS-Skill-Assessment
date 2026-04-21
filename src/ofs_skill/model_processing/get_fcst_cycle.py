@@ -269,8 +269,9 @@ def get_fcst_dates(prop, logger):
     logger.info('Starting cycle and end date assignment for forecast_a...')
 
     # Check if S3 fallback is enabled
+    _conf = getattr(prop, 'config_file', None)
     try:
-        conf_settings = utils.Utils().read_config_section('settings', logger)
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except (KeyError, FileNotFoundError):
         use_s3_fallback = False
@@ -329,7 +330,7 @@ def get_fcst_dates(prop, logger):
 
     elif 'now' in prop.forecast_hr and use_s3_fallback:
         # Get most recent forecast cycle
-        url_params = utils.Utils().read_config_section('urls', logger)
+        url_params = utils.Utils(_conf).read_config_section('urls', logger)
         # Select appropriate S3 bucket URL based on OFS
         url_root = url_params[get_s3_bucket(prop.ofs)]
         bucket_name = url_root.split('//')[1].split('.')[0]

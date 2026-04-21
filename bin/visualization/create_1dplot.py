@@ -46,6 +46,7 @@ Arguments:
                        'Nowcast', 'Forecast_A', 'Forecast_B'
  -so stationowner, --Station_Owner" [optional]
                        'NDBC', 'CO-OPS', 'USGS', 'CHS'
+ -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 Output:
 Output:
 Name                 Description
@@ -517,8 +518,9 @@ def create_1dplot(prop, logger):
     This is the main function for plotting 1d paired datasets
     Specify defaults (can be overridden with command line options)
     '''
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(prop.path), log_config_file)
 
@@ -537,11 +539,11 @@ def create_1dplot(prop, logger):
 
     logger.info('--- Starting Visualization Process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Retrieve datum list from config file
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
-    conf_settings = utils.Utils().read_config_section('settings', logger)
+    conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
 
 
@@ -784,13 +786,14 @@ def create_1dplot(prop, logger):
     # Before starting, let's check if all necessary model files are
     # available. If not, program will exit. Or, if exception, program will
     # continue onwards but not before shouting a warning at you :)
-    try:
-        check_model_files(prop,logger)
-        # if fails call nodd_otf
-    except Exception as e_x:
-        logger.error('Error caught in check_model_files! %s', e_x)
-        logger.warning('Could not verify if all necessary model files '
-                    'are present! Check final time series for accuracy.')
+    if prop.filecheck:
+        try:
+            check_model_files(prop,logger)
+            # if fails call nodd_otf
+        except Exception as e_x:
+            logger.error('Error caught in check_model_files! %s', e_x)
+            logger.warning('Could not verify if all necessary model files '
+                        'are present! Check final time series for accuracy.')
 
     def _plot_variable(variable, p):
         """Plot a single variable."""
@@ -961,6 +964,17 @@ if __name__ == '__main__':
              'processed and/or overrides their depth/orientation/name. '
              'Columns: station_id,bin,depth,orientation,name. See the wiki: '
              'https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing')
+    parser.add_argument(
+        '-df',
+        '--Disable_Model_File_Check',
+        action='store_false',
+        help='Disables the function that checks for availability of model '
+        'output files and exits if they are not present. Disable the checker '
+        'in the special case where custom .prd and .obs files are user-provided '
+        'but there are no corresponding model output NetCdfs.')
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -982,6 +996,10 @@ if __name__ == '__main__':
     prop1.forecast_hr = args.Forecast_Hr
     prop1.var_list = args.Var_Selection
     prop1.currents_bins_csv = args.Currents_Bins_Csv
+    prop1.filecheck = args.Disable_Model_File_Check
+    prop1.config_file = args.config
+
+
     # This can only be changed if directly running get_node_ofs.py!
     prop1.user_input_location = False
 

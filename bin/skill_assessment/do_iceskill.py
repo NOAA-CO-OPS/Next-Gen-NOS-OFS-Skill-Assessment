@@ -58,6 +58,9 @@ Input arguments:
         help="Use a daily average model output instead of single hour;
         True/False", )
 
+        "-c", "--config", required=False,
+        help="Path to configuration file (default: conf/ofs_dps.conf)", )
+
 Output: See the README for all output types, locations, and filenames:
     https://github.com/NOAA-CO-OPS/" \
         "NOS_Shared_Cyberinfrastructure_and_Skill_Assessment/blob/main/" \
@@ -262,8 +265,9 @@ def pair_ice(
 def do_iceskill(prop, logger):
     '''Main ice skill function! Let's go'''
 
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = (
             Path(__file__).
@@ -285,7 +289,7 @@ def do_iceskill(prop, logger):
 
     logger.info('--- Starting ice skill assessment, put on a coat ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     # Do forecast_a start and end date reshuffle
     if 'forecast_a' in prop.whichcasts:
@@ -1264,11 +1268,15 @@ if __name__ == '__main__':
         required=False,
         default='daily',
         help='Set assessment time step: hourly or daily (daily is default)', )
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.ofs = args.ofs.lower()
     prop1.path = args.path
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.whichcasts = args.Whichcasts

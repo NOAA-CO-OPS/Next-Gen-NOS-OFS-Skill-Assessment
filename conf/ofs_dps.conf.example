@@ -42,6 +42,7 @@ model_dir=model
 skill_dir=skill
 fvcom_dir=fvcom
 model_historical_dir=%(home)s/example_data
+model_obc_dir=%(home)s/example_data
 netcdf_dir=netcdf
 1d_node_dir=1d_node
 horizon_model_dir=horizon_model

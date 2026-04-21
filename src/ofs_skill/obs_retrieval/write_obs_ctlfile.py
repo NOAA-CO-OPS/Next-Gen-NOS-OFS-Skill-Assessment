@@ -28,7 +28,6 @@ logging,
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 import pandas as pd
 from coastalmodeling_vdatum import vdatum
@@ -142,7 +141,7 @@ def _emit_coops_currents_entries(
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
                            datum, datum_list, ofs, logger,
-                           bin_overrides=None):
+                           bin_overrides=None, config_file=None):
     """Process a single CO-OPS station.
 
     Returns a list of CTL entry strings. For most variables the list
@@ -171,7 +170,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
             else None
         )
         timeseries = retrieve_t_and_c_station(
-            retrieve_input, logger, only_bins=only_bins)
+            retrieve_input, logger, only_bins=only_bins,
+            config_file=config_file)
         if variable == 'water_level':
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
@@ -201,7 +201,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             all_datums [data]
                         timeseries = \
                             retrieve_t_and_c_station(
-                                retrieve_input, logger)
+                                retrieve_input, logger,
+                                config_file=config_file)
                         if ((isinstance(timeseries, pd.DataFrame) is \
                             True) and
                             (all_datums[data] in accepted_datums)):
@@ -649,7 +650,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
                       control_files_path, logger,
-                      currents_bins_overrides=None):
+                      currents_bins_overrides=None, config_file=None):
     """Process all stations for a single variable. Writes .ctl file.
 
     ``currents_bins_overrides`` is a ``dict[str, list[BinSpec]]`` from
@@ -702,6 +703,7 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                     start_date, end_date, variable, name_var,
                     datum, datum_list, ofs, logger,
                     station_overrides,
+                    config_file=config_file,
                 ))
             for future in futures:
                 result = future.result()
@@ -783,7 +785,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
 
 
 def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
-                      var_list, logger, currents_bins_csv=None):
+                      var_list, logger, currents_bins_csv=None,
+                      config_file=None):
     """
     This function calls the Tid_numberes and Currents, NDBC, and USGS
     retrieval
@@ -800,17 +803,14 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
     https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing
     """
 
-    start_dt = datetime.strptime( start_date , '%Y%m%d' )
-    end_dt = datetime.strptime( end_date , '%Y%m%d' )
-
-    dir_params = utils.Utils().read_config_section( 'directories' , logger )
+    dir_params = utils.Utils(config_file).read_config_section( 'directories' , logger )
 
     # Load the user currents-bins override CSV once (empty dict when no
     # path given or file missing). Passed down to the currents branch
     # of _process_coops_station.
     currents_bins_overrides = load_currents_bins_csv(
         currents_bins_csv, logger)
-    datum_list = (utils.Utils().read_config_section('datums', logger)\
+    datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
     control_files_path = os.path.join(
@@ -861,7 +861,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 'This might take a couple of minutes'
                 )
             ofs_inventory_stations(
-                ofs , start_date , end_date , path, stationowner, logger
+                ofs , start_date , end_date , path, stationowner, logger,
+                config_file=config_file
                 )
             dtypes = {
                 'ID': 'object',
@@ -928,7 +929,7 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 variable, inventory, var_to_col, start_date, end_date,
                 datum, datum_list, ofs, usgs_max_workers,
                 control_files_path, logger,
-                currents_bins_overrides,
+                currents_bins_overrides, config_file,
             ))
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:
