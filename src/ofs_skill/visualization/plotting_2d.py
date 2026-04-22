@@ -27,7 +27,6 @@ Date          Author     Description
 import json
 import os
 import re
-import sys
 from datetime import datetime
 from logging import Logger
 
@@ -124,7 +123,7 @@ def list_of_json_files(filepath, prop1, logger):
     all_files = os.listdir(filepath)
     if len(all_files) == 0:
         logger.warning('No satellite data available for stats. Skipping 2D plotting/stats.')
-        sys.exit(-1)
+        raise FileNotFoundError(f'No files found in directory {filepath}')
     spltstr = []
     files = []
     for af_name in all_files:
@@ -145,12 +144,10 @@ def list_of_json_files(filepath, prop1, logger):
                 and af_name.split('_')[0] == prop1.ofs):
                 spltstr.append(af_name.split('_')[1])  # Date info for sorting
                 files.append(filepath + '/' + af_name)  # Full file path
-    try:
-        files[0]
-    except IndexError:
-        logger.error('No JSON files found in directory %s! Exiting.',
-                     filepath)
-        sys.exit(-1)
+    if not files:
+        raise FileNotFoundError(
+            f'No matching JSON files found in directory {filepath}'
+        )
 
     # Sort file list
     tupfiles = tuple(zip(spltstr, files))
@@ -186,9 +183,9 @@ def json_to_numpy(files, logger):
         z_all.append(z)
     try:
         z_all = np.stack(z_all)
-    except ValueError:
+    except ValueError as e:
         logger.error("Can't stack arrays with different shapes!")
-        sys.exit(-1)
+        raise ValueError("Can't stack arrays with different shapes!") from e
 
     return x, y, z_all
 
@@ -534,8 +531,8 @@ def plot_2d(prop1,logger):
             mod_files = [mod_files[i] for i in mod_ind]
             # Check pairing again to make sure
             if set(sat_dates) != set(mod_dates):
-                logger.error('Cannot pair satellite and model data! Abort!')
-                sys.exit(-1)
+                logger.error('Cannot pair satellite and model data!')
+                raise ValueError('Cannot pair satellite and model data!')
 
         #
         #Now convert available JSON files to numpy arrays for lat, lon, and z (sst)
@@ -562,8 +559,10 @@ def plot_2d(prop1,logger):
             and (z_sat.shape[0] == len(sat_dates))):
             time_steps = len(sat_dates)
         else:
-            logger.info('Error -- satellite and model arrays are different shapes!')
-            sys.exit(-1)
+            logger.error('Satellite and model arrays are different shapes!')
+            raise ValueError(
+                'Satellite and model arrays are different shapes!'
+            )
 
         if len(sat_dates) > 2: #skip if not enough time steps
             #Loop & do stats
