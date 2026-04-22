@@ -242,7 +242,7 @@ def split_linestring_at_antimeridian(row, max_node_id):
             new_node_lon1 = 180.0
             new_node_lon2 = -180.0
             dist1 = 180.0 - existing_node_lon1
-            dist2 = existing_node_lat2 + 180.0 # equivalent to lon2 - (-180.0)
+            dist2 = existing_node_lon2 + 180.0 # equivalent to lon2 - (-180.0)
         else:
             # Segment originates in the Western Hemisphere and crosses West (e.g., -170 to 170)
             new_node_lon1 = -180.0
@@ -394,6 +394,7 @@ def poylgonize_global_extent(gdf):
     print('Joining edges at the antimeridian...')
     gdf = join_antimeridian_edges(gdf)
     # Polygonize the edges.
+    print('Converting edges to polygons...')
     (
         valid,
         cut_edges,
@@ -409,7 +410,9 @@ def poylgonize_global_extent(gdf):
     # Subtract the valid polygons from the global extent to get the final combined 
     # GeoDataFrame of valid polygons and remaining holes.
     valid.crs = "EPSG:4326"   
+    print('Creating global extent GeoDataFrame...')
     gdf_global_extent = create_global_extent_geodataframe()
+    print('Subtracting valid polygons from global extent to get holes. This can be quite slow -- take a coffee break or go for a walk...')
     gdf_combined = gpd.overlay(gdf_global_extent, valid.to_frame(), how='difference')
     return gdf_combined
 
