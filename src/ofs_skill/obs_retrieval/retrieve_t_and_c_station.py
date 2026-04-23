@@ -283,7 +283,7 @@ def _fetch_with_backup(
     station_id: str,
     variable: str,
     logger: Logger,
-) -> Optional[dict]:
+) -> tuple[Optional[dict], bool]:
     """Fetch the primary URL with retry; fall back to ``backup_url`` when set.
 
     The water_temperature / salinity backup URL points at the
@@ -292,26 +292,35 @@ def _fetch_with_backup(
     cadence. Mixing the two resolutions silently degrades skill metrics
     that assume uniform sampling, so log a WARNING whenever the backup
     produces data so operators notice the resolution change.
+
+    Returns
+    -------
+    tuple[Optional[dict], bool]
+        ``(obs, used_backup)`` where ``obs`` is the parsed JSON payload
+        (or ``None`` when both endpoints fail / no backup is configured)
+        and ``used_backup`` is ``True`` only when the hourly backup URL
+        actually produced the returned payload. Callers use the flag to
+        count cadence-mixed chunks in end-of-run summaries.
     """
     obs = _get_with_retry(primary_url, station_id, variable, logger)
     if obs is not None:
         logger.info(
             'CO-OPS station %s contacted for %s retrieval.',
             station_id, variable)
-        return obs
+        return obs, False
 
     if backup_url is None:
-        return None
+        return None, False
 
     obs = _get_with_retry(backup_url, station_id, variable, logger)
     if obs is None:
-        return None
+        return None, False
     logger.warning(
         'CO-OPS backup endpoint used for station %s %s - this chunk '
         'returns hourly samples (interval=6) rather than the primary 6-min '
         'cadence; downstream skill metrics may be affected.',
         station_id, variable)
-    return obs
+    return obs, True
 
 
 def get_station_info(
@@ -428,6 +437,14 @@ def retrieve_t_and_c_station(
     t_c.delta = timedelta(days=30)
     t_c.total_date, t_c.total_var, t_c.total_dir = [], [], []
 
+    # Chunk accounting for end-of-run summary (issue: silent data loss
+    # and hourly-backup usage were only visible via scattered WARNING
+    # lines before). Counters are grep'd from operator logs via the
+    # 'CO-OPS retrieval summary' prefix emitted below.
+    chunks_attempted = 0
+    chunks_dropped = 0
+    chunks_hourly_backup = 0
+
     while t_c.start_dt <= t_c.end_dt:
         date_i = (
             t_c.start_dt.strftime('%Y') +
@@ -489,10 +506,14 @@ def retrieve_t_and_c_station(
         backup_url = (t_c.station_url_2
                       if variable in {'water_temperature', 'salinity'}
                       else None)
-        obs = _fetch_with_backup(
+        chunks_attempted += 1
+        obs, used_backup = _fetch_with_backup(
             t_c.station_url, backup_url, str(retrieve_input.station),
             variable, logger)
+        if used_backup:
+            chunks_hourly_backup += 1
         if obs is None:
+            chunks_dropped += 1
             t_c.start_dt += t_c.delta
             continue
 
@@ -522,6 +543,24 @@ def retrieve_t_and_c_station(
                 t_c.total_dir.append(t_c.drt)
 
         t_c.start_dt += t_c.delta
+
+    # End-of-run summary so operators notice silent chunk drops or
+    # cadence mixing without scanning every WARNING. Severity escalates
+    # when any data was dropped or any chunk used the hourly backup.
+    summary_msg = (
+        'CO-OPS retrieval summary station=%s variable=%s '
+        'date_range=%s-%s chunks_attempted=%d chunks_dropped=%d '
+        'chunks_hourly_backup=%d'
+    )
+    summary_args = (
+        str(retrieve_input.station), variable,
+        retrieve_input.start_date, retrieve_input.end_date,
+        chunks_attempted, chunks_dropped, chunks_hourly_backup,
+    )
+    if chunks_dropped > 0 or chunks_hourly_backup > 0:
+        logger.warning(summary_msg, *summary_args)
+    else:
+        logger.info(summary_msg, *summary_args)
 
     # Non-currents variables report a single depth per station; currents
     # returns per-bin frames via ``_retrieve_currents_all_bins`` (dispatched
