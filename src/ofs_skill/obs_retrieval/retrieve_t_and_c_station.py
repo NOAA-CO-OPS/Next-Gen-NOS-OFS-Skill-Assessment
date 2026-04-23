@@ -38,12 +38,12 @@ from ofs_skill.obs_retrieval import t_and_c_properties, utils
 # ---------------------------------------------------------------------------
 # Module-level HTTP session with connection pooling (Task 2)
 # ---------------------------------------------------------------------------
-_session = None
+_session = None  # pylint: disable=invalid-name
 
 
 def _get_session():
     """Lazily create and return a shared requests.Session with connection pooling."""
-    global _session
+    global _session  # pylint: disable=invalid-name,global-statement
     if _session is None:
         _session = requests.Session()
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
@@ -74,7 +74,7 @@ _COOPS_CONCURRENCY_LIMIT = 2
 _COOPS_MIN_REQUEST_GAP_SEC = 0.5
 _coops_request_semaphore = threading.Semaphore(_COOPS_CONCURRENCY_LIMIT)
 _coops_pacing_lock = threading.Lock()
-_coops_last_request_time = 0.0
+_coops_last_request_time = 0.0  # pylint: disable=invalid-name
 
 
 def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
@@ -86,7 +86,7 @@ def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
     ``_COOPS_MIN_REQUEST_GAP_SEC``. Retry backoff sleeps outside both
     locks so waiting threads do not starve the pool.
     """
-    global _coops_last_request_time
+    global _coops_last_request_time  # pylint: disable=invalid-name,global-statement
     with _coops_request_semaphore:
         with _coops_pacing_lock:
             now = time.monotonic()
