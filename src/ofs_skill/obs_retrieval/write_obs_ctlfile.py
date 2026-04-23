@@ -33,6 +33,10 @@ import pandas as pd
 from coastalmodeling_vdatum import vdatum
 
 from ofs_skill.obs_retrieval import retrieve_properties, utils
+from ofs_skill.obs_retrieval.currents_bins_override import (
+    bin_spec_lookup,
+    load_currents_bins_csv,
+)
 from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_stations
 from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
@@ -42,17 +46,117 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
 
 _COOPS_MAX_WORKERS = 6
+# Currents retrieval now fans out to many per-bin HTTP calls per station;
+# keep station-level parallelism low to avoid CO-OPS per-IP rate limiting
+# (403/429) that can otherwise drop bins.
+_COOPS_CURRENTS_MAX_WORKERS = 2
 _NDBC_MAX_WORKERS = 6
 _CHS_MAX_WORKERS = 1
 _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
 
 
+def _emit_coops_currents_entries(
+    id_number, name, x_value, y_value, ofs, name_var,
+    timeseries, bin_overrides, logger,
+):
+    """Emit CTL entries for each ADCP bin returned by retrieve_t_and_c_station.
+
+    ``retrieve_t_and_c_station`` returns ``dict[int, DataFrame]`` for
+    currents — one DataFrame per ADCP bin. Emit one CTL entry per bin
+    using virtual-ID ``{parent}_b{NN}``.
+
+    For side-looking (PICS) ADCPs the MDAPI leaves ``depth`` null on
+    every bin. We emit a 6th field on the coord line carrying
+    ``height_from_bottom`` so that the model-CTL writer can later
+    resolve an accurate obs depth from the model bathymetry
+    (``depth = h - height_from_bottom``).
+
+    When ``bin_overrides`` is a ``dict[int, BinSpec]``, only bins listed
+    in the user CSV are emitted; any per-row depth/orientation/name
+    values replace the MDAPI-derived ones. Bins the CSV names but the
+    datagetter did not return are logged as a WARNING and skipped.
+
+    Returns a list of CTL entry strings (possibly empty).
+    """
+    if bin_overrides is not None:
+        requested = set(bin_overrides.keys())
+        available = set(timeseries.keys())
+        missing = sorted(requested - available)
+        if missing:
+            logger.warning(
+                'Currents bins CSV lists bin(s) %s for station '
+                '%s but the CO-OPS datagetter did not return '
+                'them; skipping those rows.', missing,
+                str(id_number))
+        selected_bins = sorted(requested & available)
+    else:
+        selected_bins = sorted(timeseries.keys())
+
+    entries = []
+    for bin_num in selected_bins:
+        bin_df = timeseries[bin_num]
+        depth = float(bin_df.attrs.get('depth', 0.0) or 0.0)
+        hfb_raw = bin_df.attrs.get('height_from_bottom')
+        try:
+            hfb = float(hfb_raw) if hfb_raw is not None else 0.0
+        except (TypeError, ValueError):
+            hfb = 0.0
+        suffix = f'bin {int(bin_num):02d}'
+
+        override = (
+            bin_overrides.get(bin_num)
+            if bin_overrides is not None else None
+        )
+        if override is not None:
+            if override.depth is not None:
+                depth = float(override.depth)
+                # User-specified depth supersedes the
+                # height_from_bottom side-looking path.
+                hfb = 0.0
+            if override.name:
+                suffix = f'bin {int(bin_num):02d} / {override.name}'
+
+        virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
+        entries.append(
+            f'{virt_id} {virt_id}_'
+            f'{name_var}_{ofs}_CO-OPS '
+            f'"{name} ({suffix})"\n  '
+            f'{y_value:.3f} {x_value:.3f} 0.0  '
+            f'{depth:.2f}  0.0  {hfb:.2f}\n'
+        )
+    if bin_overrides is not None:
+        logger.info(
+            'CO-OPS currents data found for station %s: '
+            '%d of %d CSV-requested bin(s) emitted.',
+            str(id_number), len(entries), len(bin_overrides))
+    else:
+        logger.info(
+            'CO-OPS currents data found for station %s: '
+            '%d bin(s) emitted.', str(id_number), len(entries)
+        )
+    return entries
+
+
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
                            datum, datum_list, ofs, logger,
-                           config_file=None):
-    """Process a single CO-OPS station. Returns CTL entry string or None."""
+                           bin_overrides=None, config_file=None):
+    """Process a single CO-OPS station.
+
+    Returns a list of CTL entry strings. For most variables the list
+    contains at most one entry; for ``currents`` (ADCPs) one entry is
+    emitted per bin using the virtual-ID format ``{parent}_b{NN}``.
+    An empty list is returned on failure.
+
+    ``bin_overrides`` is an optional ``dict[int, BinSpec]`` keyed by
+    bin number for this parent station. When provided (currents only),
+    the function filters the retrieved bins to only those listed and
+    applies any per-row overrides (depth / orientation / name). The
+    bin set is also pushed into ``retrieve_t_and_c_station`` via
+    ``only_bins`` so the CO-OPS datagetter is called only for pinned
+    bins.
+    """
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
         retrieve_input.station = str( id_number )
@@ -60,10 +164,14 @@ def _process_coops_station(id_number, name, x_value, y_value,
         retrieve_input.end_date = end_date
         retrieve_input.variable = variable
         retrieve_input.datum = datum
-        timeseries = \
-            retrieve_t_and_c_station(
-                retrieve_input, logger,
-                config_file=config_file)
+        only_bins = (
+            set(bin_overrides.keys())
+            if (variable == 'currents' and bin_overrides)
+            else None
+        )
+        timeseries = retrieve_t_and_c_station(
+            retrieve_input, logger, only_bins=only_bins,
+            config_file=config_file)
         if variable == 'water_level':
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
@@ -188,11 +296,11 @@ def _process_coops_station(id_number, name, x_value, y_value,
                 'for station %s.', variable,
                 str(id_number)
                 )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_'
                 f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} {zdiff}  0.0  {datum_found}\n'
-                )
+                )]
         elif (variable in {'water_temperature',
                           'salinity'} and isinstance(
                 timeseries, pd.DataFrame) is True
@@ -202,39 +310,35 @@ def _process_coops_station(id_number, name, x_value, y_value,
                 'station %s.', variable,
                 str(id_number)
                 )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_'
                 f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                )
-        elif (variable == 'currents' and isinstance(
-                timeseries, pd.DataFrame) is True
-            ):
-            logger.info(
-                'CO-OPS %s data found for '
-                'station %s.', variable,
-                str(id_number)
-                )
-            return (
-                f'{str( id_number )} {str( id_number )}_'
-                f'{name_var}_{ofs}_CO-OPS "{name}"\n  {y_value:.3f} '
-                f'{x_value:.3f} 0.0  '
-                f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                )
+                )]
+        elif variable == 'currents' and isinstance(timeseries, dict):
+            return _emit_coops_currents_entries(
+                id_number, name, x_value, y_value, ofs, name_var,
+                timeseries, bin_overrides, logger,
+            )
     except Exception as ex:
         logger.info(
             'CO-OPS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 
 def _process_usgs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single USGS station. Returns CTL entry string or None."""
+    """Process a single USGS station.
+
+    Returns a list of CTL entry strings (at most one for USGS). Empty
+    list on failure, preserving a uniform return shape with
+    ``_process_coops_station``.
+    """
     try:
         retrieve_input = retrieve_properties.RetrieveProperties()
         retrieve_input.station = str(id_number)
@@ -312,41 +416,45 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                     'please check control file',timeseries['Datum'][1],
                     datum
                     )
-                return (
+                return [(
                     f'{str( id_number )} '
                     f'{str( id_number )}_{name_var}_'
                     f'{ofs}_USGS "{name}"\n  {y_value:.3f} '
                     f'{x_value:.3f} '
                     f'{zdiff}  0.0  {str(timeseries["Datum"][1])}\n'
-                    )
+                    )]
 
             elif variable in ['water_temperature' , 'salinity']:
-                return (
+                return [(
                     f'{str( id_number )} {str( id_number )}_'
                     f'{name_var}_{ofs}_USGS "{name}"\n  '
                     f'{y_value:.3f} {x_value:.3f} 0.0  '
                     f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                    )
+                    )]
             elif variable == 'currents':
-                return (
+                return [(
                     f'{str( id_number )} {str( id_number )}_'
                     f'{name_var}_{ofs}_USGS "{name}"\n  '
                     f'{y_value:.3f} {x_value:.3f} 0.0  '
-                    f'{timeseries ["DEP01"] [1]:.2f}  0.0\n'
-                    )
+                    f'{timeseries ["DEP01"] [1]:.2f}  0.0  0.00\n'
+                    )]
     except Exception as ex:
         logger.info(
             'USGS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 
 def _process_ndbc_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single NDBC station. Returns CTL entry string or None."""
+    """Process a single NDBC station.
+
+    Returns a list of CTL entry strings (at most one). Empty list on
+    failure.
+    """
     try:
         data_station = retrieve_ndbc_station(
             start_date,
@@ -357,7 +465,7 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
             )
 
         if data_station is None:
-            return None
+            return []
 
         logger.info(
             'NDBC %s data found for '
@@ -398,46 +506,51 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
                 'please check control file',data_station['Datum'][1],
                 datum
                 )
-            return (
+            return [(
                 f'{str( id_number )} '
                 f'{str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} '
                 f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
-                )
+                )]
 
         elif variable in {'water_temperature','salinity'}:
             data_station ['DEP01'] = data_station [
                 'DEP01'].astype( float )
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station ["DEP01"].mean():.2f}  '
                 f'0.0\n'
-                )
+                )]
         elif variable == 'currents':
             data_station ['DEP01'] = data_station[
                 'DEP01'].astype(float)
-            return (
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station ["DEP01"].mean():.2f}  '
-                f'0.0\n'
-                )
+                f'0.0  0.00\n'
+                )]
     except Exception as ex:
         logger.info(
             'NDBC %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 def _process_chs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single CHS station. Returns CTL entry string or None."""
+    """Process a single CHS station.
+
+    Returns a list of CTL entry strings (at most one). Empty list on
+    failure, preserving a uniform return shape with
+    ``_process_coops_station``.
+    """
     try:
         data_station = retrieve_chs_station(
             start_date,
@@ -448,7 +561,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
             )
 
         if data_station is None:
-            return None
+            return []
 
         logger.info(
             'CHS %s data found for '
@@ -497,36 +610,53 @@ def _process_chs_station(id_number, name, x_value, y_value,
                     zdiff = 0 # No correction needed
                 else:
                     zdiff = 'UNKNOWN'
-            return (
+            return [(
                 f'{str( id_number )} '
                 f'{str( id_number )}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} '
                 f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
-                )
+                )]
 
         else:
             data_station['DEP01'] = data_station[
                 'DEP01'].astype(float)
-            return (
+            # Currents carry an extra 6th field (height_from_bottom) for
+            # uniformity with the CO-OPS ADCP per-bin CTL lines. Other
+            # variables use the legacy 5-field layout.
+            if variable == 'currents':
+                return [(
+                    f'{str( id_number )} {str( id_number )}_{name_var}_'
+                    f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
+                    f'{x_value:.3f} 0.0  '
+                    f'{data_station["DEP01"].mean():.2f}  '
+                    f'0.0  0.00\n'
+                    )]
+            return [(
                 f'{str( id_number )} {str( id_number )}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station["DEP01"].mean():.2f}  '
                 f'0.0\n'
-                )
+                )]
     except Exception as ex:
         logger.info(
             'CHS %s data not found for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
             )
-    return None
+    return []
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
-                      control_files_path, logger, config_file=None):
-    """Process all stations for a single variable. Writes .ctl file."""
+                      control_files_path, logger,
+                      currents_bins_overrides=None, config_file=None):
+    """Process all stations for a single variable. Writes .ctl file.
+
+    ``currents_bins_overrides`` is a ``dict[str, list[BinSpec]]`` from
+    :func:`~ofs_skill.obs_retrieval.currents_bins_override.load_currents_bins_csv`.
+    Only consulted when ``variable == 'currents'``.
+    """
     var_name_map = {
         'water_level': 'wl',
         'water_temperature': 'temp',
@@ -553,20 +683,32 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
     coops_stations = stations_with_var.loc[
         stations_with_var['Source'] == 'CO-OPS']
     if not coops_stations.empty:
+        coops_workers = (
+            _COOPS_CURRENTS_MAX_WORKERS if variable == 'currents'
+            else _COOPS_MAX_WORKERS
+        )
         futures = []
-        with ThreadPoolExecutor(max_workers=_COOPS_MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=coops_workers) as executor:
             for _, row in coops_stations.iterrows():
+                # Pull per-station override only for currents; the
+                # override map only contains CO-OPS ADCP parent IDs.
+                station_overrides = None
+                if (variable == 'currents'
+                        and currents_bins_overrides):
+                    station_overrides = bin_spec_lookup(
+                        currents_bins_overrides, str(row['ID']))
                 futures.append(executor.submit(
                     _process_coops_station,
                     row['ID'], row['Name'], row['X'], row['Y'],
                     start_date, end_date, variable, name_var,
                     datum, datum_list, ofs, logger,
-                    config_file=config_file
+                    station_overrides,
+                    config_file=config_file,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # --- USGS stations (parallel) ---
     usgs_stations = stations_with_var.loc[
@@ -583,8 +725,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # --- NDBC stations (parallel) ---
     ndbc_stations = stations_with_var.loc[
@@ -601,8 +743,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
     # --- CHS stations (parallel) ---
     chs_stations = stations_with_var.loc[
         stations_with_var['Source'] == 'CHS']
@@ -618,8 +760,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                 ))
             for future in futures:
                 result = future.result()
-                if result is not None:
-                    ctl_file.append(result)
+                if result:
+                    ctl_file.extend(result)
 
     # Write the .ctl file
     try:
@@ -643,7 +785,8 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
 
 
 def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
-                      var_list, logger, config_file=None):
+                      var_list, logger, currents_bins_csv=None,
+                      config_file=None):
     """
     This function calls the Tid_numberes and Currents, NDBC, and USGS
     retrieval
@@ -651,10 +794,22 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
     ofs_inventory(ofs, start_date, end_date, path) and variables
     ['water_level', 'water_temperature', 'salinity', 'currents'].
     The output is a .ctl file for each variable with all stations that
-    have data
+    have data.
+
+    ``currents_bins_csv`` is an optional path to a user-supplied CSV
+    that pins which CO-OPS ADCP bins are processed and/or overrides
+    their depth/orientation/name. Schema + behaviour are documented on
+    the repo wiki under *CO-OPS ADCP current processing*:
+    https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing
     """
 
     dir_params = utils.Utils(config_file).read_config_section( 'directories' , logger )
+
+    # Load the user currents-bins override CSV once (empty dict when no
+    # path given or file missing). Passed down to the currents branch
+    # of _process_coops_station.
+    currents_bins_overrides = load_currents_bins_csv(
+        currents_bins_csv, logger)
     datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
 
@@ -773,7 +928,8 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
                 _process_variable,
                 variable, inventory, var_to_col, start_date, end_date,
                 datum, datum_list, ofs, usgs_max_workers,
-                control_files_path, logger, config_file
+                control_files_path, logger,
+                currents_bins_overrides, config_file,
             ))
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:

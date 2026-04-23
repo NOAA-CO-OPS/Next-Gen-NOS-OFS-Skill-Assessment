@@ -14,6 +14,11 @@ import numpy as np
 from ofs_skill.model_processing.station_distance import calculate_station_distance
 
 
+def _coords_lookup_key(obs_lat: float, obs_lon: float) -> tuple:
+    """Build a stable cache key from observation coordinates."""
+    return (round(float(obs_lat), 6), round(float(obs_lon), 6))
+
+
 def index_nearest_node(
     ctl_file_extract: list[list[str]],
     model_netcdf: dict[str, Any],
@@ -76,6 +81,10 @@ def index_nearest_node(
     calculate_station_distance : Geographic distance calculation
     index_nearest_depth : Find nearest depth level
     """
+    # Cache shared across all branches: coords-only key reuses nearest-node
+    # computation when multiple ADCP bins live at the same parent location.
+    coord_cache: dict[tuple, int] = {}
+
     if model_source == 'fvcom':
         index_min_dist = []
         length = len(ctl_file_extract)
@@ -93,10 +102,18 @@ def index_nearest_node(
         if name_var == 'cu':
             # For currents, use element centers
             for obs_p in range(0, length):
-                dist = []
                 obs_lon = float(ctl_file_extract[obs_p][1]) + 360
                 obs_lat = float(ctl_file_extract[obs_p][0])
 
+                key = _coords_lookup_key(obs_lat, obs_lon)
+                if key in coord_cache:
+                    index_min_dist.append(coord_cache[key])
+                    logger.debug(
+                        'Nearest-element cache hit for station %d at %s',
+                        obs_p + 1, key)
+                    continue
+
+                dist = []
                 # Find nearby elements within 0.1 degree window
                 nearby_ele = np.argwhere(
                     (lonc_np > obs_lon - 0.1) &
@@ -114,17 +131,27 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
-                index_min_dist.append(int(nearby_ele[dist.index(min(dist))]))
+                idx = int(nearby_ele[dist.index(min(dist))])
+                coord_cache[key] = idx
+                index_min_dist.append(idx)
                 logger.info(
                     f'Nearest element found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
         else:
             # For other variables, use nodes
             for obs_p in range(0, length):
-                dist = []
                 obs_lon = float(ctl_file_extract[obs_p][1]) + 360
                 obs_lat = float(ctl_file_extract[obs_p][0])
 
+                key = _coords_lookup_key(obs_lat, obs_lon)
+                if key in coord_cache:
+                    index_min_dist.append(coord_cache[key])
+                    logger.debug(
+                        'Nearest-node cache hit for station %d at %s',
+                        obs_p + 1, key)
+                    continue
+
+                dist = []
                 # Find nearby nodes within 0.1 degree window
                 nearby_nodes = np.argwhere(
                     (lon_np > obs_lon - 0.1) &
@@ -142,7 +169,9 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
-                index_min_dist.append(int(nearby_nodes[dist.index(min(dist))].item()))
+                idx = int(nearby_nodes[dist.index(min(dist))].item())
+                coord_cache[key] = idx
+                index_min_dist.append(idx)
                 logger.info(
                     f'Nearest node found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
@@ -216,6 +245,14 @@ def index_nearest_node(
             obs_lat = float(ctl_file_extract[obs_p][0])
             obs_lon = float(ctl_file_extract[obs_p][1])
 
+            key = _coords_lookup_key(obs_lat, obs_lon)
+            if key in coord_cache:
+                index_min_dist.append(coord_cache[key])
+                logger.debug(
+                    'Nearest-node cache hit for station %d at %s',
+                    obs_p + 1, key)
+                continue
+
             # Calculate distances to all points
             dist = np.empty(np.shape(lon_rho_np))
             dist[:] = np.nan  # Set to NaN to disregard land points
@@ -249,6 +286,7 @@ def index_nearest_node(
                         dist[i_index, j_index] = distance
 
                 min_idx = np.nanargmin(dist)
+                coord_cache[key] = min_idx
                 index_min_dist.append(min_idx)
                 logger.info(
                     f'Nearest node found: station {obs_p + 1} of {len(ctl_file_extract)}'
@@ -301,6 +339,15 @@ def index_nearest_node(
         for obs_p in range(len(ctl_file_extract)):
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
+
+            key = _coords_lookup_key(obs_lat, obs_lon)
+            if key in coord_cache:
+                index_min_dist.append(coord_cache[key])
+                logger.debug(
+                    'Nearest-node cache hit for station %d at %s',
+                    obs_p + 1, key)
+                continue
+
             # Find nearby nodes within a small bounding box (±0.1 degrees)
             nearby_nodes = np.argwhere(
              (x_np > obs_lon - 0.1) & (x_np < obs_lon + 0.1) &
@@ -329,6 +376,7 @@ def index_nearest_node(
                index_min_dist.append(-1)
             else:
                nearest_idx = int(nearby_nodes[np.nanargmin(dist)][0])
+               coord_cache[key] = nearest_idx
                index_min_dist.append(nearest_idx)
             logger.info('Nearest element found: station %s of %s', obs_p + 1, len(ctl_file_extract))
 

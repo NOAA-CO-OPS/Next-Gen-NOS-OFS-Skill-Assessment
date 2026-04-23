@@ -575,8 +575,15 @@ def oned_scalar_plot(
                 row=1, col=1,
             )
 
-    # Add annotation if assumed surface depth (no depth data from API)
-    if name_var != 'wl' and len(station_id) > 3:
+    # Add annotation if assumed surface depth (no depth data from API).
+    # Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default
+    # rather than a resolved value. CO-OPS (bins endpoint / side-looking
+    # resolver) and NDBC report authoritative depths.
+    if (
+        name_var != 'wl'
+        and len(station_id) > 3
+        and station_id[2] in ('USGS', 'CHS')
+    ):
         try:
             obs_depth = float(station_id[3])
             if obs_depth == 0.0:

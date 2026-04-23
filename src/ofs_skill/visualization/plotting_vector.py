@@ -533,8 +533,11 @@ def oned_vector_plot1(
         ),
     )
 
-    # Add annotation if assumed surface depth (no depth data from API)
-    if len(station_id) > 3:
+    # Add annotation if assumed surface depth (no depth data from API).
+    # Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default
+    # rather than a resolved value. CO-OPS (bins endpoint / side-looking
+    # resolver) and NDBC report authoritative depths.
+    if len(station_id) > 3 and station_id[2] in ('USGS', 'CHS'):
         try:
             obs_depth = float(station_id[3])
             if obs_depth == 0.0:
@@ -922,7 +925,7 @@ def oned_vector_plot2b(
         # This determines the height of the plot based on # of rows
         height=figheight,
         width=figwidth, template='seaborn',
-        margin=dict(l=20, r=20, t=120, b=0), legend=dict(
+        margin=dict(l=20, r=20, t=160, b=0), legend=dict(
             font=dict(size=14, color='black', family='Arial'),
             orientation='h',
             yanchor='bottom',

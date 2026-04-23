@@ -150,6 +150,14 @@ if __name__ == '__main__':
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
     parser.add_argument(
+        '-cb',
+        '--Currents_Bins_Csv',
+        required=False,
+        help='Optional path to a CSV that pins which CO-OPS ADCP bins are '
+             'processed and/or overrides their depth/orientation. Columns: '
+             'station_id,bin,depth,orientation,name. See the wiki: '
+             'https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing')
+    parser.add_argument(
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
@@ -162,6 +170,7 @@ if __name__ == '__main__':
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
     prop1.datum = args.Datum.upper()
+    prop1.currents_bins_csv = args.Currents_Bins_Csv
 
     # Make all station owners default, unless user specifies station owners
     if args.Station_Owner is None:

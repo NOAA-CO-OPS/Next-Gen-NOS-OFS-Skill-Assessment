@@ -960,6 +960,15 @@ if __name__ == '__main__':
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
     parser.add_argument(
+        '-cb',
+        '--Currents_Bins_Csv',
+        required=False,
+        default=None,
+        help='Optional path to a CSV that pins which CO-OPS ADCP bins are '
+             'processed and/or overrides their depth/orientation/name. '
+             'Columns: station_id,bin,depth,orientation,name. See the wiki: '
+             'https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing')
+    parser.add_argument(
         '-df',
         '--Disable_Model_File_Check',
         action='store_false',
@@ -990,8 +999,10 @@ if __name__ == '__main__':
     prop1.horizonskill = args.Horizon_Skill
     prop1.forecast_hr = args.Forecast_Hr
     prop1.var_list = args.Var_Selection
+    prop1.currents_bins_csv = args.Currents_Bins_Csv
     prop1.filecheck = args.Disable_Model_File_Check
     prop1.config_file = args.config
+
 
     # This can only be changed if directly running get_node_ofs.py!
     prop1.user_input_location = False

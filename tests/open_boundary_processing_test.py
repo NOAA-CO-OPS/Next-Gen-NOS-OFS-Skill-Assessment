@@ -361,7 +361,27 @@ class TestParameterValidation:
         with pytest.raises(SystemExit):
             op.parameter_validation(prop, logger)
 
-    def test_happy_path_creates_dirs(self, tmp_path, logger):
+    def test_happy_path_creates_dirs(self, tmp_path, monkeypatch, logger):
+        # Isolate the test from the developer's local conf/ofs_dps.conf
+        # by stubbing Utils.read_config_section('directories').
+        fake_dirs = {
+            'home': str(tmp_path),
+            'ofs_extents_dir': 'ofs_extents',
+            'data_dir': 'data',
+            'visual_dir': 'visual',
+            'model_obc_dir': str(tmp_path / 'example_data'),
+        }
+
+        class _FakeUtils:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def read_config_section(self, section, _logger):
+                assert section == 'directories'
+                return fake_dirs
+
+        monkeypatch.setattr(op.utils, 'Utils', _FakeUtils)
+
         prop = self._make_prop(tmp_path, ofs='leofs')
         ofs_ext = tmp_path / 'ofs_extents'
         ofs_ext.mkdir()

@@ -7,13 +7,20 @@ stations, as well as tidal predictions and nearest station finding capabilities.
 
 The retrieval is performed in 30-day chunks to handle API limitations, with
 automatic retry logic for temperature and salinity using backup URLs.
+
+For ``variable == 'currents'`` the module fans out to one datagetter call per
+ADCP bin (``&bin=N``) and returns a ``dict[int, DataFrame]`` keyed by bin
+number — see :func:`_retrieve_currents_all_bins` and the wiki page
+"CO-OPS ADCP current processing" for the full flow.
 """
 
 import json
 import math
+import random
+import time
 from datetime import datetime, timedelta
 from logging import Logger
-from typing import Optional
+from typing import Optional, Union
 from urllib.error import HTTPError
 
 import pandas as pd
@@ -44,8 +51,12 @@ def _get_session():
 # ---------------------------------------------------------------------------
 _depth_cache = {}  # station_id -> depth_data
 
+# Cache station-level metadata (``height_from_bottom`` etc.) keyed by
+# station_id. Populated via ``get_station_info``.
+_station_info_cache: dict[str, Optional[dict]] = {}
 
-def _get_station_depth(station_id, mdapi_url, logger):
+
+def get_station_depth(station_id, mdapi_url, logger):
     """Fetch station depth/bins metadata, returning cached result when available.
 
     Parameters
@@ -84,11 +95,49 @@ def _get_station_depth(station_id, mdapi_url, logger):
     return depth_data
 
 
+def get_station_info(
+    station_id: str, mdapi_url: str, logger: Logger,
+) -> Optional[dict]:
+    """Fetch station-level metadata (cached) from the MDAPI station endpoint.
+
+    Returns the first entry of ``stations`` (fields include
+    ``height_from_bottom``, ``center_bin_1_dist``, ``lat``, ``lng``) or
+    ``None`` on error / missing station.
+    """
+    if station_id in _station_info_cache:
+        return _station_info_cache[station_id]
+
+    url = f'{mdapi_url}/webapi/stations/{station_id}.json?units=metric'
+    try:
+        response = _get_session().get(url, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.exceptions.RequestException as ex:
+        logger.warning(
+            'CO-OPS station metadata retrieval failed for %s: %s',
+            station_id, ex)
+        _station_info_cache[station_id] = None
+        return None
+
+    stations = payload.get('stations') or []
+    info = stations[0] if stations else None
+    _station_info_cache[station_id] = info
+    return info
+
+
+# Backward-compat aliases: these used to be leading-underscore "private"
+# symbols but are imported by ``plotting_functions.py`` across module
+# boundaries, so keep the old names working for any external caller.
+_get_station_depth = get_station_depth
+_get_station_info = get_station_info
+
+
 def retrieve_t_and_c_station(
     retrieve_input: object,
     logger: Logger,
+    only_bins: Optional[set[int]] = None,
     config_file=None,
-) -> Optional[pd.DataFrame]:
+) -> Optional[Union[pd.DataFrame, dict[int, pd.DataFrame]]]:
     """
     Retrieve time series observations from NOAA Tides and Currents station.
 
@@ -106,14 +155,25 @@ def retrieve_t_and_c_station(
                        'currents', 'salinity', 'wind', 'air_pressure')
             - datum: Vertical datum (for water_level)
         logger: Logger instance for logging messages
+        only_bins: Optional set of ADCP bin numbers to restrict the
+            currents retrieval to. Ignored for non-currents variables.
+            When supplied, the datagetter is only called for those
+            bins — used by ``write_obs_ctlfile`` to honour the user
+            currents-bins CSV without fetching every bin.
 
     Returns:
-        DataFrame with columns:
-            - DateTime: Observation timestamps
-            - DEP01: Observation depth in meters
-            - OBS: Observation values
-            - DIR: Direction values (for currents/wind only)
-        Returns None if no data retrieved.
+        For ``variable == 'currents'``:
+            ``dict[int, pd.DataFrame]`` keyed by ADCP bin number. Each
+            DataFrame carries per-bin depth via ``df.attrs['depth']`` (also
+            populated in the ``DEP01`` column) plus ``df.attrs['bin']``,
+            ``df.attrs['orientation']``, and ``df.attrs['height_from_bottom']``
+            (the last used by the model-CTL writer to resolve depth for
+            side-looking PICS ADCPs). If the bins endpoint is unavailable
+            the retrieval falls back to a single ``{1: DataFrame}`` using
+            the ``real_time_bin`` depth (legacy behavior).
+        For other variables:
+            DataFrame with columns DateTime, DEP01, OBS (and DIR for wind).
+        ``None`` if no data retrieved.
 
     Raises:
         HTTPError: If API request fails after retries
@@ -129,6 +189,19 @@ def retrieve_t_and_c_station(
 
     t_c.start_dt_0 = datetime.strptime(retrieve_input.start_date, '%Y%m%d')
     t_c.end_dt_0 = datetime.strptime(retrieve_input.end_date, '%Y%m%d')
+
+    # Currents uses a per-bin retrieval loop against a different endpoint
+    # shape (``&bin=N``). Keep it out of the generic chunked loop below.
+    if variable == 'currents':
+        return _retrieve_currents_all_bins(
+            station_id=str(retrieve_input.station),
+            start_date=retrieve_input.start_date,
+            end_date=retrieve_input.end_date,
+            api_url=t_c.api_url,
+            mdapi_url=t_c.mdapi_url,
+            logger=logger,
+            only_bins=only_bins,
+        )
 
     t_c.start_dt = datetime.strptime(retrieve_input.start_date, '%Y%m%d')
     t_c.end_dt = datetime.strptime(retrieve_input.end_date, '%Y%m%d')
@@ -194,14 +267,6 @@ def retrieve_t_and_c_station(
                 f'metric&interval=6&format=json'
             )
 
-        elif variable == 'currents':
-            t_c.station_url = (
-                f'{t_c.api_url}/datagetter?begin_date='
-                f'{date_i}&end_date={date_f}&station='
-                f'{retrieve_input.station}&product={variable}&time_zone='
-                f'gmt&units=metric&format=json'
-            )
-
         if variable in {'water_temperature', 'salinity'}:
             try:
                 response = _get_session().get(t_c.station_url, timeout=120)
@@ -255,52 +320,39 @@ def retrieve_t_and_c_station(
         t_c.date, t_c.var, t_c.drt = [], [], []
         if 'data' in obs.keys():
             for i in range(len(obs['data'])):
-                t_c.date.append(obs['data'][i]['t'])
+                row = obs['data'][i]
 
                 if variable in {'water_level',
                                 'water_temperature',
                                 'air_pressure'}:
-                    t_c.var.append(obs['data'][i]['v'])
+                    t_c.date.append(row['t'])
+                    t_c.var.append(row['v'])
 
                 elif variable == 'salinity':
-                    t_c.var.append(obs['data'][i]['s'])
-
-                elif variable == 'currents':
-                    # Convert speed from cm/s to m/s
-                    t_c.var.append(float(obs['data'][i]['s']) / 100)
-                    t_c.drt.append(obs['data'][i]['d'])
+                    t_c.date.append(row['t'])
+                    t_c.var.append(row['s'])
 
                 elif variable == 'wind':
-                    t_c.var.append(obs['data'][i]['s'])
-                    t_c.drt.append(obs['data'][i]['d'])
+                    t_c.date.append(row['t'])
+                    t_c.var.append(row['s'])
+                    t_c.drt.append(row['d'])
 
             t_c.total_date.append(t_c.date)
             t_c.total_var.append(t_c.var)
-            if variable in {'wind', 'currents'}:
+            if variable == 'wind':
                 t_c.total_dir.append(t_c.drt)
 
         t_c.start_dt += t_c.delta
 
-    # Retrieve observation depth from metadata API (cached per station)
+    # Non-currents variables report a single depth per station; currents
+    # returns per-bin frames via ``_retrieve_currents_all_bins`` (dispatched
+    # above).
     t_c.depth = 0.0
-    t_c.depth_url = _get_station_depth(
-        str(retrieve_input.station), t_c.mdapi_url, logger)
-
-    if (
-        t_c.depth_url is not None
-        and t_c.depth_url['bins'] is not None
-        and t_c.depth_url['real_time_bin'] is not None
-        and t_c.depth_url['bins'][t_c.depth_url['real_time_bin'] - 1][
-            'depth'] is not None
-    ):
-        t_c.depth = float(
-            t_c.depth_url['bins'][t_c.depth_url['real_time_bin'] - 1]['depth']
-        )
 
     t_c.total_date = sum(t_c.total_date, [])
     t_c.total_var = sum(t_c.total_var, [])
 
-    if variable in {'wind', 'currents'}:
+    if variable == 'wind':
         t_c.total_dir = sum(t_c.total_dir, [])
 
         obs = pd.DataFrame(
@@ -330,6 +382,377 @@ def retrieve_t_and_c_station(
         return obs
 
     return None
+
+
+def _extract_bin_records(
+    bins_payload: Optional[dict],
+) -> list[dict]:
+    """Return the list of bin records from a CO-OPS bins payload, or []."""
+    if not bins_payload or not bins_payload.get('bins'):
+        return []
+    return list(bins_payload['bins'])
+
+
+def _bin_depth_from_record(entry: dict) -> Optional[float]:
+    """Resolve depth (m) for a single bin record.
+
+    Returns the bin's ``depth`` value when provided by the MDAPI. For
+    side-looking (PICS) ADCPs the endpoint returns ``depth: None``; in
+    that case this helper returns ``None`` rather than inventing a
+    depth from ``distance`` (which is horizontal range along the
+    channel, not depth-from-surface — mislabeling it as depth picks a
+    wrong model vertical layer and produces a misleading plot title).
+    """
+    depth = entry.get('depth')
+    if depth is not None:
+        try:
+            return float(depth)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _retrieve_currents_all_bins(
+    station_id: str,
+    start_date: str,
+    end_date: str,
+    api_url: str,
+    mdapi_url: str,
+    logger: Logger,
+    only_bins: Optional[set[int]] = None,
+) -> Optional[dict[int, pd.DataFrame]]:
+    """Retrieve CO-OPS currents data for every bin of an ADCP station.
+
+    Flow:
+      1. Fetch the bins metadata endpoint (cached per station) to
+         enumerate bin numbers and per-bin depth.
+      2. For each bin, loop the datagetter in 30-day chunks with
+         ``&bin=N`` to pull that bin's full time series.
+      3. Assemble a DataFrame per bin (DateTime, DEP01, DIR, OBS), with
+         ``df.attrs['bin'/'depth'/'orientation']`` stamped on.
+
+    When ``only_bins`` is provided, the bin iteration is restricted to
+    that set — which short-circuits the CO-OPS HTTP traffic when a
+    user has supplied a currents-bins override CSV listing only a
+    handful of bins per station.
+
+    Returns ``dict[int, DataFrame]`` keyed by bin number, or ``None`` if
+    no bin yielded any in-window data.
+    """
+    start_dt_0 = datetime.strptime(start_date, '%Y%m%d')
+    end_dt_0 = datetime.strptime(end_date, '%Y%m%d')
+
+    bins_payload = get_station_depth(station_id, mdapi_url, logger)
+    bin_records = _extract_bin_records(bins_payload)
+    # Station-level info provides ``height_from_bottom`` — needed to
+    # compute depth for side-looking ADCPs whose per-bin ``depth`` is
+    # null on the MDAPI bins endpoint.
+    station_info = get_station_info(station_id, mdapi_url, logger)
+    hfb: Optional[float] = None
+    if station_info is not None:
+        hfb_raw = station_info.get('height_from_bottom')
+        if hfb_raw is not None:
+            try:
+                hfb = float(hfb_raw)
+            except (TypeError, ValueError):
+                hfb = None
+
+    # Determine bin numbers to iterate. If metadata is unavailable, fall
+    # back to a single unfiltered datagetter call. Resolve the bin number
+    # from station_info (``deployments[0].real_time_bin``) or the bins
+    # payload (``real_time_bin``) if available — otherwise default to 1
+    # only as a last resort. The station's true sensor depth is unknown
+    # in this path, so flag it via ``df.attrs['depth_unknown']`` instead
+    # of silently claiming a surface measurement.
+    if not bin_records:
+        fallback_bin = None
+        if station_info is not None:
+            deployments = station_info.get('deployments') or []
+            if deployments:
+                try:
+                    rtb = deployments[0].get('real_time_bin')
+                except AttributeError:
+                    rtb = None
+                if rtb is not None:
+                    try:
+                        fallback_bin = int(rtb)
+                    except (TypeError, ValueError):
+                        fallback_bin = None
+        if fallback_bin is None and isinstance(bins_payload, dict):
+            rtb = bins_payload.get('real_time_bin')
+            if rtb is not None:
+                try:
+                    fallback_bin = int(rtb)
+                except (TypeError, ValueError):
+                    fallback_bin = None
+        if fallback_bin is None:
+            fallback_bin = 1
+
+        logger.warning(
+            'CO-OPS bins metadata unavailable for station %s: DEPTH '
+            'UNKNOWN — falling back to unfiltered datagetter for '
+            'bin=%s. The measurement will be paired with the model '
+            "surface layer and flagged via df.attrs['depth_unknown']="
+            'True; downstream consumers should treat this as suspect.',
+            station_id, fallback_bin)
+
+        legacy = _fetch_currents_chunked(
+            station_id=station_id,
+            bin_num=None,
+            start_dt_0=start_dt_0,
+            end_dt_0=end_dt_0,
+            api_url=api_url,
+            logger=logger,
+        )
+        if legacy is None:
+            return None
+        legacy.attrs['bin'] = fallback_bin
+        legacy.attrs['depth'] = 0.0
+        legacy.attrs['depth_unknown'] = True
+        legacy.attrs['orientation'] = ''
+        legacy.attrs['height_from_bottom'] = hfb
+        logger.warning(
+            'CO-OPS currents retrieval for station %s returned 1 bin '
+            '(legacy fallback, bin=%s, depth UNKNOWN).',
+            station_id, fallback_bin)
+        return {fallback_bin: legacy}
+
+    result: dict[int, pd.DataFrame] = {}
+    missing_depth: list[int] = []
+    for entry in bin_records:
+        try:
+            bin_num = int(entry.get('num', entry.get('bin')))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        # Restrict to CSV-requested bins when provided. Skips both the
+        # datagetter HTTP call and any downstream processing for bins
+        # the user did not pin.
+        if only_bins is not None and bin_num not in only_bins:
+            continue
+
+        depth = _bin_depth_from_record(entry)
+        if depth is None:
+            missing_depth.append(bin_num)
+            depth = 0.0
+        orientation = str(entry.get('orientation', '') or '')
+
+        df = _fetch_currents_chunked(
+            station_id=station_id,
+            bin_num=bin_num,
+            start_dt_0=start_dt_0,
+            end_dt_0=end_dt_0,
+            api_url=api_url,
+            logger=logger,
+        )
+        if df is None:
+            continue
+
+        df['DEP01'] = pd.to_numeric(depth)
+        df.attrs['bin'] = bin_num
+        df.attrs['depth'] = depth
+        df.attrs['orientation'] = orientation
+        df.attrs['height_from_bottom'] = hfb
+        result[bin_num] = df
+
+    if missing_depth:
+        logger.warning(
+            'CO-OPS bins endpoint returned no depth for station %s '
+            'bins %s; depth recorded as 0.0 m.',
+            station_id, missing_depth)
+
+    if not result:
+        logger.info(
+            'CO-OPS currents retrieval for station %s returned no bins '
+            'with data.', station_id)
+        return None
+
+    logger.info(
+        'CO-OPS currents retrieval for station %s returned %d bin(s): %s',
+        station_id, len(result), sorted(result.keys()))
+    return result
+
+
+# CO-OPS occasionally rate-limits or returns transient 5xx under the
+# heavier per-bin request volume; retry a small number of times with
+# exponential backoff + jitter before giving up.
+_RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
+_RETRY_MAX_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
+_RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Return seconds to sleep before the next retry attempt."""
+    return (_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            + random.uniform(0, _RETRY_JITTER_MAX))
+
+
+def _get_with_retry(
+    url: str,
+    station_id: str,
+    context: str,
+    logger: Logger,
+) -> Optional[dict]:
+    """GET ``url`` with retries for transient CO-OPS errors.
+
+    Retries only on network-level failures (ConnectionError, Timeout) or
+    HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
+    as 400 (bad station/date combo - CO-OPS "no data") or 404 fail
+    immediately without burning the retry budget.
+
+    ``context`` is a free-form label (bin number, variable name, etc.)
+    included in log messages so parallel workers can be disambiguated.
+
+    Returns the parsed JSON payload on success, ``None`` when the call
+    hits a non-retryable error or all retries are exhausted.
+    """
+    last_exc = None
+    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        try:
+            response = _get_session().get(url, timeout=120)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as ex:
+            last_exc = ex
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    'CO-OPS %s station=%s network error (attempt %d/%d): '
+                    '%s; retrying in %.1fs', context, station_id,
+                    attempt, _RETRY_MAX_ATTEMPTS, ex, delay)
+                time.sleep(delay)
+                continue
+            break
+        except requests.exceptions.RequestException as ex:
+            logger.warning(
+                'CO-OPS %s station=%s non-retryable request error: %s',
+                context, station_id, ex)
+            return None
+
+        status = response.status_code
+        if status in _RETRY_STATUSES:
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    'CO-OPS %s station=%s HTTP %d (attempt %d/%d); '
+                    'retrying in %.1fs', context, station_id, status,
+                    attempt, _RETRY_MAX_ATTEMPTS, delay)
+                time.sleep(delay)
+                continue
+            logger.error(
+                'CO-OPS %s station=%s HTTP %d - retries exhausted '
+                'after %d attempts; dropping chunk',
+                context, station_id, status, _RETRY_MAX_ATTEMPTS)
+            return None
+
+        if status >= 400:
+            # Non-retryable 4xx/5xx (400, 401, 404, etc.) - fail fast.
+            # CO-OPS returns 400 "No data was found" for stations with
+            # no observations in the requested window; retrying won't
+            # change that. Logged at WARNING because the chunk is
+            # dropped silently and operators should notice.
+            logger.warning(
+                'CO-OPS %s station=%s HTTP %d - not retrying '
+                '(dropping chunk)', context, station_id, status)
+            return None
+
+        try:
+            return response.json()
+        except ValueError as ex:
+            logger.warning(
+                'CO-OPS %s station=%s returned non-JSON body: %s',
+                context, station_id, ex)
+            return None
+
+    logger.error(
+        'CO-OPS currents retrieval failed for station %s (%s) after '
+        '%d attempts: %s', station_id, context, _RETRY_MAX_ATTEMPTS,
+        last_exc)
+    return None
+
+
+def _fetch_currents_chunked(
+    station_id: str,
+    bin_num: Optional[int],
+    start_dt_0: datetime,
+    end_dt_0: datetime,
+    api_url: str,
+    logger: Logger,
+) -> Optional[pd.DataFrame]:
+    """Pull currents data for a station (optionally a specific bin) in
+    30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
+
+    Returns ``None`` when no rows fall inside ``[start_dt_0, end_dt_0]``.
+    """
+    delta = timedelta(days=30)
+    cur = start_dt_0
+    dates: list[str] = []
+    speeds: list[float] = []
+    dirs: list[float] = []
+
+    while cur <= end_dt_0:
+        date_i = cur.strftime('%Y%m%d')
+        date_f = (cur + delta).strftime('%Y%m%d')
+        bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+        url = (
+            f'{api_url}/datagetter?begin_date={date_i}&end_date={date_f}'
+            f'&station={station_id}&product=currents{bin_qs}'
+            f'&time_zone=gmt&units=metric&format=json'
+        )
+        context = (f'currents bin={bin_num}' if bin_num is not None
+                   else 'currents')
+        obs = _get_with_retry(url, station_id, context, logger)
+        if obs is None:
+            cur += delta
+            continue
+
+        for row in obs.get('data', []) or []:
+            # Defend against upstream API regressions: if the server
+            # echoes a bin number that doesn't match what we requested,
+            # skip the row rather than silently mis-pair it with the
+            # wrong bin's depth.
+            if bin_num is not None:
+                row_bin_raw = row.get('b')
+                if row_bin_raw is not None:
+                    try:
+                        row_bin = int(row_bin_raw)
+                    except (TypeError, ValueError):
+                        row_bin = None
+                    if row_bin is not None and row_bin != bin_num:
+                        logger.warning(
+                            'CO-OPS datagetter returned bin=%s for '
+                            'request bin=%s, skipping row',
+                            row_bin, bin_num)
+                        continue
+            try:
+                speed_m = float(row['s']) / 100  # cm/s → m/s
+            except (TypeError, ValueError, KeyError):
+                speed_m = float('nan')
+            try:
+                direction = float(row['d'])
+            except (TypeError, ValueError, KeyError):
+                direction = float('nan')
+            dates.append(row['t'])
+            speeds.append(speed_m)
+            dirs.append(direction)
+
+        cur += delta
+
+    if not dates:
+        return None
+
+    df = pd.DataFrame({
+        'DateTime': pd.to_datetime(dates),
+        'DEP01': pd.to_numeric(0.0),
+        'DIR': pd.to_numeric(dirs),
+        'OBS': pd.to_numeric(speeds),
+    })
+    mask = (df['DateTime'] >= start_dt_0) & (df['DateTime'] <= end_dt_0)
+    df = df.loc[mask]
+    if df.empty:
+        return None
+    df = df.sort_values(by='DateTime').drop_duplicates()
+    return df
 
 
 def get_HTTP_error(ex: HTTPError) -> str:
