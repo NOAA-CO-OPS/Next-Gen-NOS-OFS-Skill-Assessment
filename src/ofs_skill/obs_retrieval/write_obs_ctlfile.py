@@ -56,6 +56,21 @@ _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
 
 
+def _normalize_vdatum_name(name: str) -> str:
+    """Canonicalize short datum aliases to the full names expected downstream.
+
+    The CO-OPS API accepts ``'NAVD'`` as shorthand for NAVD88, but downstream
+    readers (``plotting_scalar.py``, ``write_ofs_ctlfile.py``) key off the
+    canonical ``'NAVD88'`` label. Returns the input unchanged unless it is a
+    known short alias.
+    """
+    if name is None:
+        return name
+    if str(name).upper() == 'NAVD':
+        return 'NAVD88'
+    return name
+
+
 def _emit_coops_currents_entries(
     id_number, name, x_value, y_value, ofs, name_var,
     timeseries, bin_overrides, logger,
@@ -173,6 +188,7 @@ def _process_coops_station(id_number, name, x_value, y_value,
             retrieve_input, logger, only_bins=only_bins,
             config_file=config_file)
         if variable == 'water_level':
+            datum_found = None
             if (isinstance(timeseries, pd.DataFrame)
                 is False):
                 all_datums = ['NAVD','MSL','MLLW',
@@ -206,10 +222,8 @@ def _process_coops_station(id_number, name, x_value, y_value,
                         if ((isinstance(timeseries, pd.DataFrame) is \
                             True) and
                             (all_datums[data] in accepted_datums)):
-                            datum_found = \
-                                all_datums [data]
-                            if str(datum_found) == 'NAVD':
-                                datum_found = 'NAVD88'
+                            datum_found = _normalize_vdatum_name(
+                                all_datums [data])
                             # if str(datum_found) == 'IGLD':
                             #     datum_found = 'IGLD85'
                             logger.info(
@@ -234,19 +248,33 @@ def _process_coops_station(id_number, name, x_value, y_value,
                             'data!'
                             ) from ex
             else:
-                datum_found = datum
+                datum_found = _normalize_vdatum_name(datum)
+            if not datum_found:
+                logger.info(
+                    'After trying multiple '
+                    'datums, no water '
+                    'level data found for '
+                    'station %s.',
+                    str(id_number)
+                    )
+                return None
             if ofs not in [
                     'leofs',
                     'lmhofs',
                     'loofs',
                     'lsofs'
                     ]:
-                if (str(datum_found).upper() == datum):
+                # Compare canonical names so the happy-path short-circuit
+                # (zdiff=0) triggers even when the request used the CO-OPS
+                # short alias 'NAVD' and ``datum_found`` was canonicalized
+                # to 'NAVD88'.
+                datum_canonical = _normalize_vdatum_name(datum).upper()
+                if (str(datum_found).upper() == datum_canonical):
                     zdiff = 0
-                elif (str(datum_found).upper() != datum and
+                elif (str(datum_found).upper() != datum_canonical and
                       str(datum_found).upper() in
                       datum_list):
-                    ldatum = datum.lower()
+                    ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
                     _,_,z = vdatum.convert(
                         str(datum_found).lower(),
@@ -377,7 +405,7 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                             timeseries ['Datum'][1]
                             ) == 'NAVD88' and
                             datum != 'NAVD88'):
-                        ldatum = datum.lower()
+                        ldatum = _normalize_vdatum_name(datum).lower()
                         dummyval = 10
                         _,_,z = vdatum.convert(
                             timeseries['Datum'][1].lower(),
@@ -480,7 +508,7 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
                     data_station['Datum'][1]
                     ) == 'MLLW' and
                     datum != 'MLLW'):
-                ldatum = datum.lower()
+                ldatum = _normalize_vdatum_name(datum).lower()
                 dummyval = 10
                 _,_,z = vdatum.convert(
                     data_station['Datum'][1].lower(),
@@ -582,7 +610,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
                         ).upper() == datum):
                     zdiff = 0
                 else:
-                    ldatum = datum.lower()
+                    ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
                     _,_,z = vdatum.convert(
                         data_station['Datum'][1].lower(),

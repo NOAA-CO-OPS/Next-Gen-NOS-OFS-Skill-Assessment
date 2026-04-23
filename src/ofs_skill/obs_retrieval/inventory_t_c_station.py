@@ -48,7 +48,7 @@ def get_inventory(
     try:
         with urllib.request.urlopen(station_url) as url:
             inventory = json.load(url)
-    except urllib.error.HTTPError as ex:
+    except (urllib.error.URLError, urllib.error.HTTPError) as ex:
         logger.error(
             'CO-OPS station %s data download failed at %s -- %s.',
             variable,

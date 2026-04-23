@@ -5,8 +5,13 @@ This module provides functions to retrieve tidal observations, water level,
 temperature, salinity, currents, and other oceanographic data from NOAA CO-OPS
 stations, as well as tidal predictions and nearest station finding capabilities.
 
-The retrieval is performed in 30-day chunks to handle API limitations, with
-automatic retry logic for temperature and salinity using backup URLs.
+The retrieval is performed in 30-day chunks to handle API limitations. Every
+CO-OPS HTTP call is gated by a module-level semaphore (see
+``_rate_limited_get``) so upstream parallelization cannot exceed a safe
+concurrent-request ceiling, and transient errors are handled with
+full-jitter exponential backoff (see ``_get_with_retry``). Water temperature
+and salinity additionally fall back to a ``PHYSOCEAN`` backup URL when the
+primary endpoint exhausts retries.
 
 For ``variable == 'currents'`` the module fans out to one datagetter call per
 ADCP bin (``&bin=N``) and returns a ``dict[int, DataFrame]`` keyed by bin
@@ -17,6 +22,7 @@ number — see :func:`_retrieve_currents_all_bins` and the wiki page
 import json
 import math
 import random
+import threading
 import time
 from datetime import datetime, timedelta
 from logging import Logger
@@ -32,18 +38,63 @@ from ofs_skill.obs_retrieval import t_and_c_properties, utils
 # ---------------------------------------------------------------------------
 # Module-level HTTP session with connection pooling (Task 2)
 # ---------------------------------------------------------------------------
-_session = None
+_session = None  # pylint: disable=invalid-name
 
 
 def _get_session():
     """Lazily create and return a shared requests.Session with connection pooling."""
-    global _session
+    global _session  # pylint: disable=invalid-name,global-statement
     if _session is None:
         _session = requests.Session()
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
         _session.mount('https://', adapter)
         _session.mount('http://', adapter)
     return _session
+
+
+# ---------------------------------------------------------------------------
+# Global CO-OPS concurrency cap + pacing (issue #98)
+# ---------------------------------------------------------------------------
+# CO-OPS throttles aggressively when many historical datagetter requests
+# come from one IP at once. Two measures guard against this:
+#
+#   1. Semaphore caps concurrent in-flight CO-OPS GETs process-wide,
+#      decoupling HTTP pressure from upstream ThreadPoolExecutor sizing
+#      (``write_obs_ctlfile`` otherwise fans out 4 vars x 6 stations = 24
+#      concurrent workers).
+#   2. Minimum inter-request gap paces the START of each GET so the
+#      sustained request rate stays below CO-OPS's per-IP threshold.
+#      This is what lets long historical windows retrieve 100% of
+#      chunks; relying on backoff alone to recover AFTER a 403 doesn't
+#      work when CO-OPS's throttle window outlasts the retry budget.
+#
+# Tuned against a 14-month stofs_3d_atl run where the earlier settings
+# (concurrency=4, no pacing) still dropped ~1.6% of chunks to exhaustion.
+_COOPS_CONCURRENCY_LIMIT = 2
+_COOPS_MIN_REQUEST_GAP_SEC = 0.5
+_coops_request_semaphore = threading.Semaphore(_COOPS_CONCURRENCY_LIMIT)
+_coops_pacing_lock = threading.Lock()
+_coops_last_request_time = 0.0  # pylint: disable=invalid-name
+
+
+def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
+    """GET ``url`` through the shared session, gated by the CO-OPS semaphore
+    and paced by a minimum inter-request gap.
+
+    Concurrency semaphore caps in-flight requests across all threads;
+    pacing lock serializes request STARTS so no two GETs fire within
+    ``_COOPS_MIN_REQUEST_GAP_SEC``. Retry backoff sleeps outside both
+    locks so waiting threads do not starve the pool.
+    """
+    global _coops_last_request_time  # pylint: disable=invalid-name,global-statement
+    with _coops_request_semaphore:
+        with _coops_pacing_lock:
+            now = time.monotonic()
+            wait = _COOPS_MIN_REQUEST_GAP_SEC - (now - _coops_last_request_time)
+            if wait > 0:
+                time.sleep(wait)
+            _coops_last_request_time = time.monotonic()
+        return _get_session().get(url, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +131,7 @@ def get_station_depth(station_id, mdapi_url, logger):
 
     url = f'{mdapi_url}/webapi/stations/{station_id}/bins.json?units=metric'
     try:
-        response = _get_session().get(url, timeout=120)
+        response = _rate_limited_get(url, timeout=120)
         response.raise_for_status()
         depth_data = response.json()
         logger.info(
@@ -93,6 +144,183 @@ def get_station_depth(station_id, mdapi_url, logger):
 
     _depth_cache[station_id] = depth_data
     return depth_data
+
+
+# CO-OPS occasionally rate-limits or returns transient 5xx when a long
+# historical window forces many 30-day chunk requests per station; retry
+# a small number of times with full-jitter exponential backoff before
+# giving up. Kept in sync with the per-bin retry helper on
+# issue-87-currents-bins so both paths share the same backoff profile.
+_RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
+# Observed with stofs_3d_atl + 14-month historical window: CO-OPS throttles
+# hard enough that unpaced requests still drop chunks even with backoff.
+# The pacing gap above prevents most 403s from ever firing; these retry
+# settings are the safety net for the few that still slip through.
+# Worst-case total wait per chunk with full-jitter and cap=120s:
+# 10+20+40+80 + 5*120 = 750s = 12.5min, expected ~375s.
+_RETRY_MAX_ATTEMPTS = 10
+_RETRY_BASE_DELAY = 10.0
+# Cap per-attempt delay so late retries don't run away to 20+ minute waits
+# (base * 2^9 = ~85min otherwise at attempt 10). 120s is long enough to
+# clear typical CO-OPS throttle windows, short enough to keep total
+# wall-clock bounded when an individual chunk is having a bad day.
+_RETRY_DELAY_CAP = 120.0
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Return seconds to sleep before the next retry attempt.
+
+    Full-jitter exponential backoff capped at ``_RETRY_DELAY_CAP``:
+    ``uniform(0, min(base * 2^(attempt-1), cap))``. Full jitter
+    decorrelates retry timing across threads that hit the limiter
+    together; the cap keeps late-attempt waits bounded.
+    """
+    max_delay = min(_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                    _RETRY_DELAY_CAP)
+    return random.uniform(0, max_delay)
+
+
+def _get_with_retry(
+    url: str,
+    station_id: str,
+    context: str,
+    logger: Logger,
+) -> Optional[dict]:
+    """GET ``url`` with retries for transient CO-OPS errors.
+
+    Retries only on network-level failures (ConnectionError, Timeout) or
+    HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
+    as 400 (bad station/date combo - CO-OPS "no data") or 404 fail
+    immediately without burning the retry budget.
+
+    ``context`` is a free-form label (variable name, bin number, etc.)
+    included in log messages so parallel workers can be disambiguated.
+
+    Returns the parsed JSON payload on success, ``None`` when the call
+    hits a non-retryable error or all retries are exhausted.
+    """
+    last_exc = None
+    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        try:
+            response = _rate_limited_get(url, timeout=120)
+        except (requests.exceptions.SSLError,
+                requests.exceptions.InvalidURL,
+                requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema) as ex:
+            # SSL validation or URL-construction failures indicate a
+            # configuration problem (or MITM risk) rather than "no
+            # data". Escalate to ERROR so operators notice; still
+            # return None so retrieval soft-fails instead of crashing
+            # the whole run. NOTE: SSLError subclasses ConnectionError,
+            # so this branch MUST come before the ConnectionError catch
+            # below or it will be masked.
+            logger.error(
+                'CO-OPS %s station=%s SSL/URL error (not retried): %s',
+                context, station_id, ex)
+            return None
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as ex:
+            last_exc = ex
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    'CO-OPS %s station=%s network error (attempt %d/%d): '
+                    '%s; retrying in %.1fs', context, station_id,
+                    attempt, _RETRY_MAX_ATTEMPTS, ex, delay)
+                time.sleep(delay)
+                continue
+            break
+        except requests.exceptions.RequestException as ex:
+            logger.warning(
+                'CO-OPS %s station=%s non-retryable request error: %s',
+                context, station_id, ex)
+            return None
+
+        status = response.status_code
+        if status in _RETRY_STATUSES:
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    'CO-OPS %s station=%s HTTP %d (attempt %d/%d); '
+                    'retrying in %.1fs', context, station_id, status,
+                    attempt, _RETRY_MAX_ATTEMPTS, delay)
+                time.sleep(delay)
+                continue
+            logger.error(
+                'CO-OPS %s station=%s HTTP %d - retries exhausted '
+                'after %d attempts; dropping chunk',
+                context, station_id, status, _RETRY_MAX_ATTEMPTS)
+            return None
+
+        if status >= 400:
+            # Non-retryable 4xx/5xx (400, 401, 404, etc.) - fail fast.
+            # CO-OPS returns 400 "No data was found" for stations with
+            # no observations in the requested window; retrying won't
+            # change that. Logged at WARNING because the chunk is
+            # dropped silently and operators should notice.
+            logger.warning(
+                'CO-OPS %s station=%s HTTP %d - not retrying '
+                '(dropping chunk)', context, station_id, status)
+            return None
+
+        try:
+            return response.json()
+        except ValueError as ex:
+            logger.warning(
+                'CO-OPS %s station=%s returned non-JSON body: %s',
+                context, station_id, ex)
+            return None
+
+    logger.error(
+        'CO-OPS %s retrieval failed for station %s after %d attempts: %s',
+        context, station_id, _RETRY_MAX_ATTEMPTS, last_exc)
+    return None
+
+
+def _fetch_with_backup(
+    primary_url: str,
+    backup_url: Optional[str],
+    station_id: str,
+    variable: str,
+    logger: Logger,
+) -> tuple[Optional[dict], bool]:
+    """Fetch the primary URL with retry; fall back to ``backup_url`` when set.
+
+    The water_temperature / salinity backup URL points at the
+    ``NOS.COOPS.TAC.PHYSOCEAN`` endpoint with ``interval=6``, which
+    returns HOURLY observations rather than the primary's 6-minute
+    cadence. Mixing the two resolutions silently degrades skill metrics
+    that assume uniform sampling, so log a WARNING whenever the backup
+    produces data so operators notice the resolution change.
+
+    Returns
+    -------
+    tuple[Optional[dict], bool]
+        ``(obs, used_backup)`` where ``obs`` is the parsed JSON payload
+        (or ``None`` when both endpoints fail / no backup is configured)
+        and ``used_backup`` is ``True`` only when the hourly backup URL
+        actually produced the returned payload. Callers use the flag to
+        count cadence-mixed chunks in end-of-run summaries.
+    """
+    obs = _get_with_retry(primary_url, station_id, variable, logger)
+    if obs is not None:
+        logger.info(
+            'CO-OPS station %s contacted for %s retrieval.',
+            station_id, variable)
+        return obs, False
+
+    if backup_url is None:
+        return None, False
+
+    obs = _get_with_retry(backup_url, station_id, variable, logger)
+    if obs is None:
+        return None, False
+    logger.warning(
+        'CO-OPS backup endpoint used for station %s %s - this chunk '
+        'returns hourly samples (interval=6) rather than the primary 6-min '
+        'cadence; downstream skill metrics may be affected.',
+        station_id, variable)
+    return obs, True
 
 
 def get_station_info(
@@ -109,7 +337,7 @@ def get_station_info(
 
     url = f'{mdapi_url}/webapi/stations/{station_id}.json?units=metric'
     try:
-        response = _get_session().get(url, timeout=120)
+        response = _rate_limited_get(url, timeout=120)
         response.raise_for_status()
         payload = response.json()
     except requests.exceptions.RequestException as ex:
@@ -209,6 +437,14 @@ def retrieve_t_and_c_station(
     t_c.delta = timedelta(days=30)
     t_c.total_date, t_c.total_var, t_c.total_dir = [], [], []
 
+    # Chunk accounting for end-of-run summary (issue: silent data loss
+    # and hourly-backup usage were only visible via scattered WARNING
+    # lines before). Counters are grep'd from operator logs via the
+    # 'CO-OPS retrieval summary' prefix emitted below.
+    chunks_attempted = 0
+    chunks_dropped = 0
+    chunks_hourly_backup = 0
+
     while t_c.start_dt <= t_c.end_dt:
         date_i = (
             t_c.start_dt.strftime('%Y') +
@@ -267,55 +503,19 @@ def retrieve_t_and_c_station(
                 f'metric&interval=6&format=json'
             )
 
-        if variable in {'water_temperature', 'salinity'}:
-            try:
-                response = _get_session().get(t_c.station_url, timeout=120)
-                response.raise_for_status()
-                obs = response.json()
-                logger.info(
-                    'CO-OPS station %s contacted for %s retrieval.',
-                    retrieve_input.station, variable)
-            except requests.exceptions.RequestException as ex_1:
-                logger.error(
-                    'CO-OPS %s observation retrieval failed for station %s! '
-                    '%s',
-                    variable, retrieve_input.station, ex_1
-                )
-                logger.error('Exception caught: %s', ex_1)
-                try:
-                    response_2 = _get_session().get(
-                        t_c.station_url_2, timeout=120)
-                    response_2.raise_for_status()
-                    obs = response_2.json()
-                    logger.info(
-                        'CO-OPS backup station %s contacted for %s retrieval.',
-                        retrieve_input.station, variable)
-                except requests.exceptions.RequestException as ex_2:
-                    logger.error(
-                        'Backup CO-OPS %s observation retrieval failed for '
-                        'station %s! %s',
-                        variable, retrieve_input.station, ex_2
-                    )
-                    logger.error('Exception caught: %s', ex_2)
-                    t_c.start_dt += t_c.delta
-                    continue
-        else:
-            try:
-                response = _get_session().get(t_c.station_url, timeout=120)
-                response.raise_for_status()
-                obs = response.json()
-                logger.info(
-                    'CO-OPS station %s contacted for %s retrieval.',
-                    retrieve_input.station, variable)
-            except requests.exceptions.RequestException as ex:
-                logger.error(
-                    'CO-OPS %s observation retrieval failed for station %s! '
-                    '%s',
-                    variable, retrieve_input.station, ex
-                )
-                logger.error('Exception caught: %s', ex)
-                t_c.start_dt += t_c.delta
-                continue
+        backup_url = (t_c.station_url_2
+                      if variable in {'water_temperature', 'salinity'}
+                      else None)
+        chunks_attempted += 1
+        obs, used_backup = _fetch_with_backup(
+            t_c.station_url, backup_url, str(retrieve_input.station),
+            variable, logger)
+        if used_backup:
+            chunks_hourly_backup += 1
+        if obs is None:
+            chunks_dropped += 1
+            t_c.start_dt += t_c.delta
+            continue
 
         t_c.date, t_c.var, t_c.drt = [], [], []
         if 'data' in obs.keys():
@@ -343,6 +543,24 @@ def retrieve_t_and_c_station(
                 t_c.total_dir.append(t_c.drt)
 
         t_c.start_dt += t_c.delta
+
+    # End-of-run summary so operators notice silent chunk drops or
+    # cadence mixing without scanning every WARNING. Severity escalates
+    # when any data was dropped or any chunk used the hourly backup.
+    summary_msg = (
+        'CO-OPS retrieval summary station=%s variable=%s '
+        'date_range=%s-%s chunks_attempted=%d chunks_dropped=%d '
+        'chunks_hourly_backup=%d'
+    )
+    summary_args = (
+        str(retrieve_input.station), variable,
+        retrieve_input.start_date, retrieve_input.end_date,
+        chunks_attempted, chunks_dropped, chunks_hourly_backup,
+    )
+    if chunks_dropped > 0 or chunks_hourly_backup > 0:
+        logger.warning(summary_msg, *summary_args)
+    else:
+        logger.info(summary_msg, *summary_args)
 
     # Non-currents variables report a single depth per station; currents
     # returns per-bin frames via ``_retrieve_currents_all_bins`` (dispatched
@@ -573,104 +791,6 @@ def _retrieve_currents_all_bins(
     return result
 
 
-# CO-OPS occasionally rate-limits or returns transient 5xx under the
-# heavier per-bin request volume; retry a small number of times with
-# exponential backoff + jitter before giving up.
-_RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
-_RETRY_MAX_ATTEMPTS = 6
-_RETRY_BASE_DELAY = 2.0  # seconds; exponential backoff per attempt
-_RETRY_JITTER_MAX = 0.5  # seconds; random jitter added on top of exponential backoff
-
-
-def _backoff_delay(attempt: int) -> float:
-    """Return seconds to sleep before the next retry attempt."""
-    return (_RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            + random.uniform(0, _RETRY_JITTER_MAX))
-
-
-def _get_with_retry(
-    url: str,
-    station_id: str,
-    context: str,
-    logger: Logger,
-) -> Optional[dict]:
-    """GET ``url`` with retries for transient CO-OPS errors.
-
-    Retries only on network-level failures (ConnectionError, Timeout) or
-    HTTP status codes in ``_RETRY_STATUSES``. Permanent HTTP errors such
-    as 400 (bad station/date combo - CO-OPS "no data") or 404 fail
-    immediately without burning the retry budget.
-
-    ``context`` is a free-form label (bin number, variable name, etc.)
-    included in log messages so parallel workers can be disambiguated.
-
-    Returns the parsed JSON payload on success, ``None`` when the call
-    hits a non-retryable error or all retries are exhausted.
-    """
-    last_exc = None
-    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
-        try:
-            response = _get_session().get(url, timeout=120)
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout) as ex:
-            last_exc = ex
-            if attempt < _RETRY_MAX_ATTEMPTS:
-                delay = _backoff_delay(attempt)
-                logger.warning(
-                    'CO-OPS %s station=%s network error (attempt %d/%d): '
-                    '%s; retrying in %.1fs', context, station_id,
-                    attempt, _RETRY_MAX_ATTEMPTS, ex, delay)
-                time.sleep(delay)
-                continue
-            break
-        except requests.exceptions.RequestException as ex:
-            logger.warning(
-                'CO-OPS %s station=%s non-retryable request error: %s',
-                context, station_id, ex)
-            return None
-
-        status = response.status_code
-        if status in _RETRY_STATUSES:
-            if attempt < _RETRY_MAX_ATTEMPTS:
-                delay = _backoff_delay(attempt)
-                logger.warning(
-                    'CO-OPS %s station=%s HTTP %d (attempt %d/%d); '
-                    'retrying in %.1fs', context, station_id, status,
-                    attempt, _RETRY_MAX_ATTEMPTS, delay)
-                time.sleep(delay)
-                continue
-            logger.error(
-                'CO-OPS %s station=%s HTTP %d - retries exhausted '
-                'after %d attempts; dropping chunk',
-                context, station_id, status, _RETRY_MAX_ATTEMPTS)
-            return None
-
-        if status >= 400:
-            # Non-retryable 4xx/5xx (400, 401, 404, etc.) - fail fast.
-            # CO-OPS returns 400 "No data was found" for stations with
-            # no observations in the requested window; retrying won't
-            # change that. Logged at WARNING because the chunk is
-            # dropped silently and operators should notice.
-            logger.warning(
-                'CO-OPS %s station=%s HTTP %d - not retrying '
-                '(dropping chunk)', context, station_id, status)
-            return None
-
-        try:
-            return response.json()
-        except ValueError as ex:
-            logger.warning(
-                'CO-OPS %s station=%s returned non-JSON body: %s',
-                context, station_id, ex)
-            return None
-
-    logger.error(
-        'CO-OPS currents retrieval failed for station %s (%s) after '
-        '%d attempts: %s', station_id, context, _RETRY_MAX_ATTEMPTS,
-        last_exc)
-    return None
-
-
 def _fetch_currents_chunked(
     station_id: str,
     bin_num: Optional[int],
@@ -831,7 +951,7 @@ def retrieve_tidal_predictions(
         )
 
         try:
-            response = _get_session().get(t_c.station_url, timeout=120)
+            response = _rate_limited_get(t_c.station_url, timeout=120)
             response.raise_for_status()
             obs = response.json()
             logger.info(
@@ -958,7 +1078,7 @@ def retrieve_harmonic_constants(
     )
 
     try:
-        resp = _get_session().get(harcon_url, timeout=TIMEOUT_SEC)
+        resp = _rate_limited_get(harcon_url, timeout=TIMEOUT_SEC)
         resp.raise_for_status()
         response = resp.json()
         logger.info(
@@ -1076,7 +1196,7 @@ def find_nearest_tidal_stations(
     stations_url = f'{mdapi_url}/webapi/stations.json?type=tidepredictions'
 
     try:
-        response = _get_session().get(stations_url, timeout=120)
+        response = _rate_limited_get(stations_url, timeout=120)
         response.raise_for_status()
         stations_data = response.json()
     except Exception as ex:

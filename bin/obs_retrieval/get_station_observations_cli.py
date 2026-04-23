@@ -175,7 +175,7 @@ if __name__ == '__main__':
     # Make all station owners default, unless user specifies station owners
     if args.Station_Owner is None:
         prop1.stationowner = 'co-ops,ndbc,usgs,chs'
-    elif args.FileType is not None:
+    elif args.Station_Owner is not None:
         prop1.stationowner = args.Station_Owner.lower()
 
     #Handle variable selection
