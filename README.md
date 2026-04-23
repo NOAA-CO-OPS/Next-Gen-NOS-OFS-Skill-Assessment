@@ -349,6 +349,8 @@ For modeled water levels, datum conversions are made on-the-fly using netCDF fil
 ## 2.4 1D observation data sources
 The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, NDBC, and CHS (Canadian Hydrographic Service) observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all four. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
 
+CO-OPS ADCP currents stations report many vertical bins per sensor. The software retrieves every bin's time series, resolves an accurate depth for each (including side-looking / PICS ADCPs via the CO-OPS MDAPI `height_from_bottom` + model bathymetry), and emits one virtual station (`{parent}_b{NN}`) per bin through the entire pipeline (obs → model CTL → paired → plots). See the [CO-OPS ADCP current processing](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing) wiki page for the full workflow and the optional `-cb` flag that lets you pin specific bins and override depths from a CSV.
+
 ## 2.5 2D observation data sources
 Currently, the 2D skill assessment can handle sea surface temperature (SST) only. It automatically downloads hourly L3C SST satellite products for the user-defined OFS, including from GOES-16, and GOES-18/West, and/or GOES-19/East. GOES-16 was replaced by GOES-19/East in April 2025, and is only used for skill assessment runs prior to that date. Future updates will include analysis using additional remote sensing products, such as L4 NASA SPoRT, as well as support for current velocity, sea surface height, and salinity.
 
@@ -548,6 +550,7 @@ This will retrieve all CBOFS nowcast station files between 07/01/2025 and 07/02/
 |End date for assessment|-e|--EndDate|YYYY-MM-DDTHH:MM:SSZ<br>(e.g. 2025-07-02T00:00:00Z)|required|
 |Mode, or 'cast'|-ws|--WhichCast|nowcast OR forecast_b|required<br><sub>use only one whichcast at a time</sub>|
 |OFS file format|-t|--FileType|stations OR fields|required<br><sub>use only one file type at a time</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
 In the example skill assessment run below ([Section 3.4](#34-running-the-software)), you will use both nowcast and forecast model data. Run the `get_model_data` call one more time to retrieve the forecast station files:
 
@@ -622,6 +625,8 @@ So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and
 |Observation station owner selection|-so|--Station_Owner|USGS, NDBC, CO-OPS, CHS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS, CHS)</sub>|
 |Enable forecast horizon & model cycle skill|-hs|--Horizon_Skill|None, just include -hs|optional<br><sub>(default is False)</sub>|
 |Variable selection|-vs|--Var_Selection|water_level, water_temperature, salinity, currents|optional<br><sub>(default is all variables)</sub>|
+|Currents-bins override CSV<br><sub>([wiki](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing))</sub>|-cb|--Currents_Bins_Csv|path to a CSV with columns `station_id,bin,depth,orientation,name`|optional<br><sub>(currents only; default processes all bins per ADCP)</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
 Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs,chs`, and `stations` respectively. So the same run can be achieved using a shorter call:
 
@@ -636,6 +641,14 @@ Input flags that support multiple arguments, like `-ws` or `-vs`, should be form
 `-vs water_level,salinity`
 
 `-so co-ops,ndbc`
+
+All entry point scripts support an optional `-c` (or `--config`) flag to specify a custom configuration file. This allows you to maintain multiple configuration files for different run profiles (e.g., monthly vs. daily assessments, different output directories) and switch between them without editing the default `conf/ofs_dps.conf` file. For example:
+
+```
+python ./bin/visualization/create_1dplot.py -c conf/monthly.conf -p ./ -o cbofs -s 2025-10-01T00:00:00Z -e 2025-10-02T00:00:00Z -d MLLW -ws nowcast,forecast_b
+```
+
+When `-c` is omitted, the default `conf/ofs_dps.conf` is used.
 
 The skill assessment can be run for time spans for a year or longer if using station files. If using field files, the duration is shorter and depends on available processing power and resources (see [Section 2.2](#22-ofs-data-formats--data-retention-schedules)).
 
@@ -889,6 +902,13 @@ When the downloads are complete, make sure your conda environment is activated (
 
 🚨 Then, to ensure all output is created, open the file `/bin/visualization/plotting_2d.py`, and search for the variable `make_plotly_maps`. Then set `make_plotly_maps = True`, and save it. This will tell the skill assessment to create plotly maps of all 2D skill statistics and outputs ([Section 3.9.4](#394-1d-and-2d-skill-statistics)). 🚨
 
+Optionally, to also generate static PNG maps of model output (SST, SSH, SSS, and current vectors), set `static_plots=True` in the `[settings]` section of `conf/ofs_dps.conf`:
+```ini
+[settings]
+static_plots=True
+```
+When enabled, static maps are automatically generated at the end of each 2D skill assessment run and saved to `/working_directory/data/visual/2d/` ([Section 3.9.6](#396-static-2d-maps)).
+
 Next, download the SST satellite data for SFBOFS from GOES-18/West:
 
 ```
@@ -909,7 +929,7 @@ All arguments are the same as described in [Section 3.5](#35-running-the-1d-skil
 * _-s_ and _-e_ are the start and end dates, respectively
 * _-ws_ is the mode (nowcast, forecast_a, and/or forecast_b)
 
-As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment.
+As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment. Both `get_satellite_observations.py` and `create_2dplot.py` also support the `-c`/`--config` flag for specifying a custom configuration file (see [Section 3.5](#35-running-the-1d-skill-assessment)).
 
 ## 3.9 2D outputs
 During a run, the skill assessment creates a 'data' directory to save all skill-related outputs. Within the data directory, outputs are saved in separate sub-directories depending on output type, including 'observations', 'model', 'skill', and 'visual'. The following sections will cover 2D outputs in each relevant directory.
@@ -922,14 +942,14 @@ Here you will find the concatenated and clipped netCDF file storing satellite da
 ### 3.9.2 Hourly and daily-averaged SST satellite JSON maps
 `/working_directory/data/observations/2d/`
 
-All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
+All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make static PNG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
 
 ![daily_averaged_l3c](./readme_images/daily_l3c_example.png)
 
 ### 3.9.3 Hourly and daily-averaged SST model JSON maps
 `/working_directory/data/model/2d/`
 
-All hourly SST model JSON files are stored here. If the 2D skill assessment is run for at least 24 hours, then a daily-averaged model JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the model data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names convention is the same as described above in Section 3.8.2.
+All hourly model JSON files are stored here for SST, SSH, SSS, SSU (eastward velocity), and SSV (northward velocity). If the 2D skill assessment is run for at least 24 hours, then daily-averaged model JSON files will also be generated. The JSON files contain latitude, longitude, and data values, and can be used to make static PNG maps with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file name convention is the same as described above in Section 3.9.2, with the variable name embedded in the filename (e.g., `cbofs_20250701-00z_ssh_model.nowcast.json`).
 
 ### 3.9.4 2D skill statistics
 `/working_directory/data/skill/stats/`
@@ -965,7 +985,58 @@ In the second map, the mean error is color-coded by target error range in segmen
 
 ![plotly_express_map](./readme_images/2d_skill_target_example.png)
 
-### 3.9.6 Logging
+### 3.9.6 Static 2D maps
+`/working_directory/data/visual/2d/`
+
+When `static_plots=True` is set in the `[settings]` section of `conf/ofs_dps.conf`, the 2D skill assessment automatically generates static PNG maps of model output at the end of each run. These are georeferenced cartopy maps with coastlines, land masking, state boundaries, and a colorbar.
+
+The following map types are generated for each hourly time step (and daily averages when available):
+
+|Variable|Description|Colormap|Units|
+|:---|:---|:---|:---|
+|**SST**|Sea surface temperature|coolwarm|°C|
+|**SSH**|Sea surface height|viridis|m|
+|**SSS**|Sea surface salinity|YlGnBu|psu|
+|**Currents**|Current speed (magnitude) with quiver arrows showing flow direction|cividis|m/s|
+
+Current vector maps combine paired SSU and SSV model output: the background shows current magnitude as a color fill, and subsampled quiver arrows overlay the flow direction and speed. A reference arrow (0.5 m/s) is included in the legend.
+
+Output filenames follow the pattern `{ofs}_{date}_{variable}.png`, for example:
+* `sfbofs_20250601-00z_sst.png`
+* `sfbofs_20250601-00z_currents.png`
+
+#### Standalone usage with `plot_leafletJSON.py`
+
+The script `/bin/utils/plot_leafletJSON.py` can also be run as a standalone command-line tool to generate static maps from any JSON grid file in `data/model/2d/` or `data/observations/2d/` _after_ the 2D pipeline has been run. This is useful for generating maps of individual time steps or variables without re-running the full skill assessment.
+
+**Scalar map** (single variable — SST, SSH, SSS, SSU, or SSV):
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sst_model.nowcast.json
+```
+
+The variable is auto-detected from the filename. To override the variable or specify a custom output path:
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sss_model.nowcast.json -v sss -o ./output/cbofs_sss.png
+```
+
+**Current quiver map** (paired SSU + SSV velocity components):
+```
+python ./bin/utils/plot_leafletJSON.py \
+    -fu data/model/2d/cbofs_20250701-00z_ssu_model.nowcast.json \
+    -fv data/model/2d/cbofs_20250701-00z_ssv_model.nowcast.json
+```
+
+Arguments:
+
+|Flag|Description|
+|:---|:---|
+|`-f`, `--filename`|Path to a single JSON file (scalar map mode)|
+|`-fu`, `--filename_u`|Path to SSU (eastward velocity) JSON file (quiver mode)|
+|`-fv`, `--filename_v`|Path to SSV (northward velocity) JSON file (quiver mode)|
+|`-v`, `--variable`|Variable name override: sst, ssh, sss, ssu, ssv|
+|`-o`, `--output`|Output PNG file path (default: input filename + .png)|
+
+### 3.9.7 Logging
 `/working_directory/log/`
 
 As in the 1D skill assessment, run-time information, warnings, and errors are recorded in a log file ([Section 3.6.7](#367-logging)).

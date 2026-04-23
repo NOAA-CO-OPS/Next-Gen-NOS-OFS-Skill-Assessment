@@ -125,6 +125,9 @@ if __name__ == '__main__':
         required=False,
         default = 'co-ops,ndbc,usgs',
         help="'CO-OPS','NDBC','USGS',", )
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
 
     args = parser.parse_args()
@@ -134,4 +137,5 @@ if __name__ == '__main__':
         args.EndDate,
         args.Path,
         args.Station_Owner.lower(),
-        None)
+        None,
+        config_file=args.config)

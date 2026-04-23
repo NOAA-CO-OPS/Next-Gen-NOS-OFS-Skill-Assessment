@@ -17,6 +17,33 @@ import pandas as pd
 import ofs_skill.visualization.plotting_functions as plotting_functions
 
 
+def _add_assumed_surface_note(ax, station_id, name_var):
+    """Annotate matplotlib axis when obs depth is an assumed surface (0 m).
+
+    Mirrors the HTML annotation in ``plotting_scalar``/``plotting_vector``.
+    Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default.
+    CO-OPS (bins endpoint / side-looking resolver) and NDBC report
+    authoritative depths; water level has no meaningful depth.
+    """
+    if name_var == 'wl':
+        return
+    if len(station_id) <= 3 or station_id[2] not in ('USGS', 'CHS'):
+        return
+    try:
+        obs_depth = float(station_id[3])
+    except (TypeError, ValueError):
+        return
+    if obs_depth != 0.0:
+        return
+    ax.text(
+        0.02, 0.03,
+        'Note: no obs depth available from API.\nAssumed surface (0 m)',
+        transform=ax.transAxes,
+        ha='left', va='bottom',
+        fontsize=10, color='#E68A00', fontweight='bold',
+    )
+
+
 def combine_obs_across_casts(now_fores_paired, prop):
     """Combine observations from multiple casts, dedup, and filter by date range."""
     obs_df = None
@@ -98,12 +125,21 @@ def get_title_static(prop, node, station_id, name_var, logger):
     else:
         nwsline = ''
 
+    # Currents plots get the same obs/model depth + ADCP-type annotation
+    # as the HTML title; strip the HTML tokens for matplotlib rendering.
+    depth_line = plotting_functions._build_depth_line(
+        prop, station_id, name_var, logger,
+    ).replace('<br>', '\n').replace('&nbsp;', ' ')
+    adcp_type_line = plotting_functions._build_adcp_type_line(
+        prop, station_id, name_var, logger,
+    ).replace('<br>', '\n').replace('&nbsp;', ' ')
+
     return f'NOAA/NOS OFS Skill Assessment\n' \
         f'{station_id[2]} station: {station_id[1]} ' \
         f'({station_id[0]})\n' \
         f'OFS: {prop.ofs.upper()}    Node ID: ' \
         f'{node}    ' \
-        + nwsline + \
+        + nwsline + depth_line + adcp_type_line + \
         f'\nFrom: {start_date}  ' \
         f'To: ' \
         f'{end_date}'
@@ -192,6 +228,8 @@ def scalar_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     axs.set_yticks(axs.get_yticks()[::1])
     axs.tick_params(axis='both', which='major', labelsize=12)
     axs.set_xlabel('Time', fontsize=14)
+
+    _add_assumed_surface_note(axs, station_id, name_var)
 
     # Check if end datetime is > current date
     add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=1)
@@ -306,6 +344,8 @@ def vector_plots(now_fores_paired, name_var, station_id, node, prop, logger):
     add_nowcast_forecast_vline(axs, prop, now_fores_paired, nrows=nrows)
 
     axs[1].set_xlabel('Time', fontsize=16)
+
+    _add_assumed_surface_note(axs[0], station_id, name_var)
 
     plt.gcf().autofmt_xdate(rotation=45)
     fig.tight_layout()

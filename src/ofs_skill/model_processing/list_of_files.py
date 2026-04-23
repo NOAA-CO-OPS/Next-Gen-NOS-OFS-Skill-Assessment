@@ -65,7 +65,8 @@ def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str
     """
     try:
         # Get URL configuration
-        url_params = utils.Utils().read_config_section('urls', logger)
+        _conf = getattr(prop, 'config_file', None)
+        url_params = utils.Utils(_conf).read_config_section('urls', logger)
 
         # Normalize path separators
         local_path = Path(local_path).as_posix()
@@ -494,8 +495,9 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
     ['../cbofs/netcdf/2025/01/01', '../cbofs/netcdf/2025/01/02']
     """
     # Check if S3 fallback is enabled
+    _conf = getattr(prop, 'config_file', None)
     try:
-        conf_settings = utils.Utils().read_config_section('settings', logger)
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False
@@ -544,7 +546,7 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
 
             # Always try backup directory first before S3 fallback
             logger.info('Trying backup dir...')
-            dir_params = utils.Utils().read_config_section(
+            dir_params = utils.Utils(_conf).read_config_section(
                 'directories', logger)
             backup_model_path = os.path.join(
                 dir_params['model_historical_dir_backup'],
@@ -632,8 +634,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
     48
     """
     # Check if S3 fallback is enabled
+    _conf = getattr(prop, 'config_file', None)
     try:
-        conf_settings = utils.Utils().read_config_section('settings', logger)
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False

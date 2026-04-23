@@ -384,7 +384,8 @@ def process_schism_stations(prop, logger):
 
     logger.info('--- Start loading SCHISM station output text files ---')
     # Directory parameters
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Parameter validation
     parameter_validation(prop, dir_params, logger)
 
@@ -624,9 +625,14 @@ if __name__ == '__main__':
         #default='nowcast,forecast_b,hindcast',
         help="Choose one 'cast': 'nowcast', 'forecast', 'hindcast'", )
 
+    parser.add_argument(
+        '-c',
+        '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
     args = parser.parse_args()
     prop1 = model_properties.ModelProperties()
-    args = parser.parse_args()
+    prop1.config_file = args.config
     prop1.start_date_full = args.StartDate
     prop1.end_date_full = args.EndDate
     prop1.path = args.Path

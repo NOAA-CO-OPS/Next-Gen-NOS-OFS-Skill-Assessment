@@ -52,6 +52,17 @@ def station_ctl_file_extract(ctlfile_path: str) -> Optional[tuple[list[list[str]
         8573364 8573364_COOPS "Chesapeake Bay Bridge Tunnel"
         37.0 -76.0 0.0 0.0 MLLW
 
+    CO-OPS ADCP currents stations use a per-bin virtual ID of the form
+    ``{parent_id}_b{NN}``. The parser keeps the virtual ID verbatim on
+    ``station_info[0]`` and extracts the source from the second field,
+    e.g.::
+
+        8454000_b05 8454000_b05_cu_cbofs_CO-OPS "Providence (bin 05)"
+        41.807 -71.401 0.0  12.34  0.0
+
+    yields ``['8454000_b05', '8454000_b05_cu_cbofs_CO-OPS',
+    'Providence (bin 05)', 'CO-OPS']``.
+
     The function handles missing or malformed entries gracefully.
     """
     # Check if file exists and has content

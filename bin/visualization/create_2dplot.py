@@ -30,6 +30,7 @@ Arguments:
                         '20230808-05:05:05'
   -ws whichcast, --Whichcast
                        'Nowcast', 'Forecast_A', 'Forecast_B'
+  -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 
 Author Name:  FC       Creation Date:  03/19/2024
 
@@ -76,7 +77,8 @@ def validate_and_initialize_parameters(prop):
         logger (logging.Logger): Initialized logger.
     """
     # Setup logger
-    config_file = utils.Utils().get_config_file()
+    _conf = getattr(prop, 'config_file', None)
+    config_file = utils.Utils(_conf).get_config_file()
     log_config_file = (Path(__file__).parent.parent.parent / 'conf' / 'logging.conf').resolve()
 
     if not os.path.isfile(log_config_file):
@@ -91,7 +93,7 @@ def validate_and_initialize_parameters(prop):
     logger.info('--- Starting Visualization Process ---')
 
     # Load directory parameters
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     # Model source/OFS validation
     if prop.model_source.lower() == 'adcirc':
@@ -403,6 +405,8 @@ if __name__ == '__main__':
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument('-ws', '--whichcasts', required=True,
         help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
+    parser.add_argument('-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
@@ -415,12 +419,13 @@ if __name__ == '__main__':
     prop1.whichcasts = args.whichcasts.lower()
     prop1.model_source = get_model_source(args.ofs)
     prop1.ofsfiletype='fields' #hardcoding - 2d always uses fields
+    prop1.config_file = args.config
 
     ''' Set up paths & assign to prop1, do date validation '''
     prop1, logger = validate_and_initialize_parameters(prop1)
 
-    try:
-        for i in prop1.whichcasts:
+    for i in prop1.whichcasts:
+        try:
             prop1.whichcast = i.lower()
             logger.info('Running scripts for whichcast = %s',i)
 
@@ -468,10 +473,35 @@ if __name__ == '__main__':
                 logger.error('Problem calling plotting_2d.plot_2d - ABORT')
                 logger.error('Exception: %s', e)
 
+            # Generate static offline maps if enabled
+            conf_settings = utils.Utils().read_config_section(
+                'settings', logger,
+            )
+            static_plots = conf_settings.get(
+                'static_plots', 'False',
+            ).lower() in ('true', '1', 'yes')
+            if static_plots:
+                logger.info('Generating static 2D offline maps...')
+                visual_2d_dir = os.path.join(
+                    prop1.path, 'data', 'visual', '2d',
+                )
+                plotting_2d.generate_offline_maps(
+                    prop1.data_model_2d_json_path,
+                    visual_2d_dir,
+                    prop1, logger,
+                )
+
             logger.info('Finished 2D processing for %s', prop1.whichcast)
 
-    except Exception as e:
-        logger.error('Problem processing 2d files - ABORT')
-        logger.error('Exception: %s', e)
+        except SystemExit as e:
+            # Catch sys.exit() calls from list_of_files, intake_model,
+            # and other functions in the call chain that still use sys.exit
+            logger.error('2D processing for %s exited prematurely '
+                         '(exit code %s). Continuing to next whichcast.',
+                         i, e.code)
+        except Exception as e:
+            logger.error('Problem processing 2d files for %s - '
+                         'continuing to next whichcast.', i)
+            logger.error('Exception: %s', e)
 
     logger.info('Finished create_2d_plot.py!')

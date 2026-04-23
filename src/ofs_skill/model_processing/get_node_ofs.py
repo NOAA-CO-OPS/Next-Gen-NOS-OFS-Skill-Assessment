@@ -95,7 +95,7 @@ def get_time_step(prop, logger):
     # Define your expected frequency in minutes (e.g. 6 minutes)
     exp_freq = 6
     if prop.ofsfiletype == 'fields':
-        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2', 'necofs']:
+        if prop.ofs in ['gomofs', 'wcofs', 'ngofs2']:
             exp_freq = 180
         else:
             exp_freq = 60
@@ -401,7 +401,7 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
             model_obs[invalid_mask] = np.nan
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
-            # We raise en exception here for STOFS-2D-Global because it does 
+            # We raise en exception here for STOFS-2D-Global because it does
             # not have temp/sal data, and logic elsewhere should steer users
             # away from calling this function with STOFS-2D-Global.
             raise ValueError('Temperature and salinity data are not available for STOFS-2D-Global.')
@@ -577,7 +577,7 @@ def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
             mfp.model_ang[invalid_mask] = np.nan
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
-            # We raise en exception here for STOFS-2D-Global because it does 
+            # We raise en exception here for STOFS-2D-Global because it does
             # not have current data, and logic elsewhere should steer users
             # away from calling this function with STOFS-2D-Global.
             raise ValueError('Current data are not available for STOFS-2D-Global.')
@@ -812,7 +812,8 @@ def parameter_validation(prop, dir_params, logger):
                        'To extract model time series for all lats/lons, try '
                        'using field files! Continuing...')
     # Check for user input file if using custom lat/lon inputs
-    filepath = (utils.Utils().read_config_section('user_xy_inputs', logger)
+    _conf = getattr(prop, 'config_file', None)
+    filepath = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
                 ['user_xy_path'])
     if os.path.isfile(filepath) is False and prop.user_input_location:
         logger.error('No user lat & lon inputs found! Please make sure '
@@ -834,12 +835,12 @@ def parameter_validation(prop, dir_params, logger):
                      correct_var_list)
         sys.exit()
     if prop.ofs == 'stofs_2d_glo':
-        if set(prop.var_list) != set(['water_level']):
+        if set(prop.var_list) != {'water_level'}:
             logger.warning('"water_level" is the only available variable for STOFS-2D-Global: '
                            'Removing other variables from list.')
             prop.var_list = ['water_level']
             # I think we can alter its state here, but maybe there's a reason not to?
-            
+
 
 def get_node_ofs(prop, logger, model_dataset=None):
     """
@@ -878,8 +879,9 @@ def get_node_ofs(prop, logger, model_dataset=None):
 
     logger.info('--- Starting OFS Model process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
     # Parse variable selection input to list
     prop.var_list = parse_arguments_to_list(prop.var_list, logger)

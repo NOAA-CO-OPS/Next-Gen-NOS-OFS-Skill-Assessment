@@ -54,29 +54,38 @@ class Utils:
     ... station configuration ...
     """
 
-    def __init__(self):
+    def __init__(self, config_file=None):
         """
         Initialize Utils with path to configuration file.
 
-        The config file is located relative to the package root:
-        <package_root>/conf/ofs_dps.conf
-
-        Falls back to conf/ofs_dps.conf.example if the local conf is missing.
+        Args:
+            config_file: Optional path to a config file. If None,
+                defaults to conf/ofs_dps.conf relative to the package root.
+                Falls back to conf/ofs_dps.conf.example if the local conf
+                is missing.
         """
         project_root = Path(__file__).parent.parent.parent.parent
-        config_file = (project_root / 'conf' / 'ofs_dps.conf').resolve()
-        example_file = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
-        if config_file.exists():
-            self.config_file = config_file
-        elif example_file.exists():
-            logging.getLogger(__name__).warning(
-                'conf/ofs_dps.conf not found — falling back to '
-                'conf/ofs_dps.conf.example. Copy it to conf/ofs_dps.conf '
-                'and set home= to your working directory.'
-            )
-            self.config_file = example_file
+
+        if config_file is not None:
+            self.config_file = Path(config_file).resolve()
+            if not self.config_file.is_file():
+                raise FileNotFoundError(
+                    f'Configuration file not found: {self.config_file}'
+                )
         else:
-            self.config_file = config_file  # will error later
+            config_file_path = (project_root / 'conf' / 'ofs_dps.conf').resolve()
+            example_file = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
+            if config_file_path.exists():
+                self.config_file = config_file_path
+            elif example_file.exists():
+                logging.getLogger(__name__).warning(
+                    'conf/ofs_dps.conf not found — falling back to '
+                    'conf/ofs_dps.conf.example. Copy it to conf/ofs_dps.conf '
+                    'and set home= to your working directory.'
+                )
+                self.config_file = example_file
+            else:
+                self.config_file = config_file_path  # will error later
 
     def get_config_file(self) -> Path:
         """

@@ -204,7 +204,7 @@ def make_bar_plots(df1, df2, prop, cast, logger):
     # prop.stat = prop.stat.rstrip('*')
     output_file = (
         f'{prop.om_files}/bars_ice_{cast}_'
-        f'_all_GLOFS'
+        f'all_GLOFS'
         )
     fig_config = {
     'toImageButtonOptions': {
@@ -588,7 +588,8 @@ def make_OM_view_ice(prop, logger):
     logger.info('--- Starting O&M ice dashboard processing ---')
 
     # Parameter validation & paths
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
     argu_list = (
         prop.path,
@@ -613,7 +614,7 @@ def make_OM_view_ice(prop, logger):
     # Path to save O&M files
     prop.om_files = os.path.join(
         prop.path, dir_params['data_dir'], dir_params['visual_dir'],
-        dir_params['om_dir'],
+        dir_params['om_dir_ice'],
     )
     os.makedirs(prop.om_files, exist_ok=True)
 
@@ -756,11 +757,17 @@ if __name__ == '__main__':
         help="whichcast: 'Nowcast','Forecast_A','Forecast_B', all",
     )
 
+    parser.add_argument(
+        '-c',
+        '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
     args = parser.parse_args()
 
     prop1 = model_properties.ModelProperties()
     prop1.path = args.Path
     prop1.whichcasts = args.Whichcasts.lower()
+    prop1.config_file = args.config
 
     # Exclude forecast_a
     if 'forecast_a' in prop1.whichcast:

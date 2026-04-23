@@ -145,7 +145,7 @@ def parameter_validation(argu_list, logger):
 
 
 def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
-                           logger):
+                           logger, config_file=None):
     """ Retrieving Inventories """
     lat1, lat2, lon1, lon2 = geo[-4], geo[-3], geo[-2], geo[-1]
 
@@ -161,7 +161,8 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
                 ofs, start_date, end_date
             )
             t_c_future = executor.submit(
-                inventory_t_c_station, lat1, lat2, lon1, lon2, logger
+                inventory_t_c_station, lat1, lat2, lon1, lon2, logger,
+                config_file=config_file
             )
 
         if 'ndbc' in stationowner:
@@ -170,7 +171,8 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
                 ofs, start_date, end_date
             )
             ndbc_future = executor.submit(
-                inventory_ndbc_station, lat1, lat2, lon1, lon2, logger
+                inventory_ndbc_station, lat1, lat2, lon1, lon2, logger,
+                config_file=config_file
             )
 
         if 'usgs' in stationowner:
@@ -311,7 +313,7 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
 
 
 def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
-                           logger):
+                           logger, config_file=None):
     """ Specify defaults (can be overridden with command line options) """
 
     if logger is None:
@@ -330,11 +332,11 @@ def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
 
     logger.info('--- Starting Inventory Retrieval Process ---')
 
-    dir_params = utils.Utils().read_config_section(
+    dir_params = utils.Utils(config_file).read_config_section(
         'directories', logger)
     station_list = []
     if 'list' in stationowner:
-        station_list = (utils.Utils().
+        station_list = (utils.Utils(config_file).
                         read_config_section('station_IDs', logger)\
                         ['station_id_list']).replace(',','').split(' ')
 
@@ -349,10 +351,11 @@ def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
     os.makedirs(control_files_path,exist_ok = True)
 
     try:
-        geo = ofs_geometry(ofs, path, logger)
+        geo = ofs_geometry(ofs, path, logger, config_file=config_file)
 
         dataset_final = retrieving_inventories(
-            geo, start_date, end_date, ofs, stationowner, logger
+            geo, start_date, end_date, ofs, stationowner, logger,
+            config_file=config_file
         )
 
         logger.info('Searching for duplicate stations in inventory file')

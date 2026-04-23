@@ -121,16 +121,31 @@ class TestMdpoMdno:
 # ---------------------------------------------------------------------------
 class TestCheckNosCriteria:
     def test_all_pass(self):
-        result = nos_metrics.check_nos_criteria(95, 0.5, 0.5)
-        assert result == {'cf': 'pass', 'pof': 'pass', 'nof': 'pass'}
+        result = nos_metrics.check_nos_criteria(
+            cf=95, pof=0.5, nof=0.5, mdpo=1, mdno=1, wof=0.1,
+        )
+        assert result == {
+            'cf': 'pass', 'pof': 'pass', 'nof': 'pass',
+            'mdpo': 'pass', 'mdno': 'pass', 'wof': 'pass',
+        }
 
     def test_all_fail(self):
-        result = nos_metrics.check_nos_criteria(50, 5, 5)
-        assert result == {'cf': 'fail', 'pof': 'fail', 'nof': 'fail'}
+        result = nos_metrics.check_nos_criteria(
+            cf=50, pof=5, nof=5, mdpo=48, mdno=48, wof=5,
+        )
+        assert result == {
+            'cf': 'fail', 'pof': 'fail', 'nof': 'fail',
+            'mdpo': 'fail', 'mdno': 'fail', 'wof': 'fail',
+        }
 
     def test_boundary_values(self):
-        result = nos_metrics.check_nos_criteria(90, 1, 1)
-        assert result == {'cf': 'pass', 'pof': 'pass', 'nof': 'pass'}
+        result = nos_metrics.check_nos_criteria(
+            cf=90, pof=1, nof=1, mdpo=24, mdno=24, wof=0.5,
+        )
+        assert result == {
+            'cf': 'pass', 'pof': 'pass', 'nof': 'pass',
+            'mdpo': 'pass', 'mdno': 'pass', 'wof': 'pass',
+        }
 
 
 # ---------------------------------------------------------------------------
