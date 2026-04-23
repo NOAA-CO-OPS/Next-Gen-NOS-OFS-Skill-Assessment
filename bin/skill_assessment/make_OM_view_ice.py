@@ -614,7 +614,7 @@ def make_OM_view_ice(prop, logger):
     # Path to save O&M files
     prop.om_files = os.path.join(
         prop.path, dir_params['data_dir'], dir_params['visual_dir'],
-        dir_params['om_dir'],
+        dir_params['om_dir_ice'],
     )
     os.makedirs(prop.om_files, exist_ok=True)
 

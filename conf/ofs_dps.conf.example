@@ -60,6 +60,7 @@ visual_ice_json_maps = json_maps
 visual_ice_stats = stats
 visual_horizon_dir = horizon_visual
 om_dir = om_files
+om_dir_ice = om_files_ice
 tidal_analysis_dir = tidal_analysis
 model_historical_dir_backup=Add_model_historical_dir_backup
 # Local fallback path for the vertical datum NetCDF file. Only used if the
