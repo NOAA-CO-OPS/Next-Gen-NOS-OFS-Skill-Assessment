@@ -372,7 +372,7 @@ def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
     )
     title = pf.get_title(prop, '12345', station_id, 'cu', logger)
     assert 'Bin&nbsp;02' in title
-    assert 'Obs&nbsp;depth&nbsp;-4.0' in title
+    assert 'Obs&nbsp;depth&nbsp;4.0' in title
     # orientation='up' in bins_payload renders as the upward-looking label
     # emitted by _build_adcp_type_line on its own line.
     assert 'Upward-Looking ADCP' in title
@@ -436,5 +436,5 @@ def test_get_title_includes_model_depth_from_ctl(
     station_id = ('8454000_b02', 'Providence (bin 02)', 'CO-OPS')
     title = pf.get_title(prop, '41', station_id, 'cu', logger)
     assert 'Bin&nbsp;02' in title
-    assert 'Obs&nbsp;depth&nbsp;-4.0' in title
-    assert 'Model&nbsp;depth&nbsp;-3.8' in title
+    assert 'Obs&nbsp;depth&nbsp;4.0' in title
+    assert 'Model&nbsp;depth&nbsp;3.8' in title

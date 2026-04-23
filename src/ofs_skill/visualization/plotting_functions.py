@@ -391,7 +391,7 @@ def _build_depth_line(prop, station_id, name_var, logger):
     Returns an empty string for non-currents plots or when no depth info
     can be resolved. Format::
 
-        <br>Bin NN — Obs depth -X.X m  —  Model depth -Y.Y m
+        <br>Bin NN — Obs depth X.X m  —  Model depth Y.Y m
     """
     if name_var != 'cu':
         return ''
@@ -422,10 +422,10 @@ def _build_depth_line(prop, station_id, name_var, logger):
         parts.append(f'Bin&nbsp;{bin_num:02d}')
     if obs_depth is not None:
         parts.append(
-            f'Obs&nbsp;depth&nbsp;{-abs(obs_depth):.1f}&nbsp;m')
+            f'Obs&nbsp;depth&nbsp;{abs(obs_depth):.1f}&nbsp;m')
     if model_depth is not None:
         parts.append(
-            f'Model&nbsp;depth&nbsp;{-abs(model_depth):.1f}&nbsp;m')
+            f'Model&nbsp;depth&nbsp;{abs(model_depth):.1f}&nbsp;m')
 
     return '<br>' + '&nbsp;—&nbsp;'.join(parts)
 
