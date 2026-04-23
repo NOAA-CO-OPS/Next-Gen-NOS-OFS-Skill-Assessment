@@ -486,6 +486,35 @@ class TestProcessFilesEdgeCases:
         hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf, 'test', 'daily')
         assert list(tmp_path.glob('*.asc')) == []
 
+    def test_empty_time_window_logs_warning(self, tmp_path, caplog):
+        """Source whose time axis is empty for the requested window should
+        produce no files and emit a WARNING identifying the source."""
+        # Dataset times fall entirely OUTSIDE the requested window
+        times = pd.date_range('2026-02-01', periods=5, freq='h')
+        lats = np.array([37.0, 38.0])
+        lons = np.array([-123.0, -122.0])
+
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.ones((5, 2, 2))),
+                'v': (['time', 'lat', 'lon'], np.ones((5, 2, 2))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        with caplog.at_level(logging.WARNING, logger='test_hf_radar'):
+            hf.process_files({'glna': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                             'lmhofs', 'daily')
+
+        assert list(tmp_path.glob('*.asc')) == []
+        warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+        assert any("'glna'" in r.getMessage() and 'no timesteps' in r.getMessage()
+                   for r in warnings), (
+            f'Expected WARNING about empty glna window, got: '
+            f'{[r.getMessage() for r in warnings]}'
+        )
+
 
 # ===========================================================================
 # check_for_overlap — mocked THREDDS
@@ -615,13 +644,19 @@ class TestDirectionConvention:
 # ===========================================================================
 # CLI argument validation (via subprocess)
 # ===========================================================================
+# Subprocess cold-start cost: ~2.5s on Linux, can exceed 10s on Windows
+# conda envs once the geopandas/xarray/rasterio import chain is paid. 60s
+# gives comfortable headroom without affecting the Linux run time.
+_CLI_SUBPROCESS_TIMEOUT = 60
+
+
 class TestCLIValidation:
     _script = str(_MODULE_PATH)
 
     def _run(self, args):
         return subprocess.run(
             [sys.executable, self._script] + args,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_CLI_SUBPROCESS_TIMEOUT,
         )
 
     def test_help_flag(self):

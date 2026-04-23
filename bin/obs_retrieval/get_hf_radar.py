@@ -66,7 +66,6 @@ from rasterio.transform import from_origin
 from shapely.geometry import Point, Polygon
 
 from ofs_skill.obs_retrieval import utils
-from ofs_skill.visualization.plotting_2d import plot_2d_current_quiver_map
 from ofs_skill.visualization.processing_2d import (
     write_2d_array_to_ascii_grid,
     write_2d_arrays_to_json,
@@ -321,6 +320,9 @@ def _write_leaflet_outputs(u_array, v_array, paths, log,
 
     # Generate static cartopy quiver map if enabled
     if static_plots:
+        # Lazy import — cartopy is a heavy dependency and only needed for
+        # static PNG output, not for the default JSON/txt path.
+        from ofs_skill.visualization.plotting_2d import plot_2d_current_quiver_map
         png_path = paths['ssu_json'].parent / (
             paths['ssu_json'].stem.replace('_ssu_hfradar', '_hfradar_currents')
             + '.png'
@@ -521,8 +523,17 @@ def process_files(
 
     logger.info('Got start time and end time')
 
-    for _, ds in matching_files.items():
+    for source_name, ds in matching_files.items():
         ds_period = ds.sel(time=slice(start_dt, end_dt))
+
+        n_times = ds_period.sizes.get('time', 0)
+        if n_times == 0:
+            logger.warning(
+                "HF radar source '%s' has no timesteps in requested window "
+                '%s to %s for %s; skipping.',
+                source_name, start_dt, end_dt, ofs,
+            )
+            continue
 
         u_var = 'u' if 'u' in ds_period.variables else 'ssu'
         v_var = 'v' if 'v' in ds_period.variables else 'ssv'
@@ -536,6 +547,11 @@ def process_files(
         v_data = dtp_v.where(mask_dtp)
 
         if np.isfinite(u_data).sum() == 0:
+            logger.warning(
+                "HF radar source '%s' has %d timesteps in requested window "
+                '%s to %s but no valid observations within %s boundary; skipping.',
+                source_name, n_times, start_dt, end_dt, ofs,
+            )
             continue
 
         logger.info('Clipped u/v data to study area')
