@@ -203,6 +203,21 @@ def _get_with_retry(
     for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
         try:
             response = _rate_limited_get(url, timeout=120)
+        except (requests.exceptions.SSLError,
+                requests.exceptions.InvalidURL,
+                requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema) as ex:
+            # SSL validation or URL-construction failures indicate a
+            # configuration problem (or MITM risk) rather than "no
+            # data". Escalate to ERROR so operators notice; still
+            # return None so retrieval soft-fails instead of crashing
+            # the whole run. NOTE: SSLError subclasses ConnectionError,
+            # so this branch MUST come before the ConnectionError catch
+            # below or it will be masked.
+            logger.error(
+                'CO-OPS %s station=%s SSL/URL error (not retried): %s',
+                context, station_id, ex)
+            return None
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout) as ex:
             last_exc = ex
