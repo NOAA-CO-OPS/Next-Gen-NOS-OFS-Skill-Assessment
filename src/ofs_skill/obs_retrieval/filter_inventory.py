@@ -40,7 +40,7 @@ def filter_inventory(
         The Name column is searched for duplicate IDs. When found, the first
         occurrence is kept (CO-OPS has precedence if ordered correctly).
     """
-    droplist = []
+    droplist: list[int] = []
 
     for i, id in enumerate(dataset['ID']):
         indx = dataset['Name'].str.find(id)

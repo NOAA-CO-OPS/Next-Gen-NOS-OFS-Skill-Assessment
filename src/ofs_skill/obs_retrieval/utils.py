@@ -171,7 +171,7 @@ class Utils:
                         f'Exception reading option {option}!',
                         exc_info=True
                     )
-                    params[option] = None
+                    params[option] = ''
 
         except configparser.NoSectionError as nse:
             logger.error(
@@ -460,20 +460,21 @@ def parse_arguments_to_list(
     - Splits on commas
     - If input is already a list, returns it unchanged
     """
-    try:
-        argument = argument.lower().replace('[', '').replace(']', '').replace(' ', '').split(',')
-    except AttributeError:  # If argument is not a string
+    if not isinstance(argument, str):
         logger.info(
             'Input argument (%s) being parsed from str to list is '
             'already a list. Moving on...', argument
         )
         return argument
+    parsed = argument.lower().replace('[', '').replace(']', '').replace(
+        ' ', ''
+    ).split(',')
     try:
-        argument[0]
-        return argument
+        parsed[0]
+        return parsed
     except IndexError:
         logger.error(
             'Cannot parse input argument %s! Correct formatting and '
-            'try again.', argument
+            'try again.', parsed
         )
         sys.exit(-1)

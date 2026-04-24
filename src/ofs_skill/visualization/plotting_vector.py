@@ -969,8 +969,8 @@ def oned_vector_plot2b(
         )
         polars.append(polar)
 
-    for p_p in polars:
-        fig.update_layout(p_p)
+    for polar_layout in polars:
+        fig.update_layout(polar_layout)
 
     # This is updating the subplot title
     for i in fig['layout']['annotations']:

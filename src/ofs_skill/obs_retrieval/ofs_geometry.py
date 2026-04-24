@@ -8,6 +8,7 @@ to within the OFS domain.
 
 import os
 from logging import Logger
+from typing import Optional
 
 import shapefile
 
@@ -16,7 +17,7 @@ from ofs_skill.obs_retrieval import utils
 
 def get_response_1(
     first: dict
-) -> tuple[float, float, float, float, list[tuple[float, float]]]:
+) -> Optional[tuple[float, float, float, float, list[tuple[float, float]]]]:
     """
     Extract largest polygon from shapefile (first search method).
 
@@ -63,7 +64,7 @@ def get_response_1(
 
 def get_response_2(
     first: dict
-) -> tuple[float, float, float, float, list[tuple[float, float]]]:
+) -> Optional[tuple[float, float, float, float, list[tuple[float, float]]]]:
     """
     Extract largest polygon from shapefile (second search method).
 
