@@ -285,7 +285,11 @@ def get_fcst_dates(prop, logger):
     # Verify forecast hour input
     if prop.forecast_hr[-1:].lower() == 'z' or not use_s3_fallback:
         try:
-            sdate = prop.start_date_full.split('T')[0]  # Extract date part
+            if 'T' in prop.start_date_full:
+                sdate = prop.start_date_full.split('T')[0]  # Extract date part
+            else:
+                sdate = prop.start_date_full.split('-')[0]
+                sdate = sdate[0:4] + '-' + sdate[4:6] + '-' + sdate[6:]
         except AttributeError:
             if not use_s3_fallback and prop.forecast_hr == 'now':
                 logger.error('Please enable S3 fallback in the ofs_dps.conf '
