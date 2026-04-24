@@ -1,6 +1,7 @@
 """Tests for bin/obs_retrieval/get_hf_radar.py"""
 
 import importlib.util
+import json
 import logging
 import subprocess
 import sys
@@ -338,10 +339,27 @@ class TestProcessFilesDaily:
 
         hf.process_files(matching, date_obj, out_dir, gdf, 'sfbofs', 'daily')
 
+        # Daily .asc files (existing format)
         assert (out_dir / 'sfbofs_hfradar_mag_20260315.asc').exists()
         assert (out_dir / 'sfbofs_hfradar_dir_20260315.asc').exists()
         assert (out_dir / 'sfbofs_hfradar_mag_20260315.prj').exists()
         assert (out_dir / 'sfbofs_hfradar_dir_20260315.prj').exists()
+
+        # Daily JSON + txt files (new formats)
+        obs_2d = out_dir / '2d'
+        assert (obs_2d / 'sfbofs_20260315_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_20260315_ssv_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_mag_20260315_hfradar.txt').exists()
+        assert (obs_2d / 'sfbofs_dir_20260315_hfradar.txt').exists()
+
+        # Hourly .asc files should also be created (both modes always produced)
+        # 25 hours span 00:00-24:00; the 25th (00:00 next day) has date 20260316
+        hourly_asc = list(out_dir.glob('sfbofs_hfradar_mag_*_*.asc'))
+        assert len(hourly_asc) == 25
+
+        # Hourly JSON files should also be created
+        hourly_json = list(obs_2d.glob('sfbofs_*_*_ssu_hfradar.json'))
+        assert len(hourly_json) == 25
 
     def test_daily_min_count_threshold(self, tmp_path):
         """Cells with < 13 valid observations should be NaN in output."""
@@ -399,22 +417,45 @@ class TestProcessFilesHourly:
         hf.process_files(matching, datetime(2026, 3, 15), tmp_path, gdf,
                          'sfbofs', 'hourly', start, end)
 
+        # Hourly .asc files
         assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0000.asc').exists()
         assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0100.asc').exists()
         assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0200.asc').exists()
 
-    def test_hourly_none_start_end_returns_early(self, tmp_path):
-        """Hourly mode with None start/end should not crash."""
-        ds = xr.Dataset()
-        matching = {'uswc': ds}
-        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+        # Hourly JSON + txt files
+        obs_2d = tmp_path / '2d'
+        assert (obs_2d / 'sfbofs_20260315_0000_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_20260315_0100_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_20260315_0200_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_mag_20260315_0000_hfradar.txt').exists()
 
-        # Should return early without error
+        # Daily averaged files should also be created
+        assert (tmp_path / 'sfbofs_hfradar_mag_20260315.asc').exists()
+        assert (obs_2d / 'sfbofs_20260315_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_mag_20260315_hfradar.txt').exists()
+
+    def test_none_start_end_uses_default_window(self, tmp_path):
+        """None start/end should use default 24h window, not crash."""
+        times = pd.date_range('2026-03-15', periods=25, freq='h')
+        lats = np.array([37.0, 38.0])
+        lons = np.array([-123.0, -122.0])
+
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.ones((25, 2, 2))),
+                'v': (['time', 'lat', 'lon'], np.ones((25, 2, 2))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+        matching = {'uswc': ds}
+
+        # None start/end falls back to default 24h window
         hf.process_files(matching, datetime(2026, 3, 15), tmp_path, gdf,
                          'sfbofs', 'hourly', None, None)
 
-        # No output files should be created
-        assert list(tmp_path.glob('*.asc')) == []
+        # Daily averaged outputs should be created using the default window
+        assert (tmp_path / 'sfbofs_hfradar_mag_20260315.asc').exists()
 
 
 # ===========================================================================
@@ -444,6 +485,35 @@ class TestProcessFilesEdgeCases:
 
         hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf, 'test', 'daily')
         assert list(tmp_path.glob('*.asc')) == []
+
+    def test_empty_time_window_logs_warning(self, tmp_path, caplog):
+        """Source whose time axis is empty for the requested window should
+        produce no files and emit a WARNING identifying the source."""
+        # Dataset times fall entirely OUTSIDE the requested window
+        times = pd.date_range('2026-02-01', periods=5, freq='h')
+        lats = np.array([37.0, 38.0])
+        lons = np.array([-123.0, -122.0])
+
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.ones((5, 2, 2))),
+                'v': (['time', 'lat', 'lon'], np.ones((5, 2, 2))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        with caplog.at_level(logging.WARNING, logger='test_hf_radar'):
+            hf.process_files({'glna': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                             'lmhofs', 'daily')
+
+        assert list(tmp_path.glob('*.asc')) == []
+        warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+        assert any("'glna'" in r.getMessage() and 'no timesteps' in r.getMessage()
+                   for r in warnings), (
+            f'Expected WARNING about empty glna window, got: '
+            f'{[r.getMessage() for r in warnings]}'
+        )
 
 
 # ===========================================================================
@@ -574,13 +644,19 @@ class TestDirectionConvention:
 # ===========================================================================
 # CLI argument validation (via subprocess)
 # ===========================================================================
+# Subprocess cold-start cost: ~2.5s on Linux, can exceed 10s on Windows
+# conda envs once the geopandas/xarray/rasterio import chain is paid. 60s
+# gives comfortable headroom without affecting the Linux run time.
+_CLI_SUBPROCESS_TIMEOUT = 60
+
+
 class TestCLIValidation:
     _script = str(_MODULE_PATH)
 
     def _run(self, args):
         return subprocess.run(
             [sys.executable, self._script] + args,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=_CLI_SUBPROCESS_TIMEOUT,
         )
 
     def test_help_flag(self):
@@ -605,3 +681,161 @@ class TestCLIValidation:
         result = self._run(['-d', '20260315', '-C', '/tmp/test'])
         assert result.returncode == 2
         assert 'bounds' in result.stderr.lower() or 'ofs' in result.stderr.lower()
+
+
+# ===========================================================================
+# _build_hfradar_output_paths
+# ===========================================================================
+class TestBuildHfradarOutputPaths:
+    def test_daily_paths(self, tmp_path):
+        paths = hf._build_hfradar_output_paths(tmp_path, 'cbofs', '20260315')
+        assert paths['ssu_json'] == tmp_path / '2d' / 'cbofs_20260315_ssu_hfradar.json'
+        assert paths['ssv_json'] == tmp_path / '2d' / 'cbofs_20260315_ssv_hfradar.json'
+        assert paths['mag_txt'] == tmp_path / '2d' / 'cbofs_mag_20260315_hfradar.txt'
+        assert paths['dir_txt'] == tmp_path / '2d' / 'cbofs_dir_20260315_hfradar.txt'
+        assert (tmp_path / '2d').is_dir()
+
+    def test_hourly_paths(self, tmp_path):
+        paths = hf._build_hfradar_output_paths(
+            tmp_path, 'sfbofs', '20260315', '20260315_0300',
+        )
+        assert paths['ssu_json'] == tmp_path / '2d' / 'sfbofs_20260315_0300_ssu_hfradar.json'
+        assert paths['mag_txt'] == tmp_path / '2d' / 'sfbofs_mag_20260315_0300_hfradar.txt'
+
+
+# ===========================================================================
+# JSON output structure
+# ===========================================================================
+class TestJsonStructure:
+    def test_json_has_required_keys(self, tmp_path):
+        """JSON files should have lats, lons, sst, val_min, val_max keys."""
+
+        times = pd.date_range('2026-03-15', periods=25, freq='h')
+        lats = np.array([37.0, 37.5, 38.0])
+        lons = np.array([-123.0, -122.5, -122.0])
+
+        rng = np.random.default_rng(42)
+        u = rng.uniform(-0.5, 0.5, (25, 3, 3))
+        v = rng.uniform(-0.5, 0.5, (25, 3, 3))
+
+        ds = xr.Dataset(
+            {'u': (['time', 'lat', 'lon'], u), 'v': (['time', 'lat', 'lon'], v)},
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                         'test', 'daily')
+
+        json_file = tmp_path / '2d' / 'test_20260315_ssu_hfradar.json'
+        assert json_file.exists()
+
+        with open(json_file) as f:
+            data = json.load(f)
+
+        assert 'lats' in data
+        assert 'lons' in data
+        assert 'sst' in data
+        assert 'val_min' in data
+        assert 'val_max' in data
+        assert isinstance(data['lats'], list)
+        assert isinstance(data['lats'][0], list)  # 2D array
+
+    def test_json_val_min_max_reasonable(self, tmp_path):
+        """val_min/val_max should reflect actual data range."""
+
+        times = pd.date_range('2026-03-15', periods=25, freq='h')
+        lats = np.array([37.0, 37.5, 38.0])
+        lons = np.array([-123.0, -122.5, -122.0])
+
+        # Constant u=0.3, v=0.0 so SSU values should be ~0.3
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.full((25, 3, 3), 0.3)),
+                'v': (['time', 'lat', 'lon'], np.zeros((25, 3, 3))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                         'test', 'daily')
+
+        json_file = tmp_path / '2d' / 'test_20260315_ssu_hfradar.json'
+        with open(json_file) as f:
+            data = json.load(f)
+
+        # Perimeter is set to null by write_2d_arrays_to_json, but interior
+        # values should be ~0.3
+        assert data['val_min'] is not None
+        assert data['val_max'] is not None
+        assert data['val_min'] == pytest.approx(0.3, abs=0.01)
+
+
+# ===========================================================================
+# ASCII grid txt output structure
+# ===========================================================================
+class TestTxtStructure:
+    def test_txt_has_valid_header(self, tmp_path):
+        """ASCII grid txt files should have 6-line ESRI header."""
+        times = pd.date_range('2026-03-15', periods=25, freq='h')
+        lats = np.array([37.0, 37.5, 38.0])
+        lons = np.array([-123.0, -122.5, -122.0])
+
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.ones((25, 3, 3))),
+                'v': (['time', 'lat', 'lon'], np.ones((25, 3, 3))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                         'test', 'daily')
+
+        txt_file = tmp_path / '2d' / 'test_mag_20260315_hfradar.txt'
+        assert txt_file.exists()
+
+        header, data_rows = _read_asc_data_rows(txt_file)
+        assert 'ncols' in header
+        assert 'nrows' in header
+        assert 'xllcorner' in header
+        assert 'yllcorner' in header
+        assert 'cellsize' in header
+        assert 'nodata_value' in header
+        assert int(header['ncols']) == 3
+        assert int(header['nrows']) == 3
+        assert len(data_rows) == 3
+
+    def test_txt_direction_matches_asc(self, tmp_path):
+        """Direction values in txt should match the asc for same data."""
+        times = pd.date_range('2026-03-15', periods=25, freq='h')
+        lats = np.array([37.0, 38.0])
+        lons = np.array([-123.0, -122.0])
+
+        # Purely eastward flow → direction = 90°
+        ds = xr.Dataset(
+            {
+                'u': (['time', 'lat', 'lon'], np.ones((25, 2, 2))),
+                'v': (['time', 'lat', 'lon'], np.zeros((25, 2, 2))),
+            },
+            coords={'time': times, 'lat': lats, 'lon': lons},
+        )
+        gdf = gpd.GeoDataFrame(geometry=[box(-124, 36, -121, 39)], crs='EPSG:4326')
+
+        hf.process_files({'usegc': ds}, datetime(2026, 3, 15), tmp_path, gdf,
+                         'test', 'daily')
+
+        _, txt_rows = _read_asc_data_rows(tmp_path / '2d' / 'test_dir_20260315_hfradar.txt')
+        _, asc_rows = _read_asc_data_rows(tmp_path / 'test_hfradar_dir_20260315.asc')
+
+        txt_vals = [v for row in txt_rows for v in row if v != -9999]
+        asc_vals = [v for row in asc_rows for v in row if v != -9999]
+
+        assert len(txt_vals) > 0
+        assert len(asc_vals) > 0
+        for tv in txt_vals:
+            assert tv == pytest.approx(90.0, abs=0.5)
+        for av in asc_vals:
+            assert av == pytest.approx(90.0, abs=0.5)
