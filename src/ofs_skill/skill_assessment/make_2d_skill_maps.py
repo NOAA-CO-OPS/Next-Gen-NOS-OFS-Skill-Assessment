@@ -163,6 +163,7 @@ def make_2d_skill_maps(
         '[' + str(sat_source) + '] ' + get_stat_name(maptype) + ', ' +\
         datestrbeg + ' - ' + datestrend
     # Make custom colormap if doing diff/error plot
+    colorscale: Any
     if 'diff' in maptype:
         colorscale = [
         [0, '#524094'],  # dark pink

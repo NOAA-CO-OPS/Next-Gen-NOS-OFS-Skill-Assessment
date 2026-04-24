@@ -244,7 +244,7 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
 
     ocean_dtime = [
         dt.astype('datetime64[s]').astype(datetime)
-        for dt in ocean_dtime
+        for dt in ocean_dtime  # type: ignore[union-attr]
     ]
 
     # Check if lons in -180 to 180 or 0 to 360
@@ -322,7 +322,7 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
                         out_file_sportL,
                     )
                 nc_sat.close()
-                return 'Finished SPoRT processing'
+                return
         except (UnboundLocalError, FileNotFoundError) as e:
             logger.warning('Problem processing SPoRT satellite file: %s. '
                            'Processing model data only.', e)
@@ -447,7 +447,8 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
             logger.error('Problem writing daily averaged model JSON file: %s', e)
 
     # Compute and write daily avg for l3c (only if satellite data is available)
-    if has_satellite_data and abs(sat_dtime[0] - sat_dtime[-1]) == timedelta(days=1):
+    if has_satellite_data and sat_dtime is not None and abs(sat_dtime[0] - sat_dtime[-1]) == timedelta(days=1):
+        assert sst_in_sat is not None and lons_sat is not None and lats_sat is not None
         logger.info('Computing daily SST average for satellite ...')
         out_file_sat = os.path.join(
             outdir[1],
@@ -565,7 +566,8 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
                 )
 
         # Process satellite data (only if satellite data is available)
-        if has_satellite_data:
+        if has_satellite_data and sat_dtime is not None:
+            assert sst_in_sat is not None and lons_sat is not None and lats_sat is not None
             i_sat = next(
                 (
                     idx for idx, dt in enumerate(sat_dtime)
