@@ -31,9 +31,9 @@ def create_SCHISM_mesh_extent_shapefile(mesh_path: str, shapefile_name: str):
     """
 
     # Specify defaults (can be overridden with command line options)
-    log_config_file = 'conf/logging.conf'
+    log_config_rel = 'conf/logging.conf'
     log_config_file = (Path(__file__).parent.parent.parent /
-                       log_config_file).resolve()
+                       log_config_rel).resolve()
 
     logging.config.fileConfig(log_config_file)
     logger = logging.getLogger('root')

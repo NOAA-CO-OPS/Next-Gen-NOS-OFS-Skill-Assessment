@@ -161,6 +161,25 @@ conda activate ofs_dps_env
 pip install -e .
 ```
 
+**Configure USGS API key (conda):** To raise the USGS API rate limit (see [Step 2a](#step-2a-configure-usgs-api-key) under Option 1), set the key in the `ofs_dps_env` environment:
+
+*bash:*
+```bash
+conda env config vars set API_USGS_PAT=<your-api-key> -n ofs_dps_env
+conda deactivate
+conda activate ofs_dps_env
+echo $API_USGS_PAT
+```
+
+*Windows (Anaconda PowerShell):*
+```powershell
+conda activate ofs_dps_env
+conda env config vars set API_USGS_PAT=<your-api-key>
+conda deactivate
+conda activate ofs_dps_env
+echo $env:API_USGS_PAT
+```
+
 For detailed conda setup instructions for beginners, see [Section 3.2](#32-create-an-environment-with-miniconda).
 
 ### Package Organization
@@ -247,7 +266,7 @@ Each OFS runs at specific times each day. For example, the Chesapeake Bay OFS (C
 
 ![Model cycles](./readme_images/model_cycles_color.png)
 
-Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from two additional OFS: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), and the Northeast Coastal OFS (NECOFS). Note that NECOFS is still in development, and output is not yet publically available.
+Different OFSs can have different model cycles times for each day, and different forecast guidance lengths. For example, the West Coast OFS (WCOFS) has only one model cycle each day at 03Z, and provides forecast guidance out to +72 hours. The Lake Erie OFS (LEOFS) has four cycles each day at 00Z, 06Z, 12Z, and 18Z, and provides forecast guidance out to +120 hours. All OFS supported by the skill assessment package are listed in the table below, along with model cycles and maximum forecast horizons. Recently, the skill assessment was updated to include output from  additional OFSs: the 3D Surge and Tide OFS for the Atlantic Basin (STOFS-3D-ATL), the Northeast Coastal OFS (NECOFS), and the 2D global Surge and Tide OFS (STOFS-2D-Global). Note that NECOFS is still in development, and output is not yet publically available.
 
 |OFS|Region|Daily model cycle hours (UTC)|Max forecast horizon (hours)|
 |:---|:---|:---|:---|
@@ -263,6 +282,7 @@ Different OFSs can have different model cycles times for each day, and different
 |NGOFS2|Northern Gulf of America|03, 09, 15, 21|48|
 |SFBOFS|San Francisco Bay|03, 09, 15, 21|48|
 |SSCOFS|Salish Sea & Columbia River|03, 09, 15, 21|72|
+|STOFS-2D-Global|Global|00, 06, 12, 18|180|
 |STOFS-3D-ATL|Atlantic Basin|12|96|
 |TBOFS|Tampa Bay|00, 06, 12, 18|48|
 |WCOFS|West Coast|03|72|
@@ -299,7 +319,7 @@ In terms of the skill assessment software, the functional differences between fi
 * **Field files** have 3D model output (latitude x longitude x depth) in a grid across the entire OFS domain, and can be matched with any observation station locations. But they are generally larger in file size and more cumbersome to work with -- the skill assessment runs more slowly with field files than with station files. Field files are required for 2D analysis in the skill assessment.
 * **Station files** have 1D time series output only at selected locations within an OFS, which cannot always be matched with all available observation station locations. However, station files are much smaller in size, more nimble to work with, and have a higher 6-minute time resolution. The 1D skill assessment can be run up to 10x faster with station files compared to field files. Station files cannot be used for 2D skill assessment.
 
-When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files.
+When using the skill assessment software, the user can choose which file format and which 'cast' (nowcast or forecast) to use ([Section 3.5](#35-running-the-1d-skill-assessment)). Note that field and station files are supported for all OFS except STOFS-3D-ATL, which currently only runs with field files, and STOFS-2D-Global, which currently only runs with station files.
 
 Note that OFS model data, depending on file type and 'cast', has specific data retention time periods, after which the data will no longer be available. Data retention times are listed below. The time periods are relative to today's date.
 
@@ -313,10 +333,12 @@ When running the skill assessment, a vertical datum for water levels is a requir
 
 For observed water levels, whenever possible, data is downloaded using an API that supports datum conversions. CO-OPS water level stations, for example, can reference water levels to many different tidal and geodetic datums prior to download, and thus no local conversion within the skill assessment is needed. Other water level data, such as from USGS stations, is often available in a single pre-defined datum. In that case, if the station-provided datum is different from the datum input by the user, the water level data is converted in the skill assessment. Conversions between datums are made using the [coastalmodeling-vdatum](https://github.com/oceanmodeling/coastalmodeling-vdatum) package.
 
-For modeled water levels, datum conversions are made on-the-fly using netCDF files that contain a 2D grid of conversion factors for a variety of datums including MLLW, MLW, MHW, NAVD88, and xgeoid20b. These netCDF files are available for every OFS (titled `{OFS}_vdatums.nc`) on the [NOAA Open Data Dissemination Amazon S3 bucket](https://noaa-nos-ofs-pds.s3.amazonaws.com/index.html#OFS_Grid_Datum/). Currently,
+For modeled water levels, datum conversions are made on-the-fly using netCDF files that contain a 2D grid of conversion factors for a variety of datums including MLLW, MLW, MHW, NAVD88, and xgeoid20b. These netCDF files are available for every OFS (titled `{OFS}_vdatums.nc`) on the [NOAA Open Data Dissemination Amazon S3 bucket](https://noaa-nos-ofs-pds.s3.amazonaws.com/index.html#OFS_Grid_Datum/). If the S3 file cannot be read (e.g., due to network issues or bucket unavailability), the software will attempt to fall back to a local copy of the vdatum file if one is configured (see `local_vdatum` in [Section 3.3.1](#331-ofs_dpsconf)). If neither the S3 nor the local file can be loaded, no datum shift is applied and a warning is logged indicating that water level results may be invalid. Currently,
 
 ## 2.4 1D observation data sources
-The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, and NDBC observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all three. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
+The 1D skill assessment automatically downloads time series of water level, temperature, salinity, and current velocity from NOAA CO-OPS, USGS, NDBC, and CHS (Canadian Hydrographic Service) observation stations that are within the geographic bounds of the user-defined OFS. The user can specify which station providers to use when running the software ([Section 3.5](#35-running-the-1d-skill-assessment)), and the default is to include all four. NDBC station retrieval is completed using the [searvey package](https://github.com/oceanmodeling/searvey).
+
+CO-OPS ADCP currents stations report many vertical bins per sensor. The software retrieves every bin's time series, resolves an accurate depth for each (including side-looking / PICS ADCPs via the CO-OPS MDAPI `height_from_bottom` + model bathymetry), and emits one virtual station (`{parent}_b{NN}`) per bin through the entire pipeline (obs → model CTL → paired → plots). See the [CO-OPS ADCP current processing](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing) wiki page for the full workflow and the optional `-cb` flag that lets you pin specific bins and override depths from a CSV.
 
 ## 2.5 2D observation data sources
 Currently, the 2D skill assessment can handle sea surface temperature (SST) only. It automatically downloads hourly L3C SST satellite products for the user-defined OFS, including from GOES-16, and GOES-18/West, and/or GOES-19/East. GOES-16 was replaced by GOES-19/East in April 2025, and is only used for skill assessment runs prior to that date. Future updates will include analysis using additional remote sensing products, such as L4 NASA SPoRT, as well as support for current velocity, sea surface height, and salinity.
@@ -374,6 +396,12 @@ In the `working directory`, there is a sub-directory called 'conf'. In 'conf', t
 
 ### 3.3.1 ofs_dps.conf
 
+The repository ships a template configuration file at `conf/ofs_dps.conf.example`. Before running the skill assessment for the first time, copy it to create your local configuration:
+```
+cp conf/ofs_dps.conf.example conf/ofs_dps.conf
+```
+The local `conf/ofs_dps.conf` is git-ignored so that your machine-specific paths are never committed.
+
 'ofs_dps.conf' establishes the directory names and structure that the skill assessment uses to read inputs and write outputs, and sets several key options. By editing the conf file, you can:
 1) set your `working directory` (🚨required);
 2) provide a list of observation station IDs to assess;
@@ -388,9 +416,93 @@ To enable skill assessment of model output at specific observation stations, ent
 
 A skill assessment module called `get_node_ofs.py` handles the processing of OFS model data to model time series output at station locations. It can be run a-la-carte from the main skill assessment to produce model time series at any observation station location or using custom geographic coordinates. In the `ofs_dps.conf` section called `[user_xy_inputs]`, you can set a path to a text file with geographic coordinates for model time series extraction. Please see [Section 3.7](#37-scripts-with-command-line-interfaces) for more details.
 
+The `[directories]` section also includes a `local_vdatum` key. This is an optional fallback path to a local copy of the vertical datum NetCDF file (`{OFS}_vdatums.nc`). By default, the software reads the vdatum file directly from the NODD S3 bucket. The local path is only used if the S3 file cannot be found. To use this fallback, download the appropriate `{OFS}_vdatums.nc` file from the [NODD S3 bucket](https://noaa-nos-ofs-pds.s3.amazonaws.com/index.html#OFS_Grid_Datum/) and set `local_vdatum` to the full path of the local copy. If S3 is available, this setting is ignored.
+
 Finally, in the section called [settings], there is an option for the skill assessment to produce static (.png) images of all plots in addition to the standard Plotly interactive plots, if you need graphics for a document or slideshow. The .png images will be saved to `/working_directory/data/model/1d_node/prd_plots/`.
 
-### 3.3.2 logging.conf
+### 3.3.2 Parallelization Settings
+
+The `[parallelization]` section of `ofs_dps.conf` controls how many concurrent workers the skill assessment uses at each pipeline stage. The defaults are tuned for a typical workstation (4-8 cores), but you can adjust them for your system.
+
+#### Quick start
+
+The simplest approach is to set every worker count to `auto`:
+
+```ini
+[parallelization]
+parallel_enabled=True
+obs_coops_workers=auto
+obs_usgs_workers=auto
+obs_ndbc_workers=auto
+obs_chs_workers=auto
+model_download_workers=auto
+skill_workers=auto
+ha_workers=auto
+plot_workers=auto
+parallel_variables=False
+```
+
+`auto` scales the worker count based on your system's available CPU cores:
+
+| Task type | How `auto` scales | Why |
+|---|---|---|
+| **I/O-bound** (obs retrieval, model download, plotting, skill metrics) | Up to 2x CPU count (capped at 8-12) | Threads mostly wait on network or disk, so more threads than cores is beneficial |
+| **CPU-bound** (harmonic analysis) | CPU count - 1 (capped at 8) | utide runs in separate processes that fully use a core each; leaving one core free keeps the system responsive |
+
+#### Choosing manual values
+
+You can also set any worker count to a specific integer. Some guidelines:
+
+- **2-4 cores (laptop/VM):** `auto` works well; all I/O pools will be 4-8 workers, HA will use 1-3 processes. If you notice the system becoming unresponsive, lower `obs_coops_workers` and `obs_ndbc_workers` to 4.
+- **8-16 cores (workstation):** `auto` is a good starting point. If you're running long assessments with many stations and want to maximize throughput, you can set `obs_coops_workers=12` and `skill_workers=8`.
+- **32+ cores (HPC node):** The `auto` caps prevent over-subscribing API endpoints, but you can raise `ha_workers` up to 16 for large tidal analysis runs. I/O workers beyond 12 rarely help since the bottleneck shifts to the remote API.
+- **Shared/CI systems:** Set `parallel_enabled=False` to force fully sequential execution (all workers = 1). This uses minimal resources and produces deterministic ordering.
+
+#### Memory considerations
+
+Each parallel worker consumes memory. The main concern is `ha_workers` (harmonic analysis), which runs in separate processes that each get a full copy of the station data. If you see out-of-memory errors during tidal analysis, reduce `ha_workers` to 2-4.
+
+For `parallel_variables=True` (experimental), the model dataset is shared across variable-processing threads, but each thread allocates its own output arrays. Only enable this if you have ample RAM (16+ GB free).
+
+#### Disabling parallelization
+
+To run everything sequentially:
+
+```ini
+parallel_enabled=False
+```
+
+This forces all worker counts to 1 regardless of their individual settings. Useful for debugging, reproducing issues, or running on constrained systems.
+
+#### Experimental flags
+
+The following boolean flags enable additional parallelism at different pipeline stages. They are disabled by default and should be considered experimental. Enable them one at a time and verify results match sequential output before relying on them in production.
+
+| Flag | Effect |
+|---|---|
+| `parallel_variables` | Process multiple variables (wl, temp, salt, cu) concurrently within a single pipeline stage |
+| `parallel_workflow` | Run observation download and model extraction concurrently |
+| `parallel_stations` | Process stations in parallel during model extraction |
+| `parallel_plotting` | Generate station plots in parallel |
+| `parallel_forecast_cycles` | Process forecast_a cycles concurrently |
+| `parallel_obs_variables` | Download observations for all variables concurrently |
+| `parallel_2d_interp` | Parallelize 2D interpolation |
+
+These flags require sufficient memory and may produce interleaved log output. If you encounter issues, disable the flag and retry.
+
+#### Performance benchmarks
+
+Benchmarks on a 16-core Linux system running the full 1D skill assessment pipeline (model processing + obs retrieval + pairing + plotting):
+
+| OFS | Model | Sequential | Auto | Speedup |
+|---|---|---|---|---|
+| CBOFS | ROMS | 142s | 70s | **2.0x** |
+| LOOFS2 | SCHISM | 88s | 69s | **1.28x** |
+| SFBOFS | FVCOM | 32s | 26s | **1.25x** |
+
+Speedup scales with the number of stations in the OFS. The observation retrieval stage alone shows up to 3.4x improvement; the overall pipeline speedup is diluted by stages that are inherently sequential (inventory retrieval, model loading). Setting worker counts higher than `auto` provides no benefit and can reduce performance due to API rate limiting.
+
+### 3.3.3 logging.conf
 
 The second file, 'logging.conf', determines how the skill assessment collects logging entries -- used mainly for debugging -- as the software runs. You can read more about logging in [Sections 3.6.7](#367-logging) and [5](#5-troubleshooting).
 
@@ -399,7 +511,7 @@ Here, you can choose whether to save logging entries to a text file or print the
 ![ofs_dps_conf](./readme_images/logging_conf.png)
 
 ## 3.4 Download OFS model data
-After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL but excluding NECOFS (which is in development).
+After the `working directory` is established in `ofs_dps.conf`, you can retrieve OFS model data from the [NOAA Open Data Dissemination (NODD) Amazon S3 bucket](https://noaa-ofs-pds.s3.amazonaws.com/index.html) using a script called _get_model_data.py_ located in `working_directory/bin/utils/`. This script can download model data for any available time period, file type (fields or stations), and 'cast' (nowcast or forecast). Model output can be retrieved for all OFS listed in [Section 2.1](#21-nowcasts-forecasts-and-skill-assessment-modes), including STOFS-3D-ATL and STOFS-2D-Global but excluding NECOFS (which is in development).
 
 The script will retrieve all OFS model files needed to run the skill assessment, and automatically organize them into a new `working directory` folder called `example_data`. __After OFS model data is downloaded, do not move or re-organize the files -- otherwise the skill assessment will not be able to find them.__
 
@@ -427,6 +539,7 @@ This will retrieve all CBOFS nowcast station files between 07/01/2025 and 07/02/
 |End date for assessment|-e|--EndDate|YYYY-MM-DDTHH:MM:SSZ<br>(e.g. 2025-07-02T00:00:00Z)|required|
 |Mode, or 'cast'|-ws|--WhichCast|nowcast OR forecast_b|required<br><sub>use only one whichcast at a time</sub>|
 |OFS file format|-t|--FileType|stations OR fields|required<br><sub>use only one file type at a time</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
 In the example skill assessment run below ([Section 3.4](#34-running-the-software)), you will use both nowcast and forecast model data. Run the `get_model_data` call one more time to retrieve the forecast station files:
 
@@ -481,10 +594,10 @@ where
 * _-d_ is the vertical datum used to retrieve water level observations
 * _-ws_ is the mode (nowcast, forecast_a, and/or forecast_b)
 * _-t_ is the file format/type (stations or fields).
-* _-so_ is the observation station owner/provider (NDBC, USGS, and/or CO-OPS, OR a custom `list` of station IDs)
+* _-so_ is the observation station owner/provider (NDBC, USGS, CO-OPS, and/or CHS, OR a custom `list` of station IDs)
 * _-vs_ is variable selction (water_level, water_temperature, salinity, and/or currents)
 
-So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and forecast OFS output with station files (and 6-minute time resolution), with a vertical water level datum of mean lower low water, observation retrieval from CO-OPS, NDBC, and USGS stations, and all oceanographic variables selected. All possible input options and arguments are summarized in the table below.
+So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and forecast OFS output with station files (and 6-minute time resolution), with a vertical water level datum of mean lower low water, observation retrieval from CO-OPS, NDBC, USGS, and CHS stations, and all oceanographic variables selected. All possible input options and arguments are summarized in the table below.
 
 
 | Option explanation | Option syntax | Verbose syntax | Arguments | Required/optional |
@@ -498,11 +611,13 @@ So, this run is for CBOFS, from 10/01/2025 to 10/02/2025, using both nowcast and
 |Mode, or 'cast'|-ws|--WhichCast|nowcast, forecast_a, and/or forecast_b|required<br><sub>(can use one or all)</sub>|
 |OFS file format|-t|--FileType|stations OR fields|optional<br><sub>(Choose only one -- default is stations)</sub>|
 |Forecast cycle hour<br><sub>(for use only with forecast_a mode)</sub>|-f|--Forecast_Hr|e.g. '06hr', '12hr'|optional<br><sub>(default is '00hr', or closest cycle to '00hr')</sub>|
-|Observation station owner selection|-so|--Station_Owner|USGS, NDBC, and/or CO-OPS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS)</sub>|
+|Observation station owner selection|-so|--Station_Owner|USGS, NDBC, CO-OPS, CHS, or 'list'|optional<br><sub>(Choose one or multiple -- default is CO-OPS, NDBC, USGS, CHS)</sub>|
 |Enable forecast horizon & model cycle skill|-hs|--Horizon_Skill|None, just include -hs|optional<br><sub>(default is False)</sub>|
 |Variable selection|-vs|--Var_Selection|water_level, water_temperature, salinity, currents|optional<br><sub>(default is all variables)</sub>|
+|Currents-bins override CSV<br><sub>([wiki](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing))</sub>|-cb|--Currents_Bins_Csv|path to a CSV with columns `station_id,bin,depth,orientation,name`|optional<br><sub>(currents only; default processes all bins per ADCP)</sub>|
+|Configuration file|-c|--config|path/to/config.conf|optional<br><sub>(default is conf/ofs_dps.conf)</sub>|
 
-Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs`, and `stations` respectively. So the same run can be achieved using a shorter call:
+Note that, in the above call for CBOFS, the defaults for optional flags `-vs`, `-so`, and `-t` are `water_level,water_temperature,currents`, `co-ops,ndbc,usgs,chs`, and `stations` respectively. So the same run can be achieved using a shorter call:
 
 ```
 python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2025-10-01T00:00:00Z -e 2025-10-02T00:00:00Z -d MLLW -ws nowcast,forecast_b
@@ -515,6 +630,14 @@ Input flags that support multiple arguments, like `-ws` or `-vs`, should be form
 `-vs water_level,salinity`
 
 `-so co-ops,ndbc`
+
+All entry point scripts support an optional `-c` (or `--config`) flag to specify a custom configuration file. This allows you to maintain multiple configuration files for different run profiles (e.g., monthly vs. daily assessments, different output directories) and switch between them without editing the default `conf/ofs_dps.conf` file. For example:
+
+```
+python ./bin/visualization/create_1dplot.py -c conf/monthly.conf -p ./ -o cbofs -s 2025-10-01T00:00:00Z -e 2025-10-02T00:00:00Z -d MLLW -ws nowcast,forecast_b
+```
+
+When `-c` is omitted, the default `conf/ofs_dps.conf` is used.
 
 The skill assessment can be run for time spans for a year or longer if using station files. If using field files, the duration is shorter and depends on available processing power and resources (see [Section 2.2](#22-ofs-data-formats--data-retention-schedules)).
 
@@ -768,6 +891,13 @@ When the downloads are complete, make sure your conda environment is activated (
 
 🚨 Then, to ensure all output is created, open the file `/bin/visualization/plotting_2d.py`, and search for the variable `make_plotly_maps`. Then set `make_plotly_maps = True`, and save it. This will tell the skill assessment to create plotly maps of all 2D skill statistics and outputs ([Section 3.9.4](#394-1d-and-2d-skill-statistics)). 🚨
 
+Optionally, to also generate static PNG maps of model output (SST, SSH, SSS, and current vectors), set `static_plots=True` in the `[settings]` section of `conf/ofs_dps.conf`:
+```ini
+[settings]
+static_plots=True
+```
+When enabled, static maps are automatically generated at the end of each 2D skill assessment run and saved to `/working_directory/data/visual/2d/` ([Section 3.9.6](#396-static-2d-maps)).
+
 Next, download the SST satellite data for SFBOFS from GOES-18/West:
 
 ```
@@ -788,7 +918,7 @@ All arguments are the same as described in [Section 3.5](#35-running-the-1d-skil
 * _-s_ and _-e_ are the start and end dates, respectively
 * _-ws_ is the mode (nowcast, forecast_a, and/or forecast_b)
 
-As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment.
+As with the 1D skill assessment, you can run nowcast and forecast_b together or separately. Note that forecast_a mode does not work with the 2D skill assessment. Both `get_satellite_observations.py` and `create_2dplot.py` also support the `-c`/`--config` flag for specifying a custom configuration file (see [Section 3.5](#35-running-the-1d-skill-assessment)).
 
 ## 3.9 2D outputs
 During a run, the skill assessment creates a 'data' directory to save all skill-related outputs. Within the data directory, outputs are saved in separate sub-directories depending on output type, including 'observations', 'model', 'skill', and 'visual'. The following sections will cover 2D outputs in each relevant directory.
@@ -801,14 +931,14 @@ Here you will find the concatenated and clipped netCDF file storing satellite da
 ### 3.9.2 Hourly and daily-averaged SST satellite JSON maps
 `/working_directory/data/observations/2d/`
 
-All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
+All hourly SST satellite JSON files are stored here. If the 2D skill assessment is run for 24 hours, then a daily-averaged JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make static PNG maps of the satellite data with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file names contain all relevant information, including the OFS, date, and hour of the satellite data. For example `cbofs_20250701-00z_sst_satellite.json` is a JSON file of satellite data for CBOFS at 00Z on 07/01/2025, and `cbofs_20250701-daily_sst_satellite.json` is a daily-averaged satellite JSON file, as shown below.
 
 ![daily_averaged_l3c](./readme_images/daily_l3c_example.png)
 
 ### 3.9.3 Hourly and daily-averaged SST model JSON maps
 `/working_directory/data/model/2d/`
 
-All hourly SST model JSON files are stored here. If the 2D skill assessment is run for at least 24 hours, then a daily-averaged model JSON file will also be generated. The JSON files contain latitude, longitude, and SST values (degrees C), and can be used to make JPEG maps of the model data with the script `/bin/utils/plot_leafletJSON.py`, or a JSON visualizer of your choice. The file names convention is the same as described above in Section 3.8.2.
+All hourly model JSON files are stored here for SST, SSH, SSS, SSU (eastward velocity), and SSV (northward velocity). If the 2D skill assessment is run for at least 24 hours, then daily-averaged model JSON files will also be generated. The JSON files contain latitude, longitude, and data values, and can be used to make static PNG maps with the script `/bin/utils/plot_leafletJSON.py` ([Section 3.9.6](#396-static-2d-maps)), or a JSON visualizer of your choice. The file name convention is the same as described above in Section 3.9.2, with the variable name embedded in the filename (e.g., `cbofs_20250701-00z_ssh_model.nowcast.json`).
 
 ### 3.9.4 2D skill statistics
 `/working_directory/data/skill/stats/`
@@ -844,7 +974,58 @@ In the second map, the mean error is color-coded by target error range in segmen
 
 ![plotly_express_map](./readme_images/2d_skill_target_example.png)
 
-### 3.9.6 Logging
+### 3.9.6 Static 2D maps
+`/working_directory/data/visual/2d/`
+
+When `static_plots=True` is set in the `[settings]` section of `conf/ofs_dps.conf`, the 2D skill assessment automatically generates static PNG maps of model output at the end of each run. These are georeferenced cartopy maps with coastlines, land masking, state boundaries, and a colorbar.
+
+The following map types are generated for each hourly time step (and daily averages when available):
+
+|Variable|Description|Colormap|Units|
+|:---|:---|:---|:---|
+|**SST**|Sea surface temperature|coolwarm|°C|
+|**SSH**|Sea surface height|viridis|m|
+|**SSS**|Sea surface salinity|YlGnBu|psu|
+|**Currents**|Current speed (magnitude) with quiver arrows showing flow direction|cividis|m/s|
+
+Current vector maps combine paired SSU and SSV model output: the background shows current magnitude as a color fill, and subsampled quiver arrows overlay the flow direction and speed. A reference arrow (0.5 m/s) is included in the legend.
+
+Output filenames follow the pattern `{ofs}_{date}_{variable}.png`, for example:
+* `sfbofs_20250601-00z_sst.png`
+* `sfbofs_20250601-00z_currents.png`
+
+#### Standalone usage with `plot_leafletJSON.py`
+
+The script `/bin/utils/plot_leafletJSON.py` can also be run as a standalone command-line tool to generate static maps from any JSON grid file in `data/model/2d/` or `data/observations/2d/` _after_ the 2D pipeline has been run. This is useful for generating maps of individual time steps or variables without re-running the full skill assessment.
+
+**Scalar map** (single variable — SST, SSH, SSS, SSU, or SSV):
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sst_model.nowcast.json
+```
+
+The variable is auto-detected from the filename. To override the variable or specify a custom output path:
+```
+python ./bin/utils/plot_leafletJSON.py -f data/model/2d/cbofs_20250701-00z_sss_model.nowcast.json -v sss -o ./output/cbofs_sss.png
+```
+
+**Current quiver map** (paired SSU + SSV velocity components):
+```
+python ./bin/utils/plot_leafletJSON.py \
+    -fu data/model/2d/cbofs_20250701-00z_ssu_model.nowcast.json \
+    -fv data/model/2d/cbofs_20250701-00z_ssv_model.nowcast.json
+```
+
+Arguments:
+
+|Flag|Description|
+|:---|:---|
+|`-f`, `--filename`|Path to a single JSON file (scalar map mode)|
+|`-fu`, `--filename_u`|Path to SSU (eastward velocity) JSON file (quiver mode)|
+|`-fv`, `--filename_v`|Path to SSV (northward velocity) JSON file (quiver mode)|
+|`-v`, `--variable`|Variable name override: sst, ssh, sss, ssu, ssv|
+|`-o`, `--output`|Output PNG file path (default: input filename + .png)|
+
+### 3.9.7 Logging
 `/working_directory/log/`
 
 As in the 1D skill assessment, run-time information, warnings, and errors are recorded in a log file ([Section 3.6.7](#367-logging)).

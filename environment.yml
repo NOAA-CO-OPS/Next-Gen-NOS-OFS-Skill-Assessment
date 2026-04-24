@@ -55,5 +55,5 @@ dependencies:
     - global-land-mask==1.0.0
     - tkcalendar==1.6.1
     - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git
-    - git+https://github.com/oceanmodeling/searvey.git@USGS_api_updates
+    - git+https://github.com/oceanmodeling/searvey.git@master
     - utide>=0.3.0

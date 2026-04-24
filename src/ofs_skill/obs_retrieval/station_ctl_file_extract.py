@@ -52,6 +52,17 @@ def station_ctl_file_extract(ctlfile_path: str) -> Optional[tuple[list[list[str]
         8573364 8573364_COOPS "Chesapeake Bay Bridge Tunnel"
         37.0 -76.0 0.0 0.0 MLLW
 
+    CO-OPS ADCP currents stations use a per-bin virtual ID of the form
+    ``{parent_id}_b{NN}``. The parser keeps the virtual ID verbatim on
+    ``station_info[0]`` and extracts the source from the second field,
+    e.g.::
+
+        8454000_b05 8454000_b05_cu_cbofs_CO-OPS "Providence (bin 05)"
+        41.807 -71.401 0.0  12.34  0.0
+
+    yields ``['8454000_b05', '8454000_b05_cu_cbofs_CO-OPS',
+    'Providence (bin 05)', 'CO-OPS']``.
+
     The function handles missing or malformed entries gracefully.
     """
     # Check if file exists and has content
@@ -69,30 +80,28 @@ def station_ctl_file_extract(ctlfile_path: str) -> Optional[tuple[list[list[str]
     lines = ctlfile.split('\n')
 
     # Extract station info (even lines: 0, 2, 4, ...)
-    lines1 = lines[0::2]
-    lines1 = [i.split('"') for i in lines1]
-    lines1 = [list(filter(None, i)) for i in lines1]
+    raw_lines1 = lines[0::2]
+    split_lines1: list[list[str]] = [i.split('"') for i in raw_lines1]
+    split_lines1 = [list(filter(None, i)) for i in split_lines1]
 
     # Format station information
-    lines1_format = []
-    for i in lines1:
+    lines1: list[list[str]] = []
+    for i in split_lines1:
         try:
             # Parse: <ID> <source_ID> "<station name>"
             first = i[0].split(' ')[0]  # Station ID
             second = i[0].split(' ')[1]  # Source ID (e.g., "8573364_COOPS")
             source = second.split('_')[-1]  # Extract source (e.g., "COOPS")
             third = i[1]  # Station name
-            lines1_format.append([first, second, third, source])
+            lines1.append([first, second, third, source])
         except (IndexError, AttributeError):
             # Skip malformed entries
             pass
 
-    lines1 = lines1_format
-
     # Extract coordinate info (odd lines: 1, 3, 5, ...)
-    lines2 = lines[1::2]
-    lines2 = [i.split(' ') for i in lines2]
-    lines2 = [list(filter(None, i)) for i in lines2]
+    raw_lines2 = lines[1::2]
+    split_lines2: list[list[str]] = [i.split(' ') for i in raw_lines2]
+    lines2: list[list[str]] = [list(filter(None, i)) for i in split_lines2]
 
     # Return both lists
     return lines1, lines2

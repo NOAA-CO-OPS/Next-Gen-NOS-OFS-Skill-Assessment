@@ -27,7 +27,8 @@ def inventory_ndbc_station(
     lat2: float,
     lon1: float,
     lon2: float,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> Optional[pd.DataFrame]:
     """
     Create inventory of all NDBC stations within geographic bounds.
@@ -62,7 +63,7 @@ def inventory_ndbc_station(
         float(lon2),
     )
 
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
     base_url = url_params['ndbc_noaa_url'].rstrip('/')
     url = f'{base_url}/{_ACTIVE_STATIONS_PATH}'
 

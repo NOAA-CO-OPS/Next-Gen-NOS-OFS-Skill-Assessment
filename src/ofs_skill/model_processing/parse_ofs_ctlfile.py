@@ -80,13 +80,13 @@ def parse_ofs_ctlfile(filename: str) -> tuple[list[list[str]], list[int], list[i
         model_ctlfile = file.read()
 
     # Split into lines and parse
-    lines = model_ctlfile.split('\n')
-    lines = [line.split(' ') for line in lines]
+    raw_lines = model_ctlfile.split('\n')
+    split_lines: list[list[str]] = [line.split(' ') for line in raw_lines]
     # Remove empty strings from each line
-    lines = [list(filter(None, line)) for line in lines]
+    split_lines = [list(filter(None, line)) for line in split_lines]
 
     # Filter out empty lines (which would be empty lists after filtering)
-    lines = [line for line in lines if line]
+    lines: list[list[str]] = [line for line in split_lines if line]
 
     # Extract data columns
     lines_array = np.array(lines)

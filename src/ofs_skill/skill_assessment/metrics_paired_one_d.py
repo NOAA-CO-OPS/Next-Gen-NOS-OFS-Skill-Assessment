@@ -15,17 +15,76 @@ import numpy as np
 import pandas as pd
 from scipy.stats import ConstantInputWarning
 
+from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
 from ofs_skill.skill_assessment import nos_metrics
 
 warnings.simplefilter('ignore', ConstantInputWarning)
+
+_MIN_DATA_POINTS = 5
+
+
+def _circular_mean_deg(angles_deg) -> float:
+    """Mean direction of angles in degrees via atan2(Σsin, Σcos)."""
+    rad = np.deg2rad(np.asarray(angles_deg, dtype=float))
+    mask = ~np.isnan(rad)
+    if not mask.any():
+        return float('nan')
+    rad = rad[mask]
+    sin_mean = np.mean(np.sin(rad))
+    cos_mean = np.mean(np.cos(rad))
+    if sin_mean == 0 and cos_mean == 0:
+        return float('nan')
+    return float(np.rad2deg(np.arctan2(sin_mean, cos_mean)))
+
+
+def _circular_correlation_deg(obs_deg, ofs_deg) -> float:
+    """Jammalamadaka-Sarma circular correlation for paired angle series (degrees).
+
+    Computes ρ_c in [-1, 1] using circular means
+    (``arctan2(mean(sin), mean(cos))``). NaN-safe (drops pairs where either
+    is NaN). Returns NaN if fewer than 2 valid pairs or zero-variance.
+
+    References
+    ----------
+    Jammalamadaka, S. R., and Sarma, Y. R. (1988). "A correlation coefficient
+    for angular variables." *Statistical Theory and Data Analysis II*,
+    North-Holland.
+
+    Notes
+    -----
+    The statistic is well-defined when both series have a meaningful mean
+    direction (i.e. are clustered, not uniformly distributed around the
+    circle). For near-uniform input the circular mean becomes undefined and
+    ρ_c can be close to zero even for a rigid rotation. Current-direction
+    series at fixed stations typically cluster along a principal axis so
+    this degeneracy is not usually an issue in practice.
+    """
+    obs_rad = np.deg2rad(np.asarray(obs_deg, dtype=float))
+    ofs_rad = np.deg2rad(np.asarray(ofs_deg, dtype=float))
+    mask = ~np.isnan(obs_rad) & ~np.isnan(ofs_rad)
+    if mask.sum() < 2:
+        return float('nan')
+    obs_rad = obs_rad[mask]
+    ofs_rad = ofs_rad[mask]
+    obs_mean = np.arctan2(np.mean(np.sin(obs_rad)), np.mean(np.cos(obs_rad)))
+    ofs_mean = np.arctan2(np.mean(np.sin(ofs_rad)), np.mean(np.cos(ofs_rad)))
+    num = np.sum(np.sin(obs_rad - obs_mean) * np.sin(ofs_rad - ofs_mean))
+    den = np.sqrt(
+        np.sum(np.sin(obs_rad - obs_mean)**2)
+        * np.sum(np.sin(ofs_rad - ofs_mean)**2)
+    )
+    if den == 0:
+        return float('nan')
+    return float(num / den)
 
 
 def skill_scalar(
     df_paired: pd.DataFrame,
     name_var: str,
+    station_id: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """
     Calculate skill metrics for scalar variables.
 
@@ -61,6 +120,12 @@ def skill_scalar(
         - pofpf: Positive outlier frequency pass/fail
         - nof: Negative outlier frequency
         - nofpf: Negative outlier frequency pass/fail
+        - mdpo: Max duration of positive outliers
+        - mdpopf: MDPO pass/fail
+        - mdno: Max duration of negative outliers
+        - mdnopf: MDNO pass/fail
+        - wof: worst-case outlier frequency
+        - wofpf: WOF pass/fail
         - stdev: Standard deviation of bias
         - X1: Error threshold
 
@@ -70,19 +135,20 @@ def skill_scalar(
     correlation cannot be calculated between observations and model if one
     of the timeseries is constant, which will trigger a warning.
     """
-    datathreshold = 5
-
     # Get target error range
     X1, X2 = nos_metrics.get_error_threshold(
         name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
 
+    # Preserve NaN-containing series for gap-sensitive duration metrics.
+    # MDPO/MDNO need real gaps to break streaks; dropna hides them.
+    df_paired_full = df_paired.copy()
     df_paired = df_paired.dropna(subset=['OBS', 'OFS'])
     # Update obs and ofs after handling NaN
     obs = df_paired['OBS']
     ofs = df_paired['OFS']
     df_bias = df_paired['BIAS']
 
-    if np.nansum(~np.isnan(obs)) >= datathreshold:
+    if np.nansum(~np.isnan(obs)) >= _MIN_DATA_POINTS:
         # RMSE -- fixed 8/13/24
         rmse = nos_metrics.rmse(ofs, obs)
         rmse = np.around(rmse, decimals=2)
@@ -105,25 +171,71 @@ def skill_scalar(
         npbias = np.array(df_bias)
         cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
-        # Pass or fail?
-        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
-        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
         pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
         nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
-        pofpf = criteria['pof']
-        nofpf = criteria['nof']
 
         # Standard deviation or error/bias
         stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
 
+        # MDPO/MDNO — use the NaN-preserved series so real gaps break the streak.
+        # Use median dt so one anomalous spacing doesn't skew the duration scale.
+        full_bias = np.asarray(df_paired_full['BIAS'], dtype=float)
+        mdpo = nos_metrics.max_duration_positive_outliers(full_bias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(full_bias, X1)
+        full_diffs = np.asarray(
+            df_paired_full['DateTime'].diff().dt.total_seconds() / 3600
+        )
+        dt = np.nanmedian(full_diffs)
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
+
+        # Worst case outlier frequency (WOF)
+        wof = None
+        tidal_data = None
+        if name_var == 'wl':
+            # tidal_info contains the 'used_datum' that successfully returned data
+            tidal_data, tidal_info = get_station_tidal_data(
+                df_paired['DateTime'].min().to_pydatetime(),
+                df_paired['DateTime'].max().to_pydatetime(),
+                prop, station_id, logger
+            )
+
+            # Skip WOF if retrieved datum differs from requested model datum
+            # This prevents bias in crossing logic caused by vertical reference offsets
+            if tidal_data is not None and tidal_info.get('used_datum') == prop.datum:
+                tides = pd.merge(df_paired, tidal_data, on='DateTime').reset_index()
+                wof = nos_metrics.worst_case_outlier_frequency(
+                    tides['OFS'],
+                    tides['OBS'],
+                    tides['TIDE'],
+                    X1
+                )
+                wof = np.around(wof, decimals=2)
+            elif tidal_data is not None:
+                logger.warning(
+                    'Skipping WOF for station %s: Tidal datum (%s) does not match requested datum (%s).',
+                    station_id, tidal_info.get('used_datum'), prop.datum
+                )
+
+        # Check criteria
+        # Pass or fail?
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
+
     else:
-        nodatatext = '<' + str(datathreshold) + ' data points'
+        nodatatext = '<' + str(_MIN_DATA_POINTS) + ' data points'
         rmse = nodatatext
         r_value = nodatatext
         bias = nodatatext
@@ -134,6 +246,12 @@ def skill_scalar(
         pofpf = nodatatext
         nof = nodatatext
         nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
         stdev = nodatatext
 
     # Return stats
@@ -148,6 +266,12 @@ def skill_scalar(
             pofpf,
             nof,
             nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
             stdev,
             X1]
 
@@ -157,7 +281,7 @@ def skill_vector(
     name_var: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """
     Calculate skill metrics for vector variables.
 
@@ -198,19 +322,19 @@ def skill_vector(
         - stdev: Standard deviation of speed bias
         - X1: Error threshold
     """
-    datathreshold = 5
-
     # Get target error range
     X1, X2 = nos_metrics.get_error_threshold(
         name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
 
+    # Preserve NaN-containing series for gap-sensitive duration metrics.
+    df_paired_full = df_paired.copy()
     df_paired = df_paired.dropna(subset=['OBS', 'OFS'])
     # Update obs and ofs after handling NaN
     obs = df_paired['OBS']
     ofs = df_paired['OFS']
     spd_bias = df_paired['SPD_BIAS']
     dir_bias = df_paired['DIR_BIAS']
-    if np.nansum(~np.isnan(obs)) >= datathreshold:
+    if np.nansum(~np.isnan(obs)) >= _MIN_DATA_POINTS:
         # RMSE -- fixed 8/13/24
         rmse = nos_metrics.rmse(ofs, obs)
         rmse = np.around(rmse, decimals=2)
@@ -231,33 +355,52 @@ def skill_vector(
         bias_dir = dir_bias.mean()
         bias_dir = np.around(bias_dir, decimals=2)
 
+        ######### SPEED THRESHOLD STATS ##########
         # Central frequency
         # Not using X2 right now, only X1
         npbias = np.array(spd_bias)
         cf = nos_metrics.central_frequency(npbias, X1)
         cf = np.around(cf, decimals=2)
-        # Pass or fail?
-        criteria = nos_metrics.check_nos_criteria(cf, 0, 0)
-        cfpf = criteria['cf']
 
         # Positive/negative outlier frequency
         pof = nos_metrics.positive_outlier_freq(npbias, X1)
         pof = np.around(pof, decimals=2)
         nof = nos_metrics.negative_outlier_freq(npbias, X1)
         nof = np.around(nof, decimals=2)
-        criteria = nos_metrics.check_nos_criteria(100, pof, nof)
-        pofpf = criteria['pof']
-        nofpf = criteria['nof']
+
+        # MDPO/MDNO — use the NaN-preserved series so real gaps break the streak.
+        full_spd_bias = np.asarray(df_paired_full['SPD_BIAS'], dtype=float)
+        mdpo = nos_metrics.max_duration_positive_outliers(full_spd_bias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(full_spd_bias, X1)
+        full_diffs = np.asarray(
+            df_paired_full['DateTime'].diff().dt.total_seconds() / 3600
+        )
+        dt = np.nanmedian(full_diffs)
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
 
         # Standard deviation or error/bias
         stdev = nos_metrics.standard_deviation(npbias)
         stdev = np.around(stdev, decimals=2)
+
+        # Check criteria
+        # Pass or fail?
+        wof = None
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
     else:
-        nodatatext = '<' + str(datathreshold) + ' data points'
-        rmse = nodatatext
-        r_value = nodatatext
-        bias = nodatatext
-        bias_perc = nodatatext
+        nodatatext = '<' + str(_MIN_DATA_POINTS) + ' data points'
+        rmse = nodatatext  # type: ignore[assignment]
+        r_value = nodatatext  # type: ignore[assignment]
+        bias = nodatatext  # type: ignore[assignment]
+        bias_perc = nodatatext  # type: ignore[assignment]
         bias_dir = nodatatext
         cf = nodatatext
         cfpf = nodatatext
@@ -265,6 +408,12 @@ def skill_vector(
         pofpf = nodatatext
         nof = nodatatext
         nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
         stdev = nodatatext
 
     return [rmse,
@@ -278,5 +427,247 @@ def skill_vector(
             pofpf,
             nof,
             nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
             stdev,
             X1]
+
+def skill_vector_dir(
+    df_paired: pd.DataFrame,
+    name_var: str,
+    prop: Any,
+    logger: Logger,
+) -> list[Union[float, str, None]]:
+    """
+    Calculate skill metrics for current direction.
+
+    Direction is a circular quantity on [0, 360) degrees. All skill metrics
+    use circular statistics so that small errors across the 0°/360° branch
+    cut (e.g. obs=355°, ofs=5° → 10° error, not 350°).
+
+    - RMSE is computed on the signed angular difference (``DIR_BIAS``), which
+      ``paired_vector`` already produces via ``get_distance_angle`` and is in
+      [-180, 180].
+    - Mean direction bias uses the *circular* mean of the signed differences.
+      Note: residuals of +179° and -179° give a circular-mean bias near 180°
+      while the arithmetic mean would give 0°; the circular form is the
+      conventional choice for angular residuals.
+    - Correlation uses the Jammalamadaka-Sarma circular correlation (1988)
+      between the raw OBS_DIR and OFS_DIR series.
+    - CF / POF / NOF / MDPO / MDNO treat DIR_BIAS as a conventional signed
+      error series, which is valid because DIR_BIAS is already in [-180, 180].
+
+    Parameters
+    ----------
+    df_paired : pd.DataFrame
+        Paired observation and model data with columns ['OBS_DIR', 'OFS_DIR',
+        'DIR_BIAS', 'DateTime'].
+    name_var : str
+        Variable name ('cu' for currents).
+    prop : Any
+        Properties object containing configuration parameters.
+    logger : Logger
+        Logger instance for logging messages.
+
+    Returns
+    -------
+    List[Union[float, str]]
+        Skill metrics in the same 19-slot layout as ``skill_scalar`` /
+        ``skill_vector``:
+        [rmse, r_value, bias, bias_perc, bias_dir, cf, cfpf, pof, pofpf,
+         nof, nofpf, mdpo, mdpopf, mdno, mdnopf, wof, wofpf, stdev, X1].
+    """
+    # Get target error range (degrees)
+    X1, X2 = nos_metrics.get_error_threshold(
+        'cu_dir', os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+
+    # Preserve NaN-containing series for gap-sensitive duration metrics.
+    df_paired_full = df_paired.copy()
+    df_paired = df_paired.dropna(subset=['OBS_DIR', 'OFS_DIR'])
+
+    obs_dir = df_paired['OBS_DIR'].values
+    ofs_dir = df_paired['OFS_DIR'].values
+    dir_bias = df_paired['DIR_BIAS']  # already signed angular diff in [-180, 180]
+
+    if np.nansum(~np.isnan(obs_dir)) >= _MIN_DATA_POINTS:
+        # Circular RMSE from signed angular differences
+        rmse = float(np.sqrt(np.nanmean(np.asarray(dir_bias, dtype=float)**2)))
+        rmse = np.around(rmse, decimals=2)
+
+        # Jammalamadaka-Sarma circular correlation on raw 0-360° series
+        r_value = _circular_correlation_deg(obs_dir, ofs_dir)
+        if math.isnan(r_value):
+            logger.warning(
+                '%s -- The circular correlation could not be calculated (i.e. R=NaN)',
+                name_var)
+        r_value = np.around(r_value, decimals=2)
+
+        # Mean direction bias via circular mean (robust near ±180°)
+        bias = _circular_mean_deg(dir_bias)
+        bias_perc = np.nan
+        bias = np.around(bias, decimals=2)
+        bias_dir = bias  # duplicate slot retained for CSV schema parity
+
+        ######### DIR THRESHOLD STATS ##########
+        # Central frequency
+        # Not using X2 right now, only X1
+        npbias = np.array(dir_bias)
+        cf = nos_metrics.central_frequency(npbias, X1)
+        cf = np.around(cf, decimals=2)
+
+        # Positive/negative outlier frequency
+        pof = nos_metrics.positive_outlier_freq(npbias, X1)
+        pof = np.around(pof, decimals=2)
+        nof = nos_metrics.negative_outlier_freq(npbias, X1)
+        nof = np.around(nof, decimals=2)
+
+        # MDPO/MDNO — use the NaN-preserved series so real gaps break the streak.
+        full_dir_bias = np.asarray(df_paired_full['DIR_BIAS'], dtype=float)
+        mdpo = nos_metrics.max_duration_positive_outliers(full_dir_bias, X1)
+        mdno = nos_metrics.max_duration_negative_outliers(full_dir_bias, X1)
+        full_diffs = np.asarray(
+            df_paired_full['DateTime'].diff().dt.total_seconds() / 3600
+        )
+        dt = np.nanmedian(full_diffs)
+        mdpo = mdpo * dt
+        mdno = mdno * dt
+        mdno = np.around(mdno, decimals=2)
+        mdpo = np.around(mdpo, decimals=2)
+
+        # Standard deviation or error/bias
+        stdev = nos_metrics.standard_deviation(npbias)
+        stdev = np.around(stdev, decimals=2)
+
+        # Check criteria
+        # Pass or fail?
+        wof = None
+        criteria = nos_metrics.check_nos_criteria(cf, pof, nof, mdpo, mdno, wof)
+        cfpf = criteria['cf']
+        pofpf = criteria['pof']
+        nofpf = criteria['nof']
+        mdpopf = criteria['mdpo']
+        mdnopf = criteria['mdno']
+        wofpf = criteria['wof']
+    else:
+        nodatatext = '<' + str(_MIN_DATA_POINTS) + ' data points'
+        rmse = nodatatext  # type: ignore[assignment]
+        r_value = nodatatext  # type: ignore[assignment]
+        bias = nodatatext  # type: ignore[assignment]
+        bias_perc = nodatatext  # type: ignore[assignment]
+        bias_dir = nodatatext
+        cf = nodatatext
+        cfpf = nodatatext
+        pof = nodatatext
+        pofpf = nodatatext
+        nof = nodatatext
+        nofpf = nodatatext
+        mdpo = nodatatext
+        mdno = nodatatext
+        mdpopf = nodatatext
+        mdnopf = nodatatext
+        wof = nodatatext
+        wofpf = nodatatext
+        stdev = nodatatext
+
+    return [rmse,
+            r_value,
+            bias,
+            bias_perc,
+            bias_dir,
+            cf,
+            cfpf,
+            pof,
+            pofpf,
+            nof,
+            nofpf,
+            mdpo,
+            mdpopf,
+            mdno,
+            mdnopf,
+            wof,
+            wofpf,
+            stdev,
+            X1]
+
+def skill_extrema(
+    df_paired: pd.DataFrame,
+    name_var: str,
+    prop: Any,
+) -> list[Union[float, str, None]]:
+    """Calculate amplitude + timing skill metrics for water-level extrema (HW/LW).
+
+    MDPO/MDNO/WOF are intentionally omitted (they are ill-defined on an
+    event-series). Timing skill is reported via TCF and timing RMSE in the
+    ``stdev`` and ``wof`` slots of the standard 19-slot return layout so the
+    existing CSV writer surfaces them without schema changes.
+
+    Parameters
+    ----------
+    df_paired : pd.DataFrame
+        Paired extrema with columns ['DateTime', 'OFS', 'OBS', 'BIAS',
+        'TIMING_ERR']. TIMING_ERR is model-minus-obs in hours.
+    name_var : str
+        Variable name (currently only 'wl').
+    prop : Any
+        Properties object; used to locate error_ranges.csv.
+
+    Returns
+    -------
+    List[Union[float, str]]
+        19-slot skill list matching ``skill_scalar`` schema. Amplitude metrics
+        populate slots 0-10; duration/outlier slots (11-14) are None;
+        ``wof`` slot (15) carries timing RMSE (hours) and ``wofpf`` (16) carries
+        TCF pass/fail; ``stdev`` slot (17) carries TCF (%); slot 18 is X1.
+    """
+    # X1 is the amplitude threshold (m), T1 is timing threshold (hours)
+    X1, _ = nos_metrics.get_error_threshold(name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+    T1 = 0.5
+
+    obs = df_paired['OBS']
+    ofs = df_paired['OFS']
+    bias = df_paired['BIAS']
+    timing_err = np.asarray(df_paired['TIMING_ERR'], dtype=float)
+
+    # Amplitude stats
+    rmse = nos_metrics.rmse(ofs, obs)
+    cf = nos_metrics.central_frequency(bias, X1)
+    pof = nos_metrics.positive_outlier_freq(bias, X1)
+    nof = nos_metrics.negative_outlier_freq(bias, X1)
+
+    # Timing stats. Guard all-NaN to avoid `RuntimeWarning: Mean of empty slice`
+    # (nanmean of all-NaN is a legitimate NaN result, but the warning is noisy).
+    tcf = nos_metrics.timing_central_frequency(timing_err, T1)
+    if np.isfinite(timing_err).any():
+        timing_rmse = float(np.sqrt(np.nanmean(timing_err**2)))
+    else:
+        timing_rmse = float('nan')
+
+    # Evaluate amplitude + timing criteria; MDPO/MDNO/WOF are undefined on
+    # event-series so we pass dummies that always pass.
+    criteria = nos_metrics.check_nos_criteria(cf, pof, nof, 0, 0, None, tcf=tcf)
+
+    return [
+        np.around(rmse, 2),             # slot 0: amplitude RMSE
+        None,                           # slot 1: r_value (n/a for extrema)
+        np.around(bias.mean(), 2),      # slot 2: mean amplitude bias
+        None,                           # slot 3: bias_perc
+        None,                           # slot 4: bias_dir
+        np.around(cf, 2),               # slot 5: CF
+        criteria['cf'],                 # slot 6: CF pass/fail
+        np.around(pof, 2),              # slot 7: POF
+        criteria['pof'],                # slot 8: POF pass/fail
+        np.around(nof, 2),              # slot 9: NOF
+        criteria['nof'],                # slot 10: NOF pass/fail
+        None,                           # slot 11: mdpo (undefined for extrema)
+        None,                           # slot 12: mdpopf
+        None,                           # slot 13: mdno
+        None,                           # slot 14: mdnopf
+        np.around(timing_rmse, 2),      # slot 15 (wof): timing RMSE (hours)
+        criteria.get('tcf'),            # slot 16 (wofpf): TCF pass/fail
+        np.around(tcf, 2),              # slot 17 (stdev): TCF (%)
+        X1,                             # slot 18: amplitude threshold
+    ]

@@ -5,6 +5,7 @@ This module defines the ModelProperties class which holds configuration
 and path information for OFS model operations.
 """
 
+from typing import Any
 
 
 class ModelProperties:
@@ -93,18 +94,30 @@ class ModelProperties:
 
     def __init__(self):
         """Initialize ModelProperties with default values."""
-        self.ofs: str = ''
-        self.whichcast: str = ''
-        self.whichcasts: str = ''
-        self.forecast_hr: str = ''
-        self.path: str = ''
-        self.datum: str = ''
-        self.datum_list: str = ''
-        self.start_date_full: str = ''
-        self.end_date_full: str = ''
-        self.startdate: str = ''
-        self.enddate: str = ''
-        self.ofsfiletype: str = ''
+        # Many of these attributes are reassigned downstream to bool/None
+        # values (e.g. user_input_location is a bool once set from the CLI,
+        # forecast_hr is Optional[str]). Typed as Any so dynamic attribute
+        # sets from argparse don't trigger mypy assignment errors.
+        self.ofs: Any = ''
+        self.whichcast: Any = ''
+        self.whichcasts: Any = ''
+        self.forecast_hr: Any = ''
+        self.path: Any = ''
+        self.datum: Any = ''
+        self.datum_list: Any = ''
+        self.start_date_full: Any = ''
+        self.end_date_full: Any = ''
+        self.startdate: Any = ''
+        self.enddate: Any = ''
+        self.ofsfiletype: Any = ''
+        self.stationowner: Any = ''
+        self.user_input_location: Any = ''
+        self.horizonskill: Any = ''
+        self.var_list: Any = ''
+        self.filecheck: Any = ''
+        # Extension attrs set dynamically by various CLI entrypoints.
+        self.currents_bins_csv: Any = None
+        self.filepath: Any = ''
 
         # Path attributes
         self.control_files_path: str = ''
@@ -122,7 +135,9 @@ class ModelProperties:
         self.visuals_1d_station_path: str = ''
         self.visuals_2d_station_path: str = ''
 
-        # Ice-specific paths
+        # Ice-specific paths & variables
+        self.ice_dt: str = ''
+        self.dailyavg: str = ''
         self.data_skill_ice1dpair_path: str = ''
         self.visuals_maps_ice_path: str = ''
         self.visuals_1d_ice_path: str = ''
@@ -131,6 +146,7 @@ class ModelProperties:
         self.data_model_ice_path: str = ''
 
         self.model_source: str = ''
+        self.config_file = None
 
     def __repr__(self) -> str:
         """String representation of ModelProperties."""

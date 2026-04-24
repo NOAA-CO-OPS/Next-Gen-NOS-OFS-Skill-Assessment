@@ -48,7 +48,7 @@ def get_inventory(
     try:
         with urllib.request.urlopen(station_url) as url:
             inventory = json.load(url)
-    except urllib.error.HTTPError as ex:
+    except (urllib.error.URLError, urllib.error.HTTPError) as ex:
         logger.error(
             'CO-OPS station %s data download failed at %s -- %s.',
             variable,
@@ -64,7 +64,8 @@ def inventory_t_c_station(
     lat_2: float,
     lon_1: float,
     lon_2: float,
-    logger: Logger
+    logger: Logger,
+    config_file=None,
 ) -> pd.DataFrame:
     """
     Create inventory of all CO-OPS stations within geographic bounds.
@@ -98,7 +99,7 @@ def inventory_t_c_station(
         obtained from ofs_geometry output. This output is used by
         ofs_inventory.py to create the final data inventory.
     """
-    url_params = utils.Utils().read_config_section('urls', logger)
+    url_params = utils.Utils(config_file).read_config_section('urls', logger)
 
     lat_1, lat_2, lon_1, lon_2 = (
         float(lat_1),

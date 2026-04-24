@@ -29,6 +29,16 @@ from .harmonic_analysis import harmonic_analysis
 
 logger = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------
+# Threshold constants
+# -----------------------------------------------------------------------
+DEFAULT_AMP_THRESHOLD_M = 0.05        # 5 cm
+DEFAULT_PHASE_THRESHOLD_DEG = 10.0    # 10 degrees
+DEFAULT_VECTOR_DIFF_THRESHOLD_M = 0.05  # 5 cm
+
+# Major tidal constituents for summary statistics
+MAJOR_CONSTITUENTS = ('M2', 'S2', 'N2', 'K2', 'K1', 'O1', 'P1', 'Q1')
+
 
 def build_constituent_table(
     model_time: pd.DatetimeIndex,
@@ -129,10 +139,12 @@ def build_constituent_table(
     # Reference constants
     # ------------------------------------------------------------------
     if data_type == 'water_level':
+        assert accepted_constants is not None  # narrowed by earlier check
         ref_amp_map = accepted_constants['amplitudes']
         ref_phase_map = accepted_constants['phases']
     else:
         _log.info('Running obs HA for station %s (currents).', station_id)
+        assert obs_time is not None and obs_values is not None  # narrowed above
         obs_result = harmonic_analysis(
             time=obs_time,
             values=obs_values,
@@ -193,6 +205,7 @@ def write_constituent_table_csv(
     station_id: str = '',
     data_type: str = '',
     metadata: dict[str, Any] | None = None,
+    summary_stats: dict[str, Any] | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
     """
@@ -210,6 +223,9 @@ def write_constituent_table_csv(
         Data type label (written in the header).
     metadata : dict, optional
         Extra key/value pairs to include in the header.
+    summary_stats : dict, optional
+        Summary statistics from :func:`compute_constituent_summary_stats`.
+        Appended as ``#`` comment lines at the bottom of the CSV.
     logger : logging.Logger, optional
         Logger instance.
     """
@@ -252,4 +268,114 @@ def write_constituent_table_csv(
             f.write(line + '\n')
         formatted.to_csv(f, index=False)
 
+        # Append summary statistics as footer comments
+        if summary_stats:
+            f.write('\n')
+            for key, value in summary_stats.items():
+                if isinstance(value, float):
+                    f.write(f'# {key}: {value:.6f}\n')
+                else:
+                    f.write(f'# {key}: {value}\n')
+
     _log.info('Constituent table written to %s.', path)
+
+
+def compute_constituent_summary_stats(
+    table: pd.DataFrame,
+    major_constituents: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Compute summary statistics from a constituent comparison table.
+
+    Parameters
+    ----------
+    table : pd.DataFrame
+        Table produced by :func:`build_constituent_table`.
+    major_constituents : sequence of str, optional
+        Constituents considered "major".  Defaults to
+        :data:`MAJOR_CONSTITUENTS`.
+
+    Returns
+    -------
+    dict
+        Keys: ``mean_vector_diff``, ``mean_vector_diff_major``,
+        ``rmse_amp``, ``rmse_amp_major``, ``rmse_phase``,
+        ``rmse_phase_major``, ``n_valid``, ``n_major_valid``.
+    """
+    if major_constituents is None:
+        major_constituents = MAJOR_CONSTITUENTS
+
+    vd = table['Vector_Diff'].values.astype(float)
+    ad = table['Amp_Diff'].values.astype(float)
+    phase_diffs = table['Phase_Diff'].values.astype(float)
+
+    valid = np.isfinite(vd)
+    n_valid = int(np.sum(valid))
+
+    major_mask = table['Constituent'].isin(major_constituents) & valid
+    n_major_valid = int(np.sum(major_mask))
+
+    def _rmse(arr):
+        finite = arr[np.isfinite(arr)]
+        return float(np.sqrt(np.mean(finite ** 2))) if len(finite) > 0 else np.nan
+
+    return {
+        'mean_vector_diff': float(np.nanmean(vd)) if n_valid > 0 else np.nan,
+        'mean_vector_diff_major': (
+            float(np.nanmean(vd[major_mask])) if n_major_valid > 0 else np.nan
+        ),
+        'rmse_amp': _rmse(ad),
+        'rmse_amp_major': _rmse(ad[major_mask]),
+        'rmse_phase': _rmse(phase_diffs),
+        'rmse_phase_major': _rmse(phase_diffs[major_mask]),
+        'n_valid': n_valid,
+        'n_major_valid': n_major_valid,
+    }
+
+
+def flag_constituent_exceedances(
+    table: pd.DataFrame,
+    amp_threshold: float = DEFAULT_AMP_THRESHOLD_M,
+    phase_threshold: float = DEFAULT_PHASE_THRESHOLD_DEG,
+    vector_diff_threshold: float = DEFAULT_VECTOR_DIFF_THRESHOLD_M,
+) -> pd.DataFrame:
+    """
+    Flag constituents that exceed amplitude, phase, or vector-diff thresholds.
+
+    Parameters
+    ----------
+    table : pd.DataFrame
+        Table produced by :func:`build_constituent_table`.
+    amp_threshold : float
+        Maximum acceptable absolute amplitude difference (metres).
+    phase_threshold : float
+        Maximum acceptable absolute phase difference (degrees).
+    vector_diff_threshold : float
+        Maximum acceptable vector difference (metres).
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of *table* with an ``Exceeds_Threshold`` column containing
+        comma-separated codes (``AMP``, ``PHASE``, ``VD``) or empty string.
+    """
+    result = table.copy()
+
+    flags = []
+    for _, row in result.iterrows():
+        codes = []
+        amp_diff = row.get('Amp_Diff', np.nan)
+        phase_diff = row.get('Phase_Diff', np.nan)
+        vd = row.get('Vector_Diff', np.nan)
+
+        if np.isfinite(amp_diff) and abs(amp_diff) > amp_threshold:
+            codes.append('AMP')
+        if np.isfinite(phase_diff) and abs(phase_diff) > phase_threshold:
+            codes.append('PHASE')
+        if np.isfinite(vd) and vd > vector_diff_threshold:
+            codes.append('VD')
+
+        flags.append(','.join(codes))
+
+    result['Exceeds_Threshold'] = flags
+    return result

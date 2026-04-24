@@ -42,7 +42,7 @@ dependencies = [
     "requests>=2.26.0",
     "boto3>=1.34.0",
     "s3fs>=2021.0.0",
-    "searvey @ git+https://github.com/oceanmodeling/searvey.git@USGS_api_updates",
+    "searvey @ git+https://github.com/oceanmodeling/searvey.git@master",
     "pyshp>=2.1.0",
     "intake>=0.6.4",
     "intake-xarray>=0.5.0",
@@ -70,8 +70,9 @@ dev = [
     "black>=21.0",
     "flake8>=3.9.0",
     "mypy>=0.910",
+    "types-requests>=2.31.0",
+    "types-python-dateutil>=2.9.0",
     "ipython>=7.26.0",
-    "pyinterp>=2024.11.0",
     "pre-commit>=3.0.0",
 ]
 
@@ -79,6 +80,7 @@ dev = [
 create-1dplot = "bin.visualization.create_1dplot:main"
 create-2dplot = "bin.visualization.create_2dplot:main"
 run-harmonic-analysis = "bin.tidal_analysis.run_harmonic_analysis:main"
+make-open-boundary-transect = "bin.open_boundary.make_open_boundary_transect:main"
 
 [project.urls]
 Homepage = "https://github.com/NOAA-CO-OPS/NOS_Shared_Cyberinfrastructure_and_Skill_Assessment"
@@ -116,7 +118,7 @@ extend-exclude = '''
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
+python_files = ["test_*.py", "*_test.py"]
 python_functions = ["test_*"]
 addopts = "--verbose --cov=src/ofs_skill --cov-report=html --cov-report=term-missing"
 markers = [

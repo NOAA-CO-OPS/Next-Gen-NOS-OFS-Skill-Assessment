@@ -12,7 +12,7 @@ This script replaces three different NDBC scripts:
 """
 
 from logging import Logger
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -55,7 +55,7 @@ def retrieve_ndbc_station(
         - Temperature QC removes values >= 98 or < -50 degrees C
         - Salinity QC removes values >= 98 or < 0 PSU
     """
-    data_station = []
+    data_station: Any = []
     start_date = start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:]
     end_date = end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:]
 

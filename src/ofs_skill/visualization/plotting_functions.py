@@ -32,8 +32,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import requests
 import seaborn as sns
 
+from ofs_skill.obs_retrieval.currents_bins_override import (
+    split_virtual_currents_id,
+)
+from ofs_skill.obs_retrieval.retrieve_t_and_c_station import get_station_depth
 from ofs_skill.skill_assessment import nos_metrics
 
 if TYPE_CHECKING:
@@ -119,26 +124,39 @@ def get_title(
     Generate formatted HTML plot title with station and run metadata.
 
     Creates a multi-line title including OFS name, station information,
-    node ID, NWS ID (for CO-OPS stations), and date range.
+    node ID, NWS ID (for CO-OPS water-level / temp / salt stations), and
+    date range. For currents plots (``name_var == 'cu'``) the title also
+    carries an ``Obs depth / Model depth`` annotation produced by
+    :func:`_build_depth_line`, with a ``Bin NN`` prefix for CO-OPS
+    per-bin ADCP virtual IDs.
 
     Args:
-        prop: Properties object containing run configuration
-              Must have: start_date_full, end_date_full, ofs
-        node: Model node identifier
-        station_id: Tuple of (station_number, station_name, source)
-        name_var: Variable name (used to exclude NWS lookup for currents)
-        logger: Logger instance for error messages
+        prop: Properties object containing run configuration.
+            Must have: ``start_date_full``, ``end_date_full``, ``ofs``,
+            and (for currents) ``control_files_path`` so the depth line
+            can resolve obs/model depths from the station and model
+            ctl files.
+        node: Model node identifier (integer index as string).
+        station_id: Tuple of (station_number, station_name, source).
+            For ADCP per-bin plots ``station_number`` is the virtual ID
+            ``{parent}_b{NN}``.
+        name_var: Variable name. Controls whether the NWS SHEF lookup
+            runs (wl/temp/salt) or the currents depth annotation runs
+            (cu).
+        logger: Logger instance for error messages.
 
     Returns:
-        HTML-formatted title string with bold headers and proper spacing
+        HTML-formatted title string with bold headers and proper spacing.
 
     Example:
-        >>> title = get_title(prop, '123', ('8454000', 'Providence', 'CO-OPS'), 'wl', logger)
+        >>> title = get_title(prop, '123',
+        ...     ('8454000', 'Providence', 'CO-OPS'), 'wl', logger)
 
     Notes:
-        - Handles both ISO format (YYYY-MM-DDTHH:MM:SSZ) and legacy format
-        - Retrieves NWS SHEF code from NOAA API for CO-OPS stations
-        - Uses non-breaking spaces (&nbsp;) for proper spacing in HTML
+        - Handles both ISO format (YYYY-MM-DDTHH:MM:SSZ) and legacy format.
+        - Retrieves NWS SHEF code from NOAA API for CO-OPS non-currents
+          stations.
+        - Uses non-breaking spaces (&nbsp;) for proper spacing in HTML.
     """
     # If incoming date format is YYYY-MM-DDTHH:MM:SSZ, remove 'Z' and 'T'
     if 'Z' in prop.start_date_full and 'Z' in prop.end_date_full:
@@ -169,15 +187,294 @@ def get_title(
     else:
         nwsline = ''
 
+    # Currents plots get an explicit "Obs depth | Model depth" annotation.
+    # For CO-OPS ADCP virtual IDs (``{parent}_b{NN}``) a "Bin NN" prefix
+    # is included. Obs depth is resolved from the CO-OPS bins endpoint
+    # (with distance fallback for PICS bins); model depth comes from the
+    # model_station.ctl last column (list_of_depths).
+    depth_line = _build_depth_line(
+        prop, station_id, name_var, logger
+    )
+    # Below the depth line: ADCP orientation / type (Side-Looking,
+    # Upward-Looking, …) for CO-OPS currents stations only.
+    adcp_type_line = _build_adcp_type_line(
+        prop, station_id, name_var, logger
+    )
+
     return f'<b>NOAA/NOS OFS Skill Assessment<br>' \
             f'{station_id[2]} station:&nbsp;{station_id[1]} ' \
             f'({station_id[0]})<br>' \
             f'OFS:&nbsp;{prop.ofs.upper()}&nbsp;&nbsp;&nbsp;Node ID:&nbsp;' \
             f'{node}&nbsp;&nbsp;&nbsp;' \
-            + nwsline + \
+            + nwsline + depth_line + adcp_type_line + \
             f'<br>From:&nbsp;{start_date}' \
             f'&nbsp;&nbsp;&nbsp;To:&nbsp;' \
             f'{end_date}<b>'
+
+
+_COOPS_MDAPI_URL = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/'
+
+# Cache parsed model_station.ctl lookups keyed by file path so we read
+# each file at most once per process.
+_MODEL_CTL_CACHE: dict[str, dict[str, float]] = {}
+
+# Cache obs-side station.ctl parses: {ctl_path: {station_id: (depth_m, hfb_m)}}.
+_OBS_CTL_CACHE: dict[str, dict[str, tuple[float, float]]] = {}
+
+
+def _load_obs_station_depths(
+    ctl_path: str,
+) -> dict[str, tuple[float, float]]:
+    """Return ``{station_id: (obs_depth_m, hfb_m)}`` parsed from a station ctl.
+
+    Station control file format (2 lines per station)::
+
+        <id> <source_id> "<name>"
+          <lat> <lon> <zdiff> <obs_depth> <shift> [<hfb>]
+
+    The 4th space-separated token on the coord line is the observation
+    depth in meters. The optional 6th token is ``height_from_bottom``
+    (only present for CO-OPS side-looking ADCPs); missing → 0.0.
+    """
+    if ctl_path in _OBS_CTL_CACHE:
+        return _OBS_CTL_CACHE[ctl_path]
+    result: dict[str, tuple[float, float]] = {}
+    if not os.path.isfile(ctl_path):
+        _OBS_CTL_CACHE[ctl_path] = result
+        return result
+    try:
+        with open(ctl_path, encoding='utf-8') as fh:
+            lines = fh.read().splitlines()
+        for i in range(0, len(lines) - 1, 2):
+            head = lines[i].split()
+            coord = lines[i + 1].split()
+            if not head or len(coord) < 4:
+                continue
+            station_id = head[0]
+            try:
+                depth = float(coord[3])
+            except (TypeError, ValueError):
+                continue
+            hfb = 0.0
+            if len(coord) >= 6:
+                try:
+                    hfb = float(coord[5])
+                except (TypeError, ValueError):
+                    hfb = 0.0
+            result[station_id] = (depth, hfb)
+    except OSError:
+        pass
+    _OBS_CTL_CACHE[ctl_path] = result
+    return result
+
+
+def _load_model_station_depths(ctl_path: str) -> dict[str, float]:
+    """Return ``{station_id: model_depth_m}`` parsed from a model ctl file.
+
+    The model control file format is::
+
+        <node> <layer> <lat> <lon> <station_id> <model_depth>
+
+    and ``list_of_depths`` (the last column) is the depth of the nearest
+    model layer that the paired data was sampled from. Missing files or
+    malformed lines yield an empty dict.
+    """
+    if ctl_path in _MODEL_CTL_CACHE:
+        return _MODEL_CTL_CACHE[ctl_path]
+    result: dict[str, float] = {}
+    if not os.path.isfile(ctl_path):
+        _MODEL_CTL_CACHE[ctl_path] = result
+        return result
+    try:
+        with open(ctl_path, encoding='utf-8') as fh:
+            for raw in fh:
+                parts = raw.split()
+                if len(parts) < 6:
+                    continue
+                try:
+                    result[parts[-2]] = float(parts[-1])
+                except (TypeError, ValueError):
+                    continue
+    except OSError:
+        pass
+    _MODEL_CTL_CACHE[ctl_path] = result
+    return result
+
+
+def _lookup_obs_depth(
+    station_id_tuple, prop, name_var, logger,
+) -> tuple[int | None, float, str] | None:
+    """Return ``(bin_num, obs_depth_m, orientation)`` for a cu station.
+
+    Preferred source for CO-OPS virtual-ID (per-bin) stations is the
+    MDAPI bins endpoint's ``depth`` field. For non-virtual IDs (NDBC,
+    USGS, CHS) — or when the bins endpoint returns ``depth: None`` (PICS
+    / side-looking ADCPs) — falls back to the obs station.ctl file
+    (``{parent}_{name_var}_station.ctl``) which stores the depth emitted
+    at CTL-write time.
+
+    Returns ``None`` when no depth can be resolved from either source.
+    For non-virtual IDs, ``bin_num`` is ``None``.
+    """
+    orientation = ''
+
+    # Try virtual-ID parse first.
+    parent_id: str | None
+    parent_id, bin_num = split_virtual_currents_id(station_id_tuple[0])
+    if bin_num is None:
+        parent_id = None
+
+    # Preferred source for CO-OPS ADCPs: the MDAPI bins endpoint —
+    # but only when it has an explicit per-bin ``depth``. Side-looking
+    # (PICS) ADCPs leave that null; for those we fall through to the
+    # obs station.ctl file, which the model-CTL writer has already
+    # back-patched with a water_depth - height_from_bottom resolution.
+    if (
+        bin_num is not None
+        and station_id_tuple[2] == 'CO-OPS'
+    ):
+        try:
+            payload = get_station_depth(
+                parent_id, _COOPS_MDAPI_URL, logger)
+        except (requests.exceptions.RequestException,
+                ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                'Bin metadata lookup failed for %s: %s',
+                station_id_tuple[0], exc)
+            payload = None
+
+        if payload and payload.get('bins'):
+            for entry in payload['bins']:
+                try:
+                    entry_num = entry.get('num', entry.get('bin'))
+                    if entry_num is None or int(entry_num) != bin_num:
+                        continue
+                    depth_val = entry.get('depth')
+                    orientation = str(
+                        entry.get('orientation', '') or '')
+                    if depth_val is not None:
+                        # A resolvable MDAPI per-bin depth only comes
+                        # from upward-looking (bottom-mounted) ADCPs;
+                        # side-looking (PICS) bins report depth=null.
+                        # Fill in the orientation when the endpoint
+                        # omitted it so the title can label the rig.
+                        if not orientation:
+                            orientation = 'up'
+                        return bin_num, float(depth_val), orientation
+                    # depth is None: leave MDAPI loop, try the CTL.
+                    break
+                except (TypeError, ValueError):
+                    continue
+
+    # Fallback: obs station.ctl file. Handles NDBC/USGS/CHS and the
+    # PICS case where the MDAPI has no depth (CTL carries the resolved
+    # value written by write_ofs_ctlfile._resolve_side_looking_depths).
+    ctl_dir = getattr(prop, 'control_files_path', None)
+    if ctl_dir:
+        ctl_path = os.path.join(
+            ctl_dir, f'{prop.ofs}_{name_var}_station.ctl')
+        table = _load_obs_station_depths(ctl_path)
+        entry = table.get(str(station_id_tuple[0]))
+        if entry is not None:
+            depth_val, hfb = entry
+            # CTL-only path loses MDAPI orientation; presence of hfb is
+            # the CTL-local signal for side-looking (PICS) ADCPs.
+            if not orientation and hfb > 0:
+                orientation = 'side-looking'
+            return bin_num, float(depth_val), orientation
+
+    return None
+
+
+def _build_depth_line(prop, station_id, name_var, logger):
+    """HTML fragment showing obs + model depth (+ bin number) for cu plots.
+
+    Returns an empty string for non-currents plots or when no depth info
+    can be resolved. Format::
+
+        <br>Bin NN — Obs depth X.X m  —  Model depth Y.Y m
+    """
+    if name_var != 'cu':
+        return ''
+
+    obs_info = _lookup_obs_depth(station_id, prop, name_var, logger)
+    bin_num = None
+    obs_depth: float | None = None
+    if obs_info is not None:
+        bin_num, obs_depth, _orientation = obs_info
+
+    # Resolve model depth from the model_station.ctl / model.ctl file.
+    model_depth: float | None = None
+    ctl_dir = getattr(prop, 'control_files_path', None)
+    if ctl_dir:
+        for suffix in ('_model_station.ctl', '_model.ctl'):
+            ctl_path = os.path.join(
+                ctl_dir, f'{prop.ofs}_{name_var}{suffix}')
+            table = _load_model_station_depths(ctl_path)
+            if str(station_id[0]) in table:
+                model_depth = table[str(station_id[0])]
+                break
+
+    if obs_depth is None and model_depth is None:
+        return ''
+
+    parts = []
+    if bin_num is not None:
+        parts.append(f'Bin&nbsp;{bin_num:02d}')
+    if obs_depth is not None:
+        parts.append(
+            f'Obs&nbsp;depth&nbsp;{abs(obs_depth):.1f}&nbsp;m')
+    if model_depth is not None:
+        parts.append(
+            f'Model&nbsp;depth&nbsp;{abs(model_depth):.1f}&nbsp;m')
+
+    return '<br>' + '&nbsp;—&nbsp;'.join(parts)
+
+
+def _format_adcp_orientation_label(raw: str) -> str:
+    """Map a raw CO-OPS MDAPI orientation value to a display label.
+
+    The MDAPI ``orientation`` field is a free-form short string; normalize
+    the common encodings to human-readable ADCP types. Returns '' when
+    the input is empty or unrecognized and cannot be cleanly displayed.
+    """
+    if not raw:
+        return ''
+    low = raw.strip().lower()
+    if not low:
+        return ''
+    if low.startswith('horiz') or 'side' in low or low in ('h',):
+        return 'Side-Looking ADCP'
+    if low.startswith('up') or low in ('u',):
+        return 'Upward-Looking ADCP (bottom-mounted)'
+    if low.startswith('down') or low in ('d',):
+        return 'Downward-Looking ADCP'
+    if low.startswith('vert') or low in ('v',):
+        return 'Vertical ADCP'
+    return raw.strip().title()
+
+
+def _build_adcp_type_line(prop, station_id, name_var, logger) -> str:
+    """HTML fragment (``<br>Side-Looking ADCP``) for a CO-OPS ADCP station.
+
+    Returns an empty string for non-currents plots, non-CO-OPS sources,
+    or when the orientation cannot be resolved. ``_lookup_obs_depth`` is
+    responsible for populating the raw orientation string (from MDAPI
+    for vertical ADCPs, or from the station.ctl ``hfb`` presence for
+    side-looking PICS ADCPs).
+    """
+    if name_var != 'cu':
+        return ''
+    if len(station_id) < 3 or station_id[2] != 'CO-OPS':
+        return ''
+
+    obs_info = _lookup_obs_depth(station_id, prop, name_var, logger)
+    if obs_info is None:
+        return ''
+    label = _format_adcp_orientation_label(obs_info[2])
+    if not label:
+        return ''
+    return f'<br>{label}'
 
 
 def get_error_range(

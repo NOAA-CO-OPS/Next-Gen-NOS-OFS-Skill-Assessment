@@ -45,7 +45,8 @@ Arguments:
  -ws whichcast, --Whichcast"
                        'Nowcast', 'Forecast_A', 'Forecast_B'
  -so stationowner, --Station_Owner" [optional]
-                       'NDBC', 'CO-OPS', 'USGS'
+                       'NDBC', 'CO-OPS', 'USGS', 'CHS'
+ -c CONFIG, --config CONFIG    Path to configuration file (default: conf/ofs_dps.conf)
 Output:
 Output:
 Name                 Description
@@ -63,26 +64,30 @@ Remarks:
 """
 
 import argparse
+import copy
 import gc
 import logging
 import logging.config
 import os
 import sys
 import warnings
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from ofs_skill.model_processing import (
     check_model_files,
-    get_fcst_cycle,
+    get_fcst_dates,
+    get_fcst_hours,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
 )
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
 from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector
 
@@ -133,6 +138,222 @@ def ofs_ctlfile_read(prop, name_var, logger):
     {name_var} from {prop.control_files_path}')
     return None
 
+def _process_station_plot(
+        i, read_ofs_ctl_file, read_station_ctl_file, prop, var_info, logger):
+    """
+    Process a single station's plots. Designed to run inside a
+    ThreadPoolExecutor.  Returns the station ID on success, None on failure.
+
+    A shallow copy of ``prop`` is used so that ``prop.whichcast`` can be
+    set per-cast without racing against other threads.
+    """
+    station_prop = copy.deepcopy(prop)
+    station_id_val = read_ofs_ctl_file[-1][i]
+
+    try:
+        obs_row = [y[0] for y in read_station_ctl_file[0]].index(
+            station_id_val)
+        if read_station_ctl_file[0][obs_row][0] != station_id_val:
+            raise ValueError('Station ID mismatch')
+    except (ValueError, IndexError):
+        logger.error('Could not match station ID %s between control '
+                     'file in get_node_ofs!', station_id_val)
+        return None
+
+    now_fores_paired = []
+    deltat = 0
+    for cast in station_prop.whichcasts:
+        paired_data = None
+        current_cast = cast.lower()
+        station_prop.whichcast = current_cast
+
+        pair_file = (
+            f'{station_prop.data_skill_1d_pair_path}/'
+            f'{station_prop.ofs}_{var_info[1]}_{station_id_val}_'
+            f'{read_ofs_ctl_file[1][i]}_{current_cast}_'
+            f'{station_prop.ofsfiletype}_pair.int'
+        )
+
+        if not os.path.isfile(pair_file):
+            logger.error(
+                'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found '
+                'in %s. ',
+                station_prop.ofs, var_info[1], station_id_val,
+                read_ofs_ctl_file[1][i], current_cast,
+                station_prop.ofsfiletype,
+                station_prop.visuals_1d_station_path)
+        else:
+            paired_data = pd.read_csv(
+                pair_file,
+                sep=r'\s+', names=var_info[2],
+                header=0)
+            # Format paired data dates
+            paired_data['DateTime'] = pd.to_datetime(
+                paired_data[['year', 'month', 'day', 'hour', 'minute']])
+            # Read time series key
+            filename = (
+                f'{station_prop.ofs}_{current_cast}_filename_key.csv')
+            filepath = (
+                Path(station_prop.data_model_1d_node_path) / filename
+            ).as_posix()
+            try:
+                serieskey = pd.read_csv(filepath)
+                serieskey['DateTime'] = pd.to_datetime(
+                    serieskey['DateTime'])
+                paired_data = pd.merge(
+                    paired_data, serieskey, on='DateTime', how='inner')
+                if len(paired_data) != len(serieskey):
+                    logger.warning('Filename key and time series have different '
+                                   'lengths!')
+            except FileNotFoundError:
+                logger.error(
+                    'No model series filename key found! Skipping')
+            except Exception as ex:
+                logger.error(
+                    'Exception caught when loading and merging '
+                    'model filename key! Error: %s', ex)
+            logger.info(
+                'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found '
+                'in %s',
+                station_prop.ofs, var_info[1], station_id_val,
+                read_ofs_ctl_file[1][i], current_cast,
+                station_prop.ofsfiletype,
+                station_prop.visuals_1d_station_path)
+        if paired_data is not None:
+            # Subsample time series if using 6-minute resolution
+            deltat = (paired_data['DateTime'].iloc[-1]
+                      - paired_data['DateTime'].iloc[0]).days
+            if (station_prop.ofsfiletype == 'stations'
+                    and deltat > 185):
+                paired_data = paired_data.loc[
+                    paired_data.groupby(
+                        ['year', 'month', 'day', 'hour'],
+                        observed=True)['minute'].idxmin()]
+            now_fores_paired.append(paired_data)
+
+    if len(now_fores_paired) > 0:
+        try:
+            if var_info[1] in ('wl', 'temp', 'salt'):
+                logger.info(
+                    'Trying to build timeseries %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_scalar.oned_scalar_plot(
+                    now_fores_paired, var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+            elif var_info[1] == 'cu':
+                logger.info(
+                    'Trying to build timeseries %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_vector.oned_vector_plot1(
+                    now_fores_paired, var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+
+                logger.info(
+                    'Trying to build wind rose %s plot for paired '
+                    'dataset: %s_%s_%s_%s_%s_%s_pair.int',
+                    var_info[0], station_prop.ofs, var_info[1],
+                    station_id_val, read_ofs_ctl_file[1][i],
+                    station_prop.whichcast, station_prop.ofsfiletype)
+                plotting_vector.oned_vector_plot2b(
+                    plotting_vector.oned_vector_plot2a(
+                        now_fores_paired, logger),
+                    var_info[1],
+                    [station_id_val,
+                     read_station_ctl_file[0][obs_row][2],
+                     read_station_ctl_file[0][obs_row][1].split('_')[-1],
+                     read_station_ctl_file[1][obs_row][2]],
+                    read_ofs_ctl_file[1][i],
+                    station_prop, logger)
+                if deltat <= -1:
+                    logger.info(
+                        'Trying to build stick %s plot for paired '
+                        'dataset: %s_%s_%s_%s_%s_pair.int',
+                        var_info[0], station_prop.ofs, var_info[1],
+                        station_id_val, read_ofs_ctl_file[1][i],
+                        station_prop.whichcast)
+                    plotting_vector.oned_vector_plot3(
+                        now_fores_paired, var_info[1],
+                        [station_id_val,
+                         read_station_ctl_file[0][obs_row][2],
+                         read_station_ctl_file[0][obs_row][1].split(
+                             '_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
+                        read_ofs_ctl_file[1][i],
+                        station_prop, logger)
+                    logger.info(
+                        'Trying to build stick %s plot for vector '
+                        'difference: %s_%s_%s_%s_%s_%s_pair.int',
+                        var_info[0], station_prop.ofs, var_info[1],
+                        station_id_val, read_ofs_ctl_file[1][i],
+                        station_prop.whichcast,
+                        station_prop.ofsfiletype)
+                    plotting_vector.oned_vector_diff_plot3(
+                        now_fores_paired, var_info[1],
+                        [station_id_val,
+                         read_station_ctl_file[0][obs_row][2],
+                         read_station_ctl_file[0][obs_row][1].split(
+                             '_')[-1],
+                         read_station_ctl_file[1][obs_row][2]],
+                        read_ofs_ctl_file[1][i],
+                        station_prop, logger)
+        except Exception as ex:
+            logger.info(
+                'Fail to create the plot  '
+                '---  %s ...Continuing to next plot', ex)
+            return None
+
+    return station_id_val
+
+
+def _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger):
+    """
+    Pre-check for missing paired data files and call get_skill()
+    sequentially for any casts that need it.  This must happen BEFORE
+    parallel dispatch because get_skill() mutates shared state
+    (prop.whichcast) and creates control files.
+    """
+    casts_needing_skill = set()
+    for i in range(len(read_ofs_ctl_file[1])):
+        for cast in prop.whichcasts:
+            current_cast = cast.lower()
+            pair_file = (
+                f'{prop.data_skill_1d_pair_path}/'
+                f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
+                f'{read_ofs_ctl_file[1][i]}_{current_cast}_'
+                f'{prop.ofsfiletype}_pair.int'
+            )
+            if not os.path.isfile(pair_file):
+                if (prop.ofsfiletype == 'fields'
+                        or read_ofs_ctl_file[1][i] >= 0):
+                    casts_needing_skill.add(current_cast)
+
+    for current_cast in sorted(casts_needing_skill):
+        logger.info(
+            'Pre-generating paired data via get_skill for cast %s',
+            current_cast)
+        prop.whichcast = current_cast
+        if prop.start_date_full.find('T') == -1:
+            prop.start_date_full = prop.start_date_full_before
+            prop.end_date_full = prop.end_date_full_before
+        get_skill(prop, logger)
+
+
 def create_1dplot_2nd_part(
         read_ofs_ctl_file, prop, var_info, logger):
     '''
@@ -140,13 +361,14 @@ def create_1dplot_2nd_part(
     it had to be split from the original function due to size (PEP8)
     '''
     logger.info(
-        f'Searching for paired dataset for {prop.ofs}, variable {var_info[0]}')
+        f'Searching for paired dataset for {prop.ofs}, variable '
+        f'{var_info[0]}')
 
     # Read obs station ctl files
     try:
         read_station_ctl_file = station_ctl_file_extract(
-            r'' + prop.control_files_path + '/' + prop.ofs + '_' + \
-                var_info[1] + '_station.ctl'
+            r'' + prop.control_files_path + '/' + prop.ofs + '_'
+            + var_info[1] + '_station.ctl'
         )
         logger.info(
             'Station ctl file (%s_%s_station.ctl) found in get_title. ',
@@ -157,153 +379,140 @@ def create_1dplot_2nd_part(
         logger.error('Station ctl file not found.')
         sys.exit(-1)
 
-    for i in range(len(read_ofs_ctl_file[1])):
-        try:
-            obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                index(read_ofs_ctl_file[-1][i])
-            if read_station_ctl_file[0][obs_row][0] != \
-                read_ofs_ctl_file[-1][i]:
-                raise Exception
-        except Exception:
-            logger.error('Could not match station ID %s between control '
-                         'file in get_node_ofs!', read_ofs_ctl_file[-1][i])
-            continue
-        now_fores_paired = []
-        for cast in prop.whichcasts:
-            paired_data = None
-            # Here we try to open the paired data set, if not found, create.
-            prop.whichcast = cast.lower()
-            if (os.path.isfile(
-                    f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int'
-                ) is False):
-                logger.error(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found in %s. ',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-                logger.info(
-                    'Calling Skill Assessment module for whichcast %s. ',
-                    prop.whichcast
-                )
+    # Ensure all paired data files exist before parallel dispatch.
+    # get_skill() mutates prop and creates shared control files, so it
+    # must run sequentially.
+    _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger)
 
-                if prop.ofsfiletype == 'fields' or read_ofs_ctl_file[1][i] >= 0:
-                    get_skill(prop, logger)
+    parallel_config = get_parallel_config(logger)
+    num_stations = len(read_ofs_ctl_file[1])
+    use_parallel = (parallel_config.get('parallel_plotting', True)
+                    and num_stations > 1)
 
-
-            if (os.path.isfile(
-                    f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int'
-                ) is False):
-                logger.error(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) not found in %s. ',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-
-            else:
-                paired_data = pd.read_csv(
-                    r'' + f'{prop.data_skill_1d_pair_path}/'
-                    f'{prop.ofs}_{var_info[1]}_{read_ofs_ctl_file[-1][i]}_'
-                    f'{read_ofs_ctl_file[1][i]}_{prop.whichcast}_'
-                    f'{prop.ofsfiletype}_pair.int',
-                    sep=r'\s+', names=var_info[2],
-                    header=0) #change to skip header for human readability
-                #print(read_ofs_ctl_file[-1][i])
-                paired_data['DateTime'] = pd.to_datetime(
-                    paired_data[['year', 'month', 'day', 'hour', 'minute']])
-                logger.info(
-                    'Paired dataset (%s_%s_%s_%s_%s_%s_pair.int) found in %s',
-                    prop.ofs, var_info[1], read_ofs_ctl_file[-1][i],
-                    read_ofs_ctl_file[1][i], prop.whichcast, prop.ofsfiletype,
-                    prop.visuals_1d_station_path)
-            if paired_data is not None:
-                # NEW! subsample time series if using 6-minute resolution from stations files
-                deltat = (paired_data['DateTime'].iloc[-1] - paired_data['DateTime'].iloc[0]).days
-                if (prop.ofsfiletype == 'stations'
-                    and (deltat > 185 #or var_info[1] == 'cu'
-                         )):
-                    paired_data = paired_data.loc[paired_data.groupby(['year','month','day','hour'],
-                                                                      observed=True)
-                                                                    ['minute'].idxmin()]
-                now_fores_paired.append(paired_data)
-
-        if len(now_fores_paired) > 0:
+    if use_parallel:
+        max_workers = min(num_stations,
+                          parallel_config.get('plot_workers', 6))
+        logger.info('Plotting %d stations in parallel with %d workers',
+                    num_stations, max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for i in range(num_stations):
+                prop_copy = copy.copy(prop)
+                futures[executor.submit(
+                    _process_station_plot, i, read_ofs_ctl_file,
+                    read_station_ctl_file, prop_copy, var_info, logger
+                )] = i
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        logger.info('Completed plot for station %s',
+                                    result)
+                except Exception as ex:
+                    logger.error(
+                        'Unhandled exception for station index %d: %s',
+                        idx, ex)
+    else:
+        logger.info('Plotting %d stations sequentially', num_stations)
+        for i in range(num_stations):
             try:
-                if var_info[1] == 'wl' or var_info[1] == 'temp' or var_info[
-                    1] == 'salt':
-                    logger.info(
-                        'Trying to build timeseries %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                        prop.whichcast, prop.ofsfiletype)
-                    plotting_scalar.oned_scalar_plot(
-                        now_fores_paired, var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop,logger)
-                elif var_info[1] == 'cu':
-                    logger.info(
-                        'Trying to build timeseries %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i],
-                        read_ofs_ctl_file[1][i],
-                        prop.whichcast,prop.ofsfiletype)
-                    plotting_vector.oned_vector_plot1(
-                        now_fores_paired, var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop,logger)
-
-                    logger.info(
-                        'Trying to build wind rose %s plot for paired dataset: \
-    %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                        read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                        prop.whichcast,prop.ofsfiletype)
-                    plotting_vector.oned_vector_plot2b(
-                        plotting_vector.oned_vector_plot2a(now_fores_paired, logger),
-                        var_info[1],
-                        [read_ofs_ctl_file[-1][i],
-                         read_station_ctl_file[0][obs_row][2],
-                         read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                        read_ofs_ctl_file[1][i],
-                        prop, logger)
-                    if deltat <= -1:
-                        logger.info(
-                            'Trying to build stick %s plot for paired dataset: \
-        %s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                            read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i], prop.whichcast)
-                        plotting_vector.oned_vector_plot3(
-                            now_fores_paired, var_info[1],
-                            [read_ofs_ctl_file[-1][i],
-                              read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                            read_ofs_ctl_file[1][i],
-                            prop,logger)
-                        logger.info(
-                            'Trying to build stick %s plot for vector difference: \
-        %s_%s_%s_%s_%s_%s_pair.int', var_info[0], prop.ofs, var_info[1],
-                            read_ofs_ctl_file[-1][i], read_ofs_ctl_file[1][i],
-                            prop.whichcast, prop.ofsfiletype)
-                        plotting_vector.oned_vector_diff_plot3(
-                            now_fores_paired, var_info[1],
-                            [read_ofs_ctl_file[-1][i],
-                              read_station_ctl_file[0][obs_row][2],
-                              read_station_ctl_file[0][obs_row][1].split('_')[-1]],
-                            read_ofs_ctl_file[1][i],
-                            prop,logger)
+                result = _process_station_plot(
+                    i, read_ofs_ctl_file, read_station_ctl_file,
+                    prop, var_info, logger)
+                if result is not None:
+                    logger.info('Completed plot for station %s', result)
             except Exception as ex:
-                logger.info(
-                    'Fail to create the plot  \
-    ---  %s ...Continuing to next plot', ex)
+                logger.error(
+                    'Plot failed for station index %d: %s', i, ex)
+
+
+def _process_forecast_cycle(cycle_hr, prop_template, logger):
+    """
+    Run the full 1D plotting pipeline for a single forecast_a cycle.
+
+    This is designed to be dispatched in parallel via ThreadPoolExecutor.
+    Each call receives a deep copy of ``prop_template`` so that date and
+    forecast_hr mutations are isolated from other cycles.
+
+    Parameters
+    ----------
+    cycle_hr : int
+        Forecast cycle hour (e.g. 0, 6, 12, 18).
+    prop_template : ModelProperties
+        A deep copy of the fully-validated prop object.  This function
+        will mutate ``start_date_full``, ``end_date_full``, and
+        ``forecast_hr`` on the copy.
+    logger : logging.Logger
+        Logger instance.
+    """
+    prop_copy = copy.deepcopy(prop_template)
+    forecast_hr_str = f'{cycle_hr:02d}z'
+    prop_copy.forecast_hr = forecast_hr_str
+
+    # Recompute start/end dates for this specific cycle using the
+    # original user-supplied start date (before any single-cycle
+    # adjustment that happened during validation).
+    prop_copy.start_date_full, prop_copy.end_date_full = get_fcst_dates(
+        prop_copy, logger)
+    prop_copy.forecast_hr = (
+        prop_copy.start_date_full.split('T')[1][0:2] + 'z')
+
+    # Update the _before snapshots so that ofs_ctlfile_read and
+    # _ensure_paired_data_exists can fall back to them when needed.
+    prop_copy.start_date_full_before = prop_copy.start_date_full
+    prop_copy.end_date_full_before = prop_copy.end_date_full
+
+    logger.info('Forecast cycle %02dZ: period %s to %s',
+                cycle_hr, prop_copy.start_date_full,
+                prop_copy.end_date_full)
+
+    # Run variable plotting for this cycle
+    for variable in prop_copy.var_list:
+        _plot_variable_for_cycle(variable, prop_copy, logger)
+
+    logger.info('Completed forecast cycle %02dZ', cycle_hr)
+    return cycle_hr
+
+
+def _plot_variable_for_cycle(variable, prop, logger):
+    """
+    Plot a single variable for a given prop configuration.
+
+    Mirrors the _plot_variable inner function in create_1dplot but is
+    a module-level function so it can be called from
+    _process_forecast_cycle.
+    """
+    if variable == 'water_level':
+        name_var = 'wl'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Water Level plots.')
+    elif variable == 'water_temperature':
+        name_var = 'temp'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Water Temperature plots.')
+    elif variable == 'salinity':
+        name_var = 'salt'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS', 'OFS', 'BIAS']
+        logger.info('Creating Salinity plots.')
+    elif variable == 'currents':
+        name_var = 'cu'
+        list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
+                            'minute', 'OBS_SPD', 'OFS_SPD', 'BIAS_SPD',
+                            'OBS_DIR', 'OFS_DIR', 'BIAS_DIR']
+        logger.info('Creating Currents plots.')
+    else:
+        return
+
+    var_info = [variable, name_var, list_of_headings]
+
+    read_ofs_ctl_file = ofs_ctlfile_read(prop, name_var, logger)
+    if read_ofs_ctl_file is not None:
+        create_1dplot_2nd_part(
+            read_ofs_ctl_file, prop, var_info, logger)
 
 
 def create_1dplot(prop, logger):
@@ -311,8 +520,9 @@ def create_1dplot(prop, logger):
     This is the main function for plotting 1d paired datasets
     Specify defaults (can be overridden with command line options)
     '''
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
+        config_file = utils.Utils(_conf).get_config_file()
         log_config_file = 'conf/logging.conf'
         log_config_file = os.path.join(Path(prop.path), log_config_file)
 
@@ -331,11 +541,11 @@ def create_1dplot(prop, logger):
 
     logger.info('--- Starting Visualization Process ---')
 
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Retrieve datum list from config file
-    prop.datum_list = (utils.Utils().read_config_section('datums', logger)\
+    prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
-    conf_settings = utils.Utils().read_config_section('settings', logger)
+    conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
 
 
@@ -350,38 +560,39 @@ def create_1dplot(prop, logger):
 
     logger.info('Starting parameter validation...')
 
-    # Do forecast_a start and end date reshuffle
-    if 'forecast_a' in prop.whichcasts:
-        if prop.forecast_hr is None:
-            error_message = (
-                'prop.forecast_hr is required if prop.whichcast is '
-                'forecast_a. Abort!')
-            logger.error(error_message)
+    # Validate whichcast values
+    valid_whichcasts = {'nowcast', 'forecast_a', 'forecast_b', 'hindcast'}
+    for wc in prop.whichcasts:
+        if wc.lower() not in valid_whichcasts:
+            logger.error("Invalid whichcast value: '%s'. "
+                         'Valid values: %s. Abort!',
+                         wc, sorted(valid_whichcasts))
             sys.exit(-1)
-        elif prop.forecast_hr is not None:
-            try:
-                int(prop.forecast_hr[:-2])
-            except ValueError:
-                error_message = (f'Please check Forecast Hr format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
-            if prop.forecast_hr[-2:] == 'hr':
-                prop.start_date_full, prop.end_date_full =\
-                get_fcst_cycle(prop.ofs,prop.start_date_full,prop.forecast_hr,logger)
-                logger.info(f'Forecast_a: end date reassigned to '
-                                 f'{prop.end_date_full}')
-            else:
-                error_message = (f'Please check Forecast Hr (hr) format - '
-                                 f'{prop.forecast_hr}. Abort!')
-                logger.error(error_message)
-                sys.exit(-1)
 
+    # Save original (user-supplied) start date before any forecast_a
+    # adjustment.  _process_forecast_cycle uses this to independently
+    # recompute dates for each cycle.
+    prop.start_date_full_original = prop.start_date_full
+
+    # Do forecast_a start and end date reshuffle
+
+    if 'forecast_a' in prop.whichcasts:
+        if prop.forecast_hr is not None:
+            prop.start_date_full, prop.end_date_full =\
+            get_fcst_dates(prop, logger)
+            prop.forecast_hr = prop.start_date_full.split('T')[1][0:2] + 'z'
+            logger.info(f'Forecast_a: start date reassigned to '
+                             f'{prop.start_date_full}')
+            logger.info(f'Forecast_a: end date reassigned to '
+                             f'{prop.end_date_full}')
+        else:
+            raise SystemExit(1)
     # Start Date and End Date validation
     # Enforce end date for whichcasts other than forecast_a
-    if prop.end_date_full is None:
-        print('If not using forecast_a, you must set an end date! Abort.')
-        sys.exit(-1)
+    if prop.end_date_full is None or prop.start_date_full is None:
+        logger.error('If not using forecast_a, you must set start and end dates! '
+                     'Abort.')
+        raise SystemExit(1)
     try:
         prop.start_date_full_before = prop.start_date_full
         prop.end_date_full_before = prop.end_date_full
@@ -392,15 +603,20 @@ def create_1dplot(prop, logger):
                          f'{prop.start_date_full}, End Date - '
                          f'{prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
-
+        raise SystemExit(1)
     if datetime.strptime(
             prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ') > datetime.strptime(
         prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ'):
         error_message = (f'End Date {prop.end_date_full} '
                          f'is before Start Date {prop.end_date_full}. Abort!')
         logger.error(error_message)
-        sys.exit(-1)
+        raise SystemExit(1)
+    if datetime.strptime(
+            prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=UTC) > datetime.now(UTC):
+        logger.error('Start date is in the future! Unless you have a time machine, '
+                     'please set a start date that is before the current date.'
+                     )
+        raise SystemExit(1)
 
     if prop.path is None:
         prop.path = dir_params['home']
@@ -421,6 +637,10 @@ def create_1dplot(prop, logger):
                          f'the folder {ofs_extents_path}. Abort!')
         logger.error(error_message)
         sys.exit(-1)
+    if prop.ofs == 'stofs_2d_glo':
+        logger.warning('IMPORTANT NOTE: STOFS-2D-Global currently uses a '
+                       'copy of the GOMOFS extent file for testing purposes. '
+                       'This may cause issues with some workflows!')
 
     # Datum validations!
     if prop.datum not in prop.datum_list:
@@ -451,8 +671,11 @@ def create_1dplot(prop, logger):
                          'Switching to IGLD...', prop.datum, prop.ofs)
             prop.datum = 'IGLD85'
     except TypeError:
-        logger.error('Failure checking for datum netcdf file on the NODD S3 '
-                     'bucket! Datum conversions may fail. Continuing...')
+        if (vdatums == -9995) and prop.ofs.lower() in ('stofs_2d_glo'):
+            logger.info('No vdatum file for STOFS-2D-Global, as expected.')
+        else:
+            logger.error('Failure checking for datum netcdf file on the NODD S3 '
+                        'bucket! Datum conversions may fail. Continuing...')
 
     # Date-gate for forecast horizon functionality
     if ((datetime.strptime(prop.end_date_full,'%Y-%m-%dT%H:%M:%SZ')-
@@ -565,15 +788,17 @@ def create_1dplot(prop, logger):
     # Before starting, let's check if all necessary model files are
     # available. If not, program will exit. Or, if exception, program will
     # continue onwards but not before shouting a warning at you :)
-    try:
-        check_model_files(prop,logger)
-        # if fails call nodd_otf
-    except Exception as e_x:
-        logger.error('Error caught in check_model_files! %s', e_x)
-        logger.warning('Could not verify if all necessary model files '
-                    'are present! Check final time series for accuracy.')
+    if prop.filecheck:
+        try:
+            check_model_files(prop,logger)
+            # if fails call nodd_otf
+        except Exception as e_x:
+            logger.error('Error caught in check_model_files! %s', e_x)
+            logger.warning('Could not verify if all necessary model files '
+                        'are present! Check final time series for accuracy.')
 
-    for variable in prop.var_list:
+    def _plot_variable(variable, p):
+        """Plot a single variable."""
         if variable == 'water_level':
             name_var = 'wl'
             list_of_headings = ['Julian', 'year', 'month', 'day', 'hour',
@@ -600,12 +825,64 @@ def create_1dplot(prop, logger):
 
         # Read OFS model ctl files
         read_ofs_ctl_file = ofs_ctlfile_read(
-            prop, name_var, logger)
+            p, name_var, logger)
 
         if read_ofs_ctl_file is not None:
             create_1dplot_2nd_part(
-                read_ofs_ctl_file, prop, var_info,
+                read_ofs_ctl_file, p, var_info,
                 logger)
+
+    # --- Forecast cycle parallelism for forecast_a mode ---
+    parallel_config = get_parallel_config(logger)
+    if 'forecast_a' in prop.whichcast:
+        #_, forecast_cycles = get_fcst_hours(prop.ofs)
+        forecast_cycles = [int(prop.forecast_hr[:-1])]
+        use_parallel_cycles = (
+            parallel_config.get('parallel_forecast_cycles', True)
+            and len(forecast_cycles) > 1)
+
+        if use_parallel_cycles:
+            max_cycle_workers = min(len(forecast_cycles), 4)
+            logger.info(
+                'Processing %d forecast cycles in parallel with %d '
+                'workers', len(forecast_cycles), max_cycle_workers)
+            with ThreadPoolExecutor(
+                    max_workers=max_cycle_workers) as executor:
+                futures = {}
+                for cycle_hr in forecast_cycles:
+                    futures[executor.submit(
+                        _process_forecast_cycle, int(cycle_hr),
+                        prop, logger)] = int(cycle_hr)
+                for future in as_completed(futures):
+                    cycle = futures[future]
+                    try:
+                        future.result()
+                        logger.info(
+                            'Completed forecast cycle %02dZ', cycle)
+                    except Exception as ex:
+                        logger.error(
+                            'Forecast cycle %02dZ failed: %s',
+                            cycle, ex)
+        else:
+            logger.info('Processing %d forecast cycles sequentially',
+                        len(forecast_cycles))
+            for cycle_hr in forecast_cycles:
+                try:
+                    _process_forecast_cycle(
+                        int(cycle_hr), prop, logger)
+                except Exception as ex:
+                    logger.error(
+                        'Forecast cycle %02dZ failed: %s',
+                        int(cycle_hr), ex)
+    else:
+        # Non-forecast_a modes: variable plotting runs sequentially here
+        # because each variable's ofs_ctlfile_read() may trigger
+        # get_skill() -> get_node_ofs() which loads the model. Variable
+        # parallelism is handled inside get_node_ofs and get_skill where
+        # the model is loaded once and shared.
+        for variable in prop.var_list:
+            _plot_variable(variable, prop)
+
     return logger
 
 
@@ -656,9 +933,10 @@ if __name__ == '__main__':
         '-f',
         '--Forecast_Hr',
         required=False,
-        default='00hr',
+        default='now',
         help='Specify model cycle to assess. Used with forecast_a mode only: '
-        "'02hr', '06hr', '12hr', ... ", )
+        "'02z', '06Z', '12z'; use 'now' to assess the most recent available "
+        'model forecast cycle.', )
     parser.add_argument(
         '-so',
         '--Station_Owner',
@@ -680,13 +958,31 @@ if __name__ == '__main__':
         help='Which variables do you want to skill assess? Options are: '
             'water_level, water_temperature, salinity, and currents. Choose '
             'any combination. Default (no argument) is all variables.')
+    parser.add_argument(
+        '-cb',
+        '--Currents_Bins_Csv',
+        required=False,
+        default=None,
+        help='Optional path to a CSV that pins which CO-OPS ADCP bins are '
+             'processed and/or overrides their depth/orientation/name. '
+             'Columns: station_id,bin,depth,orientation,name. See the wiki: '
+             'https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/CO%E2%80%90OPS-ADCP-current-processing')
+    parser.add_argument(
+        '-df',
+        '--Disable_Model_File_Check',
+        action='store_false',
+        help='Disables the function that checks for availability of model '
+        'output files and exits if they are not present. Disable the checker '
+        'in the special case where custom .prd and .obs files are user-provided '
+        'but there are no corresponding model output NetCdfs.')
+    parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
 
     args = parser.parse_args()
 
-    # Launch GUI to accept argument input if no required args are present
-    if (args.OFS is None or
-        args.StartDate_full is None
-        or args.EndDate_full is None):
+    # Launch GUI to accept argument input if no OFS args are present
+    if args.OFS is None:
         args = create_gui.create_gui(parser)
         gc.collect() # garbage collect from GUI window not in main thread
 
@@ -702,6 +998,11 @@ if __name__ == '__main__':
     prop1.horizonskill = args.Horizon_Skill
     prop1.forecast_hr = args.Forecast_Hr
     prop1.var_list = args.Var_Selection
+    prop1.currents_bins_csv = args.Currents_Bins_Csv
+    prop1.filecheck = args.Disable_Model_File_Check
+    prop1.config_file = args.config
+
+
     # This can only be changed if directly running get_node_ofs.py!
     prop1.user_input_location = False
 
