@@ -139,10 +139,12 @@ def build_constituent_table(
     # Reference constants
     # ------------------------------------------------------------------
     if data_type == 'water_level':
+        assert accepted_constants is not None  # narrowed by earlier check
         ref_amp_map = accepted_constants['amplitudes']
         ref_phase_map = accepted_constants['phases']
     else:
         _log.info('Running obs HA for station %s (currents).', station_id)
+        assert obs_time is not None and obs_values is not None  # narrowed above
         obs_result = harmonic_analysis(
             time=obs_time,
             values=obs_values,

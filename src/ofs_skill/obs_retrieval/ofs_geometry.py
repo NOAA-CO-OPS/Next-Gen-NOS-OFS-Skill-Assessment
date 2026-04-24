@@ -165,6 +165,11 @@ def ofs_geometry(
             )
         else:
             response_2 = get_response_2(first)
+            if response_2 is None:
+                raise ValueError(
+                    'Neither get_response_1 nor get_response_2 could parse '
+                    'the shapefile polygon structure.'
+                )
             lat_1, lat_2, lon_1, lon_2, ofs_mask = (
                 response_2[0],
                 response_2[1],
