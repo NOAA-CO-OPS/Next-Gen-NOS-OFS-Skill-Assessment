@@ -264,7 +264,7 @@ def construct_expected_files(prop: Any, dir_path: str, logger: Logger) -> list[s
     --------
     >>> files = construct_expected_files(prop, '../cbofs/netcdf/2025/12/15', logger)
     """
-    files = []
+    files: list[str] = []
     dir_path = Path(dir_path).as_posix()
     # Extract date from directory path
     # Path format: .../netcdf/YYYY/MM/DD or .../netcdf/YYYYMM or .../netcdf/{ofs}.YYYYMMDD (STOFS)
@@ -576,7 +576,7 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
                 logger.warning(
                     'Model file path ' + model_dir + ' not found, and backup '
                     + backup_model_dir + ' also not found.')
-                model_dir = None
+                model_dir = ''
 
         if model_dir and model_dir not in dir_list:
             dir_list.append(model_dir)
@@ -810,8 +810,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-4:-2])))
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-2:])))
                     # Unzip, get sorted file list back
-                    files = list(zip(*tupfiles))[1]
-                    files = list(files)
+                    files = list(list(zip(*tupfiles))[1])
                 elif use_s3_fallback:
                     # No files found after filtering, generate expected file names
                     logger.info(f'Directory exists but no {prop.whichcast} files found. Constructing expected file names: {dir_list[i_index]}')
@@ -879,8 +878,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-4:-2])))
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-2:])))
                     # Unzip, get sorted file list back
-                    files = list(zip(*tupfiles))[1]
-                    files = list(files)
+                    files = list(list(zip(*tupfiles))[1])
                 elif use_s3_fallback:
                     # No files found after filtering, generate expected file names
                     logger.info(f'Directory exists but no {prop.whichcast} files found. Constructing expected file names: {dir_list[i_index]}')
@@ -1024,8 +1022,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-4:-2])))
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-2:])))
                     # Unzip, get sorted file list back
-                    files = list(zip(*tupfiles))[1]
-                    files = list(files)
+                    files = list(list(zip(*tupfiles))[1])
                 elif use_s3_fallback:
                     # No files found after filtering, generate expected file names
                     logger.info(f'Directory exists but no {prop.whichcast} files found. Constructing expected file names: {dir_list[i_index]}')
@@ -1197,8 +1194,7 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-4:-2])))
                     tupfiles = tuple(sorted(tupfiles, key=lambda x: (x[0][-2:])))
                     # Unzip, get sorted file list back
-                    files = list(zip(*tupfiles))[1]
-                    files = list(files)
+                    files = list(list(zip(*tupfiles))[1])
                 elif use_s3_fallback:
                     # No files found after filtering, generate expected file names
                     logger.info(f'Directory exists but no {prop.whichcast} files found. Constructing expected file names: {dir_list[i_index]}')
@@ -1222,15 +1218,14 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
         )
 
     # Flatten list_files (each entry is a list from one directory)
-    flattened = []
+    flat_files: list[str] = []
     for item in list_files:
         if isinstance(item, list):
-            flattened.extend(item)
+            flat_files.extend(item)
         else:
-            flattened.append(item)
-    list_files = flattened
+            flat_files.append(item)
 
-    if not list_files:
+    if not flat_files:
         logger.error(
             'No model files found after scanning all directories. '
             'ofs=%s, whichcast=%s, filetype=%s, '
@@ -1246,9 +1241,9 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
     # Now check individual files and use S3 fallback if enabled
     if use_s3_fallback:
         logger.info('S3 fallback is enabled - checking for missing local files...')
-        final_list = []
+        final_list: list[str] = []
         missing_count = 0
-        for file_path in list_files:
+        for file_path in flat_files:
             # Normalize path for checking
             normalized_path = file_path.replace('//', '/')
             if os.path.isfile(normalized_path):
@@ -1273,4 +1268,4 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
         return final_list
     else:
         logger.info('S3 fallback is disabled - using only local files')
-        return list_files
+        return flat_files

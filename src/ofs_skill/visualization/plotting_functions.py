@@ -319,6 +319,7 @@ def _lookup_obs_depth(
     orientation = ''
 
     # Try virtual-ID parse first.
+    parent_id: str | None
     parent_id, bin_num = split_virtual_currents_id(station_id_tuple[0])
     if bin_num is None:
         parent_id = None

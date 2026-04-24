@@ -72,7 +72,7 @@ import cartopy.io.img_tiles as cimgt
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from dateutil import parser
+from dateutil import parser as date_parser
 from netCDF4 import Dataset
 
 from ofs_skill.model_processing import list_of_files, model_properties, model_source
@@ -135,7 +135,7 @@ def fvcom_netcdf(dataset, type_data):
         # The time coordinate still needs some fixing. We will parse it and
         # reassign to the dataset.
         # the first day
-        dt0 = parser.parse(
+        dt0 = date_parser.parse(
             data_set.time.attrs['units'].replace('days since ', ''),
         )
 
@@ -202,7 +202,7 @@ def fvcom_netcdf(dataset, type_data):
         # The time coordinate still needs some fixing. We will parse it and
         # reassign to the dataset.
         # the first day
-        dt0 = parser.parse(
+        dt0 = date_parser.parse(
             data_set.time.attrs['units'].replace('days since ', ''),
         )
 

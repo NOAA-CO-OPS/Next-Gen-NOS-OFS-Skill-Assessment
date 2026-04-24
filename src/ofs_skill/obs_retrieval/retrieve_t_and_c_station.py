@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from logging import Logger
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from urllib.error import HTTPError
 
 import pandas as pd
@@ -100,7 +100,7 @@ def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
 # ---------------------------------------------------------------------------
 # Module-level cache for station depth metadata (Task 3)
 # ---------------------------------------------------------------------------
-_depth_cache = {}  # station_id -> depth_data
+_depth_cache: dict[str, Any] = {}  # station_id -> depth_data
 
 # Cache station-level metadata (``height_from_bottom`` etc.) keyed by
 # station_id. Populated via ``get_station_info``.
@@ -361,7 +361,7 @@ _get_station_info = get_station_info
 
 
 def retrieve_t_and_c_station(
-    retrieve_input: object,
+    retrieve_input: Any,
     logger: Logger,
     only_bins: Optional[set[int]] = None,
     config_file=None,
@@ -739,7 +739,7 @@ def _retrieve_currents_all_bins(
     missing_depth: list[int] = []
     for entry in bin_records:
         try:
-            bin_num = int(entry.get('num', entry.get('bin')))
+            bin_num = int(entry.get('num', entry.get('bin')))  # type: ignore[arg-type]
         except (KeyError, TypeError, ValueError):
             continue
 
@@ -900,7 +900,7 @@ def get_HTTP_error(ex: HTTPError) -> str:
 
 
 def retrieve_tidal_predictions(
-    retrieve_input: object,
+    retrieve_input: Any,
     logger: Logger,
     config_file=None,
 ) -> Optional[pd.DataFrame]:

@@ -84,7 +84,7 @@ def skill_scalar(
     station_id: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """
     Calculate skill metrics for scalar variables.
 
@@ -281,7 +281,7 @@ def skill_vector(
     name_var: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """
     Calculate skill metrics for vector variables.
 
@@ -397,10 +397,10 @@ def skill_vector(
         wofpf = criteria['wof']
     else:
         nodatatext = '<' + str(_MIN_DATA_POINTS) + ' data points'
-        rmse = nodatatext
-        r_value = nodatatext
-        bias = nodatatext
-        bias_perc = nodatatext
+        rmse = nodatatext  # type: ignore[assignment]
+        r_value = nodatatext  # type: ignore[assignment]
+        bias = nodatatext  # type: ignore[assignment]
+        bias_perc = nodatatext  # type: ignore[assignment]
         bias_dir = nodatatext
         cf = nodatatext
         cfpf = nodatatext
@@ -441,7 +441,7 @@ def skill_vector_dir(
     name_var: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """
     Calculate skill metrics for current direction.
 
@@ -554,10 +554,10 @@ def skill_vector_dir(
         wofpf = criteria['wof']
     else:
         nodatatext = '<' + str(_MIN_DATA_POINTS) + ' data points'
-        rmse = nodatatext
-        r_value = nodatatext
-        bias = nodatatext
-        bias_perc = nodatatext
+        rmse = nodatatext  # type: ignore[assignment]
+        r_value = nodatatext  # type: ignore[assignment]
+        bias = nodatatext  # type: ignore[assignment]
+        bias_perc = nodatatext  # type: ignore[assignment]
         bias_dir = nodatatext
         cf = nodatatext
         cfpf = nodatatext
@@ -597,7 +597,7 @@ def skill_extrema(
     df_paired: pd.DataFrame,
     name_var: str,
     prop: Any,
-) -> list[Union[float, str]]:
+) -> list[Union[float, str, None]]:
     """Calculate amplitude + timing skill metrics for water-level extrema (HW/LW).
 
     MDPO/MDNO/WOF are intentionally omitted (they are ill-defined on an

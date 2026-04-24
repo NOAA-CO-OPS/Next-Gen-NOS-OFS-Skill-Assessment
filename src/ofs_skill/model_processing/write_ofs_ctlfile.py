@@ -235,7 +235,7 @@ def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
     _conf = getattr(prop, 'config_file', None)
     xy_path = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
                ['user_xy_path'])
-    lines = []
+    lines: list[Any] = []
     try:
         with open(xy_path) as file:
             for line in file:
@@ -260,8 +260,8 @@ def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
     rows = 2
     cols = len(lines)
     depth = 5
-    station_info = [[[[] for _ in range(depth)] for _ in range(cols)]
-                    for _ in range(rows)]
+    station_info: Any = [[[[] for _ in range(depth)] for _ in range(cols)]
+                         for _ in range(rows)]
     for i, line in enumerate(lines):
         station_info[0][i][0] = line[0]
         station_info[0][i][1] = line[0]
@@ -336,7 +336,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     )
     prop.model_path = Path(prop.model_path).as_posix()
 
-    name_var = []
+    name_var = ''
 
     for variable in prop.var_list:
 
@@ -378,6 +378,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
             )
             control_file = f'{prop.control_files_path}/{prop.ofs}_' \
                                f'{name_var}_station.ctl'
+            extract: Any
             if prop.user_input_location is False:
                 extract = station_ctl_file_extract(
                     control_file)
@@ -639,8 +640,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         'w',
                         encoding='utf-8',
                     ) as output:
-                        for i in model_ctl_file:
-                            output.write(str(i))
+                        for ctl_entry in model_ctl_file:
+                            output.write(str(ctl_entry))
                 elif prop.ofsfiletype == 'stations':
                     with open(
                         f'{prop.control_files_path}/'
@@ -648,8 +649,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         'w',
                         encoding='utf-8',
                     ) as output:
-                        for i in model_ctl_file:
-                            output.write(str(i))
+                        for ctl_entry in model_ctl_file:
+                            output.write(str(ctl_entry))
 
                 logger.info(
                     'Model Control File for %s created successfully',

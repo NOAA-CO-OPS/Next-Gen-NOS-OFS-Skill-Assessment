@@ -1,6 +1,7 @@
 """Tests for ESRI ASCII Grid output and current vector computation."""
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import numpy as np
@@ -177,7 +178,7 @@ class TestBuildAsciiGridFilename:
             datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
             'mag', 'nowcast', 4,
         )
-        assert result == '/out/cbofs_mag_20260120_n004.txt'
+        assert result == os.path.join('/out', 'cbofs_mag_20260120_n004.txt')
 
     def test_first_step(self):
         """First step generates 001."""
@@ -186,7 +187,7 @@ class TestBuildAsciiGridFilename:
             datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
             'dir', 'nowcast', 1,
         )
-        assert result == '/out/wcofs_dir_20260120_n001.txt'
+        assert result == os.path.join('/out', 'wcofs_dir_20260120_n001.txt')
 
     def test_forecast_filename(self):
         """Forecast generates f-prefixed filename."""
@@ -195,7 +196,7 @@ class TestBuildAsciiGridFilename:
             datetime(2026, 1, 20, 6, 0, tzinfo=timezone.utc),
             'mag', 'forecast_a', 7,
         )
-        assert result == '/out/dbofs_mag_20260120_f007.txt'
+        assert result == os.path.join('/out', 'dbofs_mag_20260120_f007.txt')
 
     def test_daily_filename(self):
         """Daily filename uses 'daily' suffix instead of step number."""
@@ -205,7 +206,7 @@ class TestBuildAsciiGridFilename:
             'mag', 'nowcast', 0,
             is_daily=True,
         )
-        assert result == '/out/cbofs_mag_20260120_daily.txt'
+        assert result == os.path.join('/out', 'cbofs_mag_20260120_daily.txt')
 
     def test_hindcast_filename(self):
         """Hindcast generates h-prefixed filename."""
@@ -214,4 +215,4 @@ class TestBuildAsciiGridFilename:
             datetime(2026, 1, 20, 2, 0, tzinfo=timezone.utc),
             'dir', 'hindcast', 3,
         )
-        assert result == '/out/loofs2_dir_20260120_h003.txt'
+        assert result == os.path.join('/out', 'loofs2_dir_20260120_h003.txt')

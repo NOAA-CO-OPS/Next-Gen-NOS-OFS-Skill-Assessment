@@ -230,7 +230,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
 
     urlpaths = file_list
     if len(urlpaths) == 0:
-        return None
+        return None  # type: ignore[return-value]
     if len(urlpaths) == 1:
         urlpaths = urlpaths + urlpaths
 
@@ -244,11 +244,12 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     # First check stations dimensions to see if all are compatible --
     # only for stations files!
     dim_compat = True
+    dim_ref: Any = None
 
     if prop.ofsfiletype == 'stations':
         try:
-            dim_compat, dim_ref = get_station_dim(engine, urlpaths,
-                                                  drop_variables, logger)
+            dim_compat, dim_ref = get_station_dim(
+                engine, urlpaths, drop_variables or [], logger)
         except Exception as ex:
             logger.warning('Could not check number of stations before '
                            'combining netcdfs in intake! Error: %s. '
@@ -257,7 +258,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     # Build storage_options for S3 streaming when remote files are present.
     # Only use S3-specific options (anon, block_size) when URLs use s3://
     # protocol. For https:// URLs, use simpler HTTP-compatible options.
-    s3_storage_opts = {}
+    s3_storage_opts: dict[str, Any] = {}
     if has_remote:
         has_s3_proto = any(
             isinstance(f, str) and f.startswith('s3://')
@@ -399,6 +400,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             # For fields files, chunk by single time step to bound memory
             # for monthly/yearly runs with hundreds of files. Stations
             # files have small spatial dims, so auto-chunking is safe.
+            chunk_spec: Any
             if prop.ofsfiletype == 'fields':
                 chunk_spec = {time_name: 1}
             else:
@@ -427,9 +429,10 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ds = source.to_dask()
     else:
         logger.info('Station dimensions are inconsistent! Slicing stations...')
-        ds = remove_extra_stations(engine,
-            urlpaths, dim_ref, drop_variables,
-            time_name, logger,
+        ds = remove_extra_stations(
+            engine,
+            urlpaths, dim_ref, drop_variables or [],
+            time_name or '', logger,
         )
 
     # If ADCIRC, we need to subset times to the appropriate whichcast.
@@ -507,6 +510,7 @@ def fix_roms_uv(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
         elif len(data_set['ocean_time']) == 1:
             mask_rho = np.array(data_set.variables['mask_rho'][:])
 
+        assert mask_rho is not None  # narrowed by the branches above
         # Compute slices for interior (exclude boundaries)
         eta_slice = slice(1, mask_rho.shape[-2] - 1)
         xi_slice = slice(1, mask_rho.shape[-1] - 1)
@@ -653,10 +657,10 @@ def fix_fvcom(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
             'long_name': 'nodal z-coordinate', 'units': 'meters'}
         # We now can assign the zc coordinate for the data.
         nvs = np.array(data_set.nv)[0, :, :].T - 1
-        zc = []
+        zc_list: list[Any] = []
         for tri in nvs:
-            zc.append(np.mean(deplay.T[:, tri], axis=1))
-        zc = np.asarray(zc).T
+            zc_list.append(np.mean(deplay.T[:, tri], axis=1))
+        zc = np.asarray(zc_list).T
 
         # We now can assign the zc coordinate for the data.
         data_set['zc'] = (['siglay', 'nele'], zc)
@@ -938,11 +942,11 @@ def get_station_dim(engine: str, urlpaths: list[str],
         station_dim = list(executor.map(_read_dim, urlpaths))
 
     dim_compat = True
-    dim_ref = []
+    dim_ref: Any = []
     if np.nanmax(np.diff(station_dim)) != 0:
         dim_compat = False
         # Get reference dataset index
-        dim_ref = np.argmin(station_dim)
+        dim_ref = int(np.argmin(station_dim))
     return dim_compat, dim_ref
 
 
@@ -1020,7 +1024,7 @@ def remove_extra_stations(engine: str,
         )
         tempds = tempsource.read()
         latcheck = np.isin(np.array(tempds['lat_rho']), reflat, invert=True)
-        latcheck = np.where(latcheck)[0]
+        latcheck = np.where(latcheck)[0]  # type: ignore[assignment]
         tempds = tempds.drop_isel(station=latcheck)
         # If compatible, then combine datasets
         if file == urlpaths[0]:

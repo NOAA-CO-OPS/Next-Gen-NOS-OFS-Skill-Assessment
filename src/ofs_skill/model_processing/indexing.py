@@ -86,7 +86,7 @@ def index_nearest_node(
     coord_cache: dict[tuple, int] = {}
 
     if model_source == 'fvcom':
-        index_min_dist = []
+        index_min_dist: list[Any] = []
         length = len(ctl_file_extract)
         lonc_np = np.array(model_netcdf['lonc'])
         latc_np = np.array(model_netcdf['latc'])
@@ -177,7 +177,7 @@ def index_nearest_node(
                 )
 
     elif model_source == 'roms':
-        index_min_dist = []
+        index_min_dist = []  # type: ignore[no-redef]
         lat_rho_np = np.array(model_netcdf['lat_rho'])
         lon_rho_np = np.array(model_netcdf['lon_rho'])
         mask_rho_np = np.array(model_netcdf['mask_rho'])
@@ -254,8 +254,8 @@ def index_nearest_node(
                 continue
 
             # Calculate distances to all points
-            dist = np.empty(np.shape(lon_rho_np))
-            dist[:] = np.nan  # Set to NaN to disregard land points
+            dist = np.empty(np.shape(lon_rho_np))  # type: ignore[assignment]
+            dist[:] = np.nan  # type: ignore[call-overload]
 
             # Find nearby nodes within 0.1 degree window
             nearby_nodes = np.argwhere(
@@ -283,9 +283,9 @@ def index_nearest_node(
                             obs_lat,
                             obs_lon
                         )
-                        dist[i_index, j_index] = distance
+                        dist[i_index, j_index] = distance  # type: ignore[call-overload]
 
-                min_idx = np.nanargmin(dist)
+                min_idx = int(np.nanargmin(dist))
                 coord_cache[key] = min_idx
                 index_min_dist.append(min_idx)
                 logger.info(
@@ -298,7 +298,7 @@ def index_nearest_node(
                 )
 
     elif model_source == 'schism':
-        index_min_dist = []
+        index_min_dist = []  # type: ignore[no-redef]
         if name_var == 'wl':
              #model_var="elevation" # Using out2d files = "elev"
              var_name='elevation' # Using out2d files
@@ -369,7 +369,7 @@ def index_nearest_node(
                 else:
                    d = (x_val - obs_lon) ** 2 + (y_val - obs_lat) ** 2
                    dist.append(d)
-            dist = np.array(dist)
+            dist = np.array(dist)  # type: ignore[assignment]
 
             if np.all(np.isnan(dist)):
                logger.warning(f'All distances NaN for station {obs_p}')
@@ -398,7 +398,7 @@ def index_nearest_depth(
     model_source: str,
     name_var: str,
     logger: logging.Logger
-) -> tuple[list[int], list[float]]:
+) -> tuple[list[Any], Any]:
     """
     Find the nearest depth level for each model node.
 
@@ -437,8 +437,8 @@ def index_nearest_depth(
     """
 
     if prop.ofsfiletype == 'fields':
-        index_min_depth = []
-        depth_value = []
+        index_min_depth: list[Any] = []
+        depth_value: list[Any] = []
         length = len(index_min_dist)
 
         if model_source == 'fvcom':
@@ -662,8 +662,8 @@ def index_nearest_depth(
     elif prop.ofsfiletype == 'stations':
         if 'stofs' in prop.ofs:
             return [], []
-        index_min_depth = []
-        depth_value = []
+        index_min_depth = []  # type: ignore[no-redef]
+        depth_value = []  # type: ignore[no-redef]
         length = len(index_min_dist)
         if model_source == 'fvcom':
             if name_var == 'wl':
@@ -864,8 +864,8 @@ def index_nearest_station(
         lon_flat = lon_rho_np.ravel()
 
         for obs_p in range(len(ctl_file_extract)):
-            dist = np.empty(lat_flat.shape)
-            dist[:] = np.nan
+            dist = np.empty(lat_flat.shape)  # type: ignore[assignment]
+            dist[:] = np.nan  # type: ignore[call-overload]
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
