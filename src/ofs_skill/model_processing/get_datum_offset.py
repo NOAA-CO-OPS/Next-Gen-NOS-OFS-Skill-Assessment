@@ -103,10 +103,10 @@ def roms_nodes(model: xr.Dataset, node_num: int) -> tuple[int, int]:
     >>> print(f"Node 1234 is at i={i}, j={j}")
     """
     i_index, j_index = np.unravel_index(int(node_num), np.shape(model['lon_rho']))
-    return i_index, j_index
+    return int(i_index), int(j_index)
 
 
-def report_datums(prop: Any, datum_offsets: list[list[Optional[float]]], logger: Logger) -> None:
+def report_datums(prop: Any, datum_offsets: list[list[Any]], logger: Logger) -> None:
     """
     Write a report summarizing datum conversions for all stations.
 
@@ -188,6 +188,10 @@ def report_datums(prop: Any, datum_offsets: list[list[Optional[float]]], logger:
                         'only).')
             return
 
+        if read_station_ctl_file is None:
+            logger.warning('Station ctl file was empty; skipping datum report.')
+            return
+
         for i in range(len(datum_offsets[0])):
             # First find obs row for corresponding model station
             obs_row = [y[0] for y in read_station_ctl_file[0]].\
@@ -219,7 +223,7 @@ def report_datums(prop: Any, datum_offsets: list[list[Optional[float]]], logger:
                     station_datum_offsets.append(read_station_ctl_file[1]
                                                  [obs_row][-3])
                 else:
-                    station_datum_offsets.append(0)
+                    station_datum_offsets.append('0')
             if success[i] == 'fail':
                 reason_str = ''
                 if read_station_ctl_file[1][obs_row][-3] == 'RANGE':
@@ -438,6 +442,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
 
     # If not STOFS, read the correct vdatum file from NODD S3 on-the-fly
     # if prop.ofs not in ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac', 'loofs2'): # would be safer?
+    vdatums: Any = None
     if 'stofs' not in prop.ofs and 'loofs2' not in prop.ofs:
         vdatums = read_vdatum_from_bucket(prop, logger)
         if isinstance(vdatums, int):
@@ -534,7 +539,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     nativedatum = 'msl'
                 elif prop.ofs == 'loofs2':
                     nativedatum = 'LWD'
-                dummyval = 10
+                dummyval = 10.0
                 # account for the mistake in stofs-3d-atl files
                 if prop.ofs == 'stofs_3d_atl' and model['x'][0,node]> 0:
                     _,_,z = vdatum.convert(
@@ -582,7 +587,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                                         online=True,
                                         epoch=None
                                         )
-                datum_offset = round(z-dummyval,2)
+                datum_offset = float(round(z-dummyval, 2))
 
             elif prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
@@ -625,7 +630,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     nativedatum = 'xgeoid20b'
                 elif prop.ofs == 'loofs2':
                     nativedatum = 'LWD'
-                dummyval = 10
+                dummyval = 10.0
                 _,_,z = vdatum.convert(
                                     nativedatum,
                                     prop.datum.lower(),
@@ -639,7 +644,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
             if prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
                     nativedatum = 'lmsl'
-                    dummyval = 10
+                    dummyval = 10.0
                     _,_,z = vdatum.convert(
                         nativedatum,
                         prop.datum.lower(),
