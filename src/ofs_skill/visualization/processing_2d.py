@@ -93,9 +93,9 @@ def param_val(netcdf_file_sat: str | None, prop1=None) -> tuple[Logger, list]:
     if logger is None:
         _conf = getattr(prop1, 'config_file', None) if prop1 is not None else None
         config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
+        log_config_rel = 'conf/logging.conf'
         log_config_file = (
-            Path(__file__).parent.parent.parent.parent / log_config_file
+            Path(__file__).parent.parent.parent.parent / log_config_rel
         ).resolve()
 
         # Check if log file exists
@@ -148,7 +148,7 @@ def param_val(netcdf_file_sat: str | None, prop1=None) -> tuple[Logger, list]:
     return (logger, outdir)
 
 
-def parse_leaflet_json(model, netcdf_file_sat: str, prop1) -> str:
+def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
     """
     Process model and satellite data to Leaflet-compatible JSON files.
 
