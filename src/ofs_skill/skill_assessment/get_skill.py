@@ -29,6 +29,40 @@ from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
 from ofs_skill.tidal_analysis.extremes import extract_water_level_extrema
 
 
+def _cache_key(prop):
+    """Fields that uniquely determine the model dataset loaded by get_node_ofs.
+
+    When any of these change on `prop`, the cached dataset is stale and must
+    not be reused (it was built from a different set of source files).
+    """
+    return (
+        getattr(prop, 'ofs', None),
+        getattr(prop, 'whichcast', None),
+        getattr(prop, 'forecast_hr', None),
+        getattr(prop, 'start_date_full', None),
+        getattr(prop, 'end_date_full', None),
+        getattr(prop, 'ofsfiletype', None),
+    )
+
+
+def _get_valid_cached_model(prop):
+    """Return the cached model only if it was loaded under the current key."""
+    cached = getattr(prop, '_cached_model', None)
+    if cached is None:
+        return None
+    if getattr(prop, '_cached_model_key', None) != _cache_key(prop):
+        return None
+    return cached
+
+
+def _set_cached_model(prop, dataset):
+    """Stamp the dataset with the current key when caching."""
+    if dataset is None:
+        return
+    prop._cached_model = dataset
+    prop._cached_model_key = _cache_key(prop)
+
+
 def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     """
     Extract info from model control files. If control file does not exist,
@@ -46,16 +80,14 @@ def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
         if not os.path.isfile(ctl_path):
             result = get_node_ofs(prop, logger,
                                   model_dataset=model_dataset)
-            if result is not None:
-                prop._cached_model = result
+            _set_cached_model(prop, result)
     elif prop.ofsfiletype == 'stations':
         ctl_path = os.path.join(prop.control_files_path,
                             str(prop.ofs+'_'+name_var+'_model_station.ctl'))
         if not os.path.isfile(ctl_path):
             result = get_node_ofs(prop, logger,
                                   model_dataset=model_dataset)
-            if result is not None:
-                prop._cached_model = result
+            _set_cached_model(prop, result)
 
     try:
         if os.path.getsize(ctl_path) > 0:
@@ -172,11 +204,10 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                     'Calling OFS module for %s',
                     prop.whichcast,
                 )
-                cached = getattr(prop, '_cached_model', None)
+                cached = _get_valid_cached_model(prop)
                 result = get_node_ofs(prop, logger,
                                       model_dataset=cached)
-                if result is not None:
-                    prop._cached_model = result
+                _set_cached_model(prop, result)
 
             ofs_df = pd.read_csv(prd_path,
                 sep=r'\s+',
@@ -792,11 +823,13 @@ def get_skill(prop, logger):
         # Ensure model ctl file exists (depends on station ctl file)
         logger.info('Searching for the %s %s model control files',
                     p.ofs, variable)
-        cached_model = getattr(p, '_cached_model', None)
+        cached_model = _get_valid_cached_model(p)
         read_ofs_ctl_file = ofs_ctlfile_extract(
             p, name_var, logger, model_dataset=cached_model
         )  # lines, nodes, depths, shifts, ids
-        cached_model = getattr(p, '_cached_model', cached_model)
+        refreshed = _get_valid_cached_model(p)
+        if refreshed is not None:
+            cached_model = refreshed
 
         if read_ofs_ctl_file is None:
             logger.info('Model ctl file for %s and %s is empty.',
@@ -816,15 +849,13 @@ def get_skill(prop, logger):
                     copy.copy(p), name_var, logger, cached_model)
                 obs_future.result()
                 cached_model = prd_future.result()
-                if cached_model is not None:
-                    p._cached_model = cached_model
+                _set_cached_model(p, cached_model)
         else:
             # Sequential: check obs files, then prd files
             _ensure_obs_files(read_station_ctl_file, p, name_var, logger)
             cached_model = _ensure_prd_files(
                 read_ofs_ctl_file, p, name_var, logger, cached_model)
-            if cached_model is not None:
-                p._cached_model = cached_model
+            _set_cached_model(p, cached_model)
 
         if read_ofs_ctl_file is not None:
             skill_results = skill(
