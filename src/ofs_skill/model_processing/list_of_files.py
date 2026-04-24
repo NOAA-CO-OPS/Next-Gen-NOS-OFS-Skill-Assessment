@@ -902,7 +902,11 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
                     continue
                 files = []
                 hr_cyc_day = []
-                cycle_z = a_start[-2:] + 'z'
+                # Use prop.forecast_hr (set canonically by get_skill before
+                # this runs) — prop.startdate has the hour stripped by
+                # get_node_ofs, so a_start[-2:] is always '00' and would
+                # match the wrong cycle regardless of the user's -f flag.
+                cycle_z = prop.forecast_hr.lower()
                 skipped_files = []
                 for af_name in all_files:
                     try:
