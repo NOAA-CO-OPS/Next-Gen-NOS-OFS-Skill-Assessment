@@ -136,17 +136,17 @@ def main(skill_stats_file_path,db_path,period,ofs,logger,_conf=None):
 
         # Create DB if it does not exist
         # Create table if it doesn't exist. Columns:
-        # product: TEXT
-        # station_id: TEXT
-        # type: TEXT (nowcast or forecast)
-        # begin_date_time:  TEXT as ISO8601 strings ("YYYY-MM-DD HH:MM:SS.SSS")
-        # end_date_time:  TEXT as ISO8601 strings ("YYYY-MM-DD HH:MM:SS.SSS")
-        # node: INTEGER
-        # rmse: REAL
-        # r: REAL
-        # bias: REAL
-        # bias_perc: REAL
-        # bias_dir: REAL
+        #   product           TEXT
+        #   station_id        TEXT
+        #   type              TEXT (nowcast or forecast)
+        #   begin_date_time   TEXT as ISO8601 strings ("YYYY-MM-DD HH:MM:SS.SSS")
+        #   end_date_time     TEXT as ISO8601 strings ("YYYY-MM-DD HH:MM:SS.SSS")
+        #   node              INTEGER
+        #   rmse              REAL
+        #   r                 REAL
+        #   bias              REAL
+        #   bias_perc         REAL
+        #   bias_dir          REAL
         create_sql = 'CREATE TABLE IF NOT EXISTS ' + db_table + '( \
             datetime_inserted TEXT, \
             product TEXT, \

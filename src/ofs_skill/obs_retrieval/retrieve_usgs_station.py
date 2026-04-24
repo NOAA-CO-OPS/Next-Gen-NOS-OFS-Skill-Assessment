@@ -18,7 +18,7 @@ Supported variables:
 import os
 from datetime import datetime
 from logging import Logger
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 from searvey.usgs import (
@@ -61,7 +61,7 @@ _PREFERRED_SALINITY_CODES = {'00480', '72401', '90860', '90862', '00096', '70305
 
 
 def retrieve_usgs_station(
-    retrieve_input: object,
+    retrieve_input: Any,
     logger: Logger
 ) -> Optional[pd.DataFrame]:
     """
