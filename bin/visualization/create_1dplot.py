@@ -200,10 +200,9 @@ def _process_station_plot(
                 serieskey = pd.read_csv(filepath)
                 serieskey['DateTime'] = pd.to_datetime(
                     serieskey['DateTime'])
-                if len(paired_data) == len(serieskey):
-                    paired_data = pd.merge(
-                        paired_data, serieskey, on='DateTime', how='inner')
-                else:
+                paired_data = pd.merge(
+                    paired_data, serieskey, on='DateTime', how='inner')
+                if len(paired_data) != len(serieskey):
                     logger.warning('Filename key and time series have different '
                                    'lengths!')
             except FileNotFoundError:
@@ -448,17 +447,16 @@ def _process_forecast_cycle(cycle_hr, prop_template, logger):
         Logger instance.
     """
     prop_copy = copy.deepcopy(prop_template)
-    forecast_hr_str = f'{cycle_hr:02d}hr'
+    forecast_hr_str = f'{cycle_hr:02d}z'
     prop_copy.forecast_hr = forecast_hr_str
 
     # Recompute start/end dates for this specific cycle using the
     # original user-supplied start date (before any single-cycle
     # adjustment that happened during validation).
     prop_copy.start_date_full, prop_copy.end_date_full = get_fcst_dates(
-        prop_copy.ofs, prop_copy.start_date_full_original, forecast_hr_str,
-        logger)
+        prop_copy, logger)
     prop_copy.forecast_hr = (
-        prop_copy.start_date_full.split('T')[1][0:2] + 'hr')
+        prop_copy.start_date_full.split('T')[1][0:2] + 'z')
 
     # Update the _before snapshots so that ofs_ctlfile_read and
     # _ensure_paired_data_exists can fall back to them when needed.
@@ -836,8 +834,9 @@ def create_1dplot(prop, logger):
 
     # --- Forecast cycle parallelism for forecast_a mode ---
     parallel_config = get_parallel_config(logger)
-    if 'forecast_a' in prop.whichcasts:
-        _, forecast_cycles = get_fcst_hours(prop.ofs)
+    if 'forecast_a' in prop.whichcast:
+        #_, forecast_cycles = get_fcst_hours(prop.ofs)
+        forecast_cycles = [int(prop.forecast_hr[:-1])]
         use_parallel_cycles = (
             parallel_config.get('parallel_forecast_cycles', True)
             and len(forecast_cycles) > 1)
