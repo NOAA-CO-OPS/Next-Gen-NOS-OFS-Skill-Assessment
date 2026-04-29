@@ -80,7 +80,6 @@ import pandas as pd
 from ofs_skill.model_processing import (
     check_model_files,
     get_fcst_dates,
-    get_fcst_hours,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
@@ -89,7 +88,7 @@ from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
-from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector
+from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector, summary_barplots
 
 warnings.filterwarnings('ignore')
 
@@ -321,6 +320,29 @@ def _process_station_plot(
     return station_id_val
 
 
+def _emit_summary_barplots(prop, var_info, logger):
+    """Generate per-whichcast station summary bar plots after the
+    per-station plots for this variable have been written.  Failures
+    are logged but never propagated -- a buggy summary plot must not
+    abort the rest of the run.
+    """
+    saved_whichcast = getattr(prop, 'whichcast', None)
+    try:
+        for whichcast in getattr(prop, 'whichcasts', [saved_whichcast]):
+            if whichcast is None:
+                continue
+            prop.whichcast = whichcast
+            try:
+                summary_barplots.make_summary_bars(prop, var_info, logger)
+            except Exception as ex:
+                logger.warning(
+                    'Summary bar plot failed for %s/%s/%s: %s',
+                    prop.ofs, var_info[0], whichcast, ex)
+    finally:
+        if saved_whichcast is not None:
+            prop.whichcast = saved_whichcast
+
+
 def _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger):
     """
     Pre-check for missing paired data files and call get_skill()
@@ -513,6 +535,7 @@ def _plot_variable_for_cycle(variable, prop, logger):
     if read_ofs_ctl_file is not None:
         create_1dplot_2nd_part(
             read_ofs_ctl_file, prop, var_info, logger)
+        _emit_summary_barplots(prop, var_info, logger)
 
 
 def create_1dplot(prop, logger):
@@ -831,6 +854,7 @@ def create_1dplot(prop, logger):
             create_1dplot_2nd_part(
                 read_ofs_ctl_file, p, var_info,
                 logger)
+            _emit_summary_barplots(p, var_info, logger)
 
     # --- Forecast cycle parallelism for forecast_a mode ---
     parallel_config = get_parallel_config(logger)
