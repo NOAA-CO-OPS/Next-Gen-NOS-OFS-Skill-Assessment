@@ -150,26 +150,39 @@ def make_skill_maps(
     # Load the target errors from the provided CSV file
     target_error = df['Target RMSE '].iloc[0]
 
-    max_rmse = df['RMSE '].max()
+    actual_max_rmse = df['RMSE '].max()
 
-    # Create a sharp-transition custom color scale
-    if max_rmse <= target_error:
-        # If all points are strictly within the acceptable error range, make the whole scale green
+    # Cap the colorbar at 3x the target error to prevent extreme outliers from washing out the scale.
+    # You can change this multiplier to 2, 4, etc., depending on your preference.
+    rmse_cap = target_error * 6
+    display_max = min(actual_max_rmse, rmse_cap)
+
+    if display_max <= target_error:
+        # All points are within the target error range
         custom_color_scale = [[0, 'green'], [1, 'green']]
-        range_c = [0, max_rmse if max_rmse > 0 else target_error]
+        range_c = [0, display_max if display_max > 0 else target_error]
+        tick_values = [0, target_error]
+        tick_labels = ['0', f'Target ({target_error})']
     else:
-        # Calculate the relative position of the target error on a 0.0 to 1.0 scale
-        norm_target = target_error / max_rmse
+        # Calculate the relative position of the target error against our capped maximum
+        norm_target = target_error / display_max
 
-        # Hard threshold: Green below norm_target, Red above norm_target
         custom_color_scale = [
             [0, '#5aa17f'],
-            [norm_target, '#92ddc8'],  # Green ends at the target error
-            [norm_target, '#ffcccb'],    # Red starts immediately at the exact same location
+            [norm_target, '#92ddc8'],
+            [norm_target, '#ffcccb'],
             [1, '#e35336']
         ]
-        range_c = [0, max_rmse]
-    # -----------------------------------------------
+        range_c = [0, display_max]
+
+        # If the actual max is higher than our cap, add a "+" to the label so the user knows it's capped
+        if actual_max_rmse > display_max:
+            tick_values = [0, target_error, display_max]
+            tick_labels = ['0', f'Target ({target_error})', f'Max ({display_max:.2f}+)']
+        else:
+            tick_values = [0, target_error, display_max]
+            tick_labels = ['0', f'Target ({target_error})', f'Max ({display_max:.2f})']
+    # --------------------------------------------------------
 
     # create the map with the dynamic center and zoom_level
     fig = px.scatter_mapbox(df, lat='Y ', lon='X ',
@@ -207,12 +220,6 @@ def make_skill_maps(
 
     # Swap the rendering order so the black circles render UNDERNEATH the colored ones
     fig.data = (fig.data[1], fig.data[0])
-    if max_rmse > target_error:
-        tick_values = [0, target_error, max_rmse]
-        tick_labels = ['0', f'Target ({target_error})', f'Max ({max_rmse:.2f})']
-    else:
-        tick_values = [0, target_error]
-        tick_labels = ['0', f'Target ({target_error})']
 
     fig.update_layout(
         coloraxis_colorbar=dict(
