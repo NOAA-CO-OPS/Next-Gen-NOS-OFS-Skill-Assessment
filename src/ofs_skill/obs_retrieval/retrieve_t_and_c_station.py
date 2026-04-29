@@ -106,6 +106,12 @@ _depth_cache: dict[str, Any] = {}  # station_id -> depth_data
 # station_id. Populated via ``get_station_info``.
 _station_info_cache: dict[str, Optional[dict]] = {}
 
+# Cache per-station deployment metadata (``orientation``, ``sensor_depth``)
+# fetched from ``stations/{id}/deployments.json``. The station endpoint
+# (``stations/{id}.json``) only returns a ``deployments: {self: <url>}``
+# pointer — the actual deployment fields live one level deeper.
+_station_deployment_cache: dict[str, Optional[dict]] = {}
+
 
 def get_station_depth(station_id, mdapi_url, logger):
     """Fetch station depth/bins metadata, returning cached result when available.
@@ -350,6 +356,56 @@ def get_station_info(
     stations = payload.get('stations') or []
     info = stations[0] if stations else None
     _station_info_cache[station_id] = info
+    return info
+
+
+def get_station_deployment(
+    station_id: str,
+    mdapi_url: str,
+    logger: Logger,
+) -> Optional[dict]:
+    """Fetch deployment-level metadata (cached) from the MDAPI deployments endpoint.
+
+    The station endpoint (``stations/{id}.json``) only returns a
+    ``deployments: {self: <url>}`` pointer; the actual deployment
+    fields live one level deeper at
+    ``stations/{id}/deployments.json``. We need that endpoint to read
+    ``orientation`` and ``sensor_depth`` for side-looking ADCPs (the
+    inner ``deployments`` list reflects historical deployments; the
+    top-level orientation reflects the current station classification
+    in MDAPI's data model).
+
+    Args:
+        station_id: NOAA station identifier (e.g. ``'cb1401'``).
+        mdapi_url: Base MDAPI URL (no trailing slash).
+        logger: Module logger for warnings.
+
+    Returns:
+        The full JSON payload as a dict — top-level fields include
+        ``orientation`` (``'side'`` / ``'up'`` / ``'down'`` / ``''``),
+        ``sensor_depth`` (m, positive-down), ``measured_depth``,
+        ``height_from_bottom``, and a nested ``deployments`` list
+        whose entries carry ``real_time_bin``, ``lat``/``lng``, etc.
+        Returns ``None`` on HTTP error or unrecognized payload shape.
+    """
+    if station_id in _station_deployment_cache:
+        return _station_deployment_cache[station_id]
+
+    url = (f'{mdapi_url}/webapi/stations/{station_id}/deployments.json'
+           '?units=metric')
+    try:
+        response = _rate_limited_get(url, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.exceptions.RequestException as ex:
+        logger.warning(
+            'CO-OPS deployment metadata retrieval failed for %s: %s',
+            station_id, ex)
+        _station_deployment_cache[station_id] = None
+        return None
+
+    info = payload if isinstance(payload, dict) else None
+    _station_deployment_cache[station_id] = info
     return info
 
 
@@ -674,6 +730,82 @@ def _retrieve_currents_all_bins(
                 hfb = float(hfb_raw)
             except (TypeError, ValueError):
                 hfb = None
+
+    # Pull deployment-level orientation + sensor_depth from a separate
+    # MDAPI endpoint. The station endpoint's ``deployments`` field is
+    # only a ``{self: <url>}`` pointer — the actual fields live at
+    # ``stations/{id}/deployments.json``. Side-looking (PICS) ADCPs
+    # report ``orientation: 'side'`` and a real ``sensor_depth`` here,
+    # while their per-bin ``depth`` on the bins endpoint is null (the
+    # bins endpoint's ``distance`` is horizontal range across the
+    # channel, not depth-from-surface).
+    deployment_info = get_station_deployment(station_id, mdapi_url, logger)
+    orientation_top = ''
+    sensor_depth: Optional[float] = None
+    side_rtb: Optional[int] = None
+    if deployment_info is not None:
+        orientation_top = str(
+            deployment_info.get('orientation') or '').lower()
+        sd_raw = deployment_info.get('sensor_depth')
+        if sd_raw is not None:
+            try:
+                sensor_depth = float(sd_raw)
+            except (TypeError, ValueError):
+                sensor_depth = None
+        inner_deps = deployment_info.get('deployments') or []
+        if inner_deps and isinstance(inner_deps[0], dict):
+            rtb_raw = inner_deps[0].get('real_time_bin')
+            if rtb_raw is not None:
+                try:
+                    side_rtb = int(rtb_raw)
+                except (TypeError, ValueError):
+                    side_rtb = None
+
+    # Side-looking ADCPs sample a single depth horizontally across the
+    # channel; fanning out to N per-bin virtual stations all at depth=0
+    # produces N redundant comparisons against the model surface layer.
+    # Collapse to one virtual station at the deployment's sensor_depth.
+    if orientation_top == 'side':
+        # ``side_rtb`` does double duty: as the datagetter ``bin``
+        # query parameter (None → unfiltered call, returning the
+        # station's published real-time series — the cb1401 production
+        # case where MDAPI reports ``real_time_bin: null``), and as
+        # the integer label for the resulting virtual station ID
+        # (defaulting to 1 when MDAPI does not name a specific bin).
+        side_bin = side_rtb if side_rtb is not None else 1
+
+        df_side = _fetch_currents_chunked(
+            station_id=station_id,
+            bin_num=side_rtb,
+            start_dt_0=start_dt_0,
+            end_dt_0=end_dt_0,
+            api_url=api_url,
+            logger=logger,
+        )
+        if df_side is None:
+            return None
+
+        if sensor_depth is not None:
+            df_side['DEP01'] = sensor_depth
+            df_side.attrs['depth'] = sensor_depth
+            df_side.attrs['depth_unknown'] = False
+            depth_label = f'{sensor_depth:.2f} m'
+        else:
+            df_side['DEP01'] = 0.0
+            df_side.attrs['depth'] = 0.0
+            df_side.attrs['depth_unknown'] = True
+            depth_label = 'UNKNOWN'
+        df_side.attrs['bin'] = side_bin
+        df_side.attrs['orientation'] = 'side'
+        df_side.attrs['height_from_bottom'] = hfb
+
+        bin_count = len(bin_records) if bin_records else 0
+        logger.info(
+            'CO-OPS station %s is side-looking; collapsing %d MDAPI '
+            'bin record(s) to a single virtual station at depth=%s '
+            '(real_time_bin=%s).',
+            station_id, bin_count, depth_label, side_bin)
+        return {side_bin: df_side}
 
     # Determine bin numbers to iterate. If metadata is unavailable, fall
     # back to a single unfiltered datagetter call. Resolve the bin number
