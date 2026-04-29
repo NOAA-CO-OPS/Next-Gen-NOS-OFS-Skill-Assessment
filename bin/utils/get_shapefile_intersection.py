@@ -4,6 +4,7 @@ import argparse
 import logging
 import logging.config
 from pathlib import Path
+from datetime import datetime
 
 import geopandas as gpd
 
@@ -11,7 +12,7 @@ from ofs_skill.obs_retrieval.filter_inventory import filter_inventory
 from ofs_skill.obs_retrieval.ofs_inventory_stations import retrieving_inventories
 from ofs_skill.obs_retrieval.ofs_geometry import ofs_geometry
 
-def get_shapefile_intersection(shp1, shp2, home_path, stationowner, start_date, end_date, logger=None):
+def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None):
     """
     Takes two shapefiles, finds their overlapping areas,
     and writes the result to a new shapefile. Then a new inventory is
@@ -77,6 +78,8 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, start_date, 
         sys.exit(-1)
 
     # --- Inventory Retrieval ---
+    start_date = datetime.now().strftime("%Y-%m-%d")
+    end_date = start_date
     try:
         logger.info('Initializing geometry and retrieving inventories...')
         geo = ofs_geometry(new_ofs, home_path, logger, None)
@@ -119,12 +122,6 @@ if __name__ == "__main__":
                         required=False,
                         default='co-ops,ndbc,usgs,chs',
                         help="Input station provider to use: 'CO-OPS', 'NDBC', 'USGS', 'CHS'")
-    parser.add_argument('-s', '--start_date',
-                        required=False,
-                        help="Assessment start date: YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
-    parser.add_argument('-e', '--end_date',
-                        required=False,
-                        help="Assessment end date: YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
 
     args = parser.parse_args()
 
@@ -134,7 +131,5 @@ if __name__ == "__main__":
         shp2=args.ofs2.lower(),
         home_path=args.home_path,
         stationowner=args.station_owner,
-        start_date=args.start_date,
-        end_date=args.end_date,
         logger=None
     )
