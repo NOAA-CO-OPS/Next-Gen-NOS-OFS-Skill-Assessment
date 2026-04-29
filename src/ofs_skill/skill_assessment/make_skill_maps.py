@@ -14,6 +14,7 @@ import os
 import math
 from logging import Logger
 from typing import Any
+import copy
 
 import pandas as pd
 import plotly
@@ -145,6 +146,31 @@ def make_skill_maps(
         zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15
         zoom_level = min(zoom_lon, zoom_lat) - 0.25
 
+    # --- NEW SECTION: CUSTOM COLOR SCALE FOR RMSE ---
+    # Load the target errors from the provided CSV file
+    target_error = df['Target RMSE '].iloc[0]
+
+    max_rmse = df['RMSE '].max()
+
+    # Create a sharp-transition custom color scale
+    if max_rmse <= target_error:
+        # If all points are strictly within the acceptable error range, make the whole scale green
+        custom_color_scale = [[0, 'green'], [1, 'green']]
+        range_c = [0, max_rmse if max_rmse > 0 else target_error]
+    else:
+        # Calculate the relative position of the target error on a 0.0 to 1.0 scale
+        norm_target = target_error / max_rmse
+
+        # Hard threshold: Green below norm_target, Red above norm_target
+        custom_color_scale = [
+            [0, '#5aa17f'],
+            [norm_target, '#92ddc8'],  # Green ends at the target error
+            [norm_target, '#ffcccb'],    # Red starts immediately at the exact same location
+            [1, '#e35336']
+        ]
+        range_c = [0, max_rmse]
+    # -----------------------------------------------
+
     # create the map with the dynamic center and zoom_level
     fig = px.scatter_mapbox(df, lat='Y ', lon='X ',
                      color='RMSE ',
@@ -157,8 +183,45 @@ def make_skill_maps(
                      title=plottitle,
                      height=600,
                      zoom=zoom_level,
-                     center=dict(lat=center_lat, lon=center_lon)
+                     center=dict(lat=center_lat, lon=center_lon),
+                     color_continuous_scale=custom_color_scale,
+                     range_color=range_c
                      )
+    # Extract the generated marker data
+    outline_trace = copy.deepcopy(fig.data[0])
+
+    # Turn the background markers black and detach them from the colorbar
+    outline_trace.marker.color = 'black'
+    outline_trace.marker.coloraxis = None
+
+    # Increase the size to create a border effect (Multiplier adjusts thickness)
+    outline_trace.marker.size = outline_trace.marker.size * 1.1
+
+    # Disable hovering and legends for the background shadow
+    outline_trace.hovertemplate = None
+    outline_trace.hoverinfo = 'skip'
+    outline_trace.showlegend = False
+
+    # Add the outline trace to the figure
+    fig.add_trace(outline_trace)
+
+    # Swap the rendering order so the black circles render UNDERNEATH the colored ones
+    fig.data = (fig.data[1], fig.data[0])
+    if max_rmse > target_error:
+        tick_values = [0, target_error, max_rmse]
+        tick_labels = ['0', f'Target ({target_error})', f'Max ({max_rmse:.2f})']
+    else:
+        tick_values = [0, target_error]
+        tick_labels = ['0', f'Target ({target_error})']
+
+    fig.update_layout(
+        coloraxis_colorbar=dict(
+            title="RMSE",
+            tickvals=tick_values,
+            ticktext=tick_labels,
+            thickness=20 # Optional: makes the colorbar slightly thinner/sleeker
+        )
+    )
     savename = prop.ofs + '_' + name_var + '_' + prop.whichcast + '_RMSE_map' + '.html'
     filepath = os.path.join(prop.visuals_1d_station_path, savename)
     plotly.offline.plot(fig, filename=filepath, auto_open=False, config={'scrollZoom': True})
