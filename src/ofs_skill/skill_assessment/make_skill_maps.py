@@ -11,6 +11,7 @@ Created on Wed Sep 4 14:33:17 2024
 """
 
 import os
+import math
 from logging import Logger
 from typing import Any
 
@@ -122,30 +123,43 @@ def make_skill_maps(
     # But first, get data sorted out
     datestrend = (prop.end_date_full).split('T')[0]
     datestrbeg = (prop.start_date_full).split('T')[0]
-    if name_var == 'wl':
-        title_var = 'water level'
-    elif name_var == 'salt':
-        title_var = 'salinity'
-    elif name_var == 'temp':
-        title_var = 'temperature'
-    elif name_var == 'cu':
-        title_var = 'current speed'
-    plottitle = prop.ofs.upper() + ' ' + prop.whichcast + ' ' + title_var +\
-        ' skill statistics, ' + datestrbeg + ' - ' + datestrend
+    # Map variable names to display titles
+    title_map = {'wl': 'water level', 'salt': 'salinity', 'temp': 'temperature', 'cu': 'current speed'}
+    title_var = title_map.get(name_var, name_var)
+
+    plottitle = f"{prop.ofs.upper()} {prop.whichcast} {title_var} skill statistics, {datestrbeg} - {datestrend}"
+# 1. Calculate the center coordinates of your data
+    center_lat = df['Y '].mean()
+    center_lon = df['X '].mean()
+
+    # 2. Calculate the optimal starting zoom level
+    lat_diff = df['Y '].max() - df['Y '].min()
+    lon_diff = df['X '].max() - df['X '].min()
+
+    if lat_diff == 0 and lon_diff == 0:
+        zoom_level = 10 # Default zoom if there's only one station
+    else:
+        # Base math for calculating mapbox zoom levels.
+        # Subtracting ~1.2 provides a nice visual buffer so edge points aren't cut off.
+        zoom_lon = math.log2(360 / lon_diff) if lon_diff > 0 else 15
+        zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15
+        zoom_level = min(zoom_lon, zoom_lat) - 1.2
+
+    # 3. Create the map with the dynamic center and zoom_level
     fig = px.scatter_mapbox(df, lat='Y ', lon='X ',
-                     color='RMSE ',  # which column to use to set the color of markers
-                     hover_name='ID ',  # column added to hover information
-                     mapbox_style='open-street-map',
+                     color='RMSE ',
+                     hover_name='ID ',
+                     mapbox_style='carto-positron',
                      hover_data=['Target RMSE ', 'Mean bias ', 'R ', 'Central freq ', 'CF pass/fail ',
                                  'Positive outlier freq ', 'PO freq pass/fail ',
                                  'Negative outlier freq ', 'NO freq pass/fail '],
-                     size='RMSE ',  # size of markers
-                     zoom=6,
+                     size='RMSE ',
                      title=plottitle,
-                     height=600
+                     height=600,
+                     zoom=zoom_level,
+                     center=dict(lat=center_lat, lon=center_lon)
                      )
-    fig.update_geos(fitbounds='locations')
     savename = prop.ofs + '_' + name_var + '_' + prop.whichcast + '_RMSE_map' + '.html'
     filepath = os.path.join(prop.visuals_1d_station_path, savename)
-    plotly.offline.plot(fig, filename=filepath, auto_open=False)
+    plotly.offline.plot(fig, filename=filepath, auto_open=False, config={'scrollZoom': True})
     logger.info('Skill map for %s complete', name_var)
