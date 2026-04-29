@@ -128,11 +128,11 @@ def make_skill_maps(
     title_var = title_map.get(name_var, name_var)
 
     plottitle = f"{prop.ofs.upper()} {prop.whichcast} {title_var} skill statistics, {datestrbeg} - {datestrend}"
-# 1. Calculate the center coordinates of your data
+    # calculate the center coordinates of your data
     center_lat = df['Y '].mean()
     center_lon = df['X '].mean()
 
-    # 2. Calculate the optimal starting zoom level
+    # calculate the optimal starting zoom level
     lat_diff = df['Y '].max() - df['Y '].min()
     lon_diff = df['X '].max() - df['X '].min()
 
@@ -143,9 +143,9 @@ def make_skill_maps(
         # Subtracting ~1.2 provides a nice visual buffer so edge points aren't cut off.
         zoom_lon = math.log2(360 / lon_diff) if lon_diff > 0 else 15
         zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15
-        zoom_level = min(zoom_lon, zoom_lat) - 1.2
+        zoom_level = min(zoom_lon, zoom_lat) - 0.25
 
-    # 3. Create the map with the dynamic center and zoom_level
+    # create the map with the dynamic center and zoom_level
     fig = px.scatter_mapbox(df, lat='Y ', lon='X ',
                      color='RMSE ',
                      hover_name='ID ',
