@@ -75,6 +75,18 @@ from ofs_skill.obs_retrieval import utils
 # observed in the wild land at ~48 KB. 1 MB is comfortably above the
 # pathological band and well below any legitimate file.
 _RAW_SAT_MIN_BYTES = 1 * 1024 * 1024
+# Upper bound — defends against a misbehaving upstream serving an
+# unbounded response (HTML error page, gzip bomb, mirror serving a
+# different giant product). SPoRT global L4 raw can be ~30–100 MB,
+# so 500 MB is comfortably above any plausible legitimate product
+# while still catching disk-fill scenarios within seconds.
+_RAW_SAT_MAX_BYTES = 500 * 1024 * 1024
+# Per-request timeout (seconds) for urlopen. Long enough to fetch a
+# legitimate ~8 MB file over a slow connection, short enough that a
+# slow-loris upstream cannot pin a ThreadPoolExecutor worker forever.
+_DOWNLOAD_TIMEOUT_SECONDS = 60
+# Streaming chunk size for download writes.
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 # Trimmed per-hour file (most variables dropped) is smaller; threshold
 # tuned to flag obviously-empty writes without rejecting legitimate output.
 _TRIMMED_SAT_MIN_BYTES = 50 * 1024
@@ -655,6 +667,47 @@ def _safe_remove(path, logger):
         logger.warning('Failed to remove %s: %s', path, ex)
 
 
+def _download_with_limits(url, dest, logger):
+    """
+    Download ``url`` to ``dest`` with a per-request timeout and a
+    cumulative byte cap.
+
+    Replaces ``urllib.request.urlretrieve`` (which has no timeout kwarg
+    and no streaming size limit). Streams the response in fixed-size
+    chunks; aborts immediately if cumulative bytes exceed
+    ``_RAW_SAT_MAX_BYTES`` so a misbehaving upstream cannot fill the
+    disk. Cleans up the partial file on any failure path.
+
+    Returns True on success, False on any failure (logged at WARNING).
+    Never raises — the caller treats False as "skip this hour."
+    """
+    bytes_written = 0
+    try:
+        with urllib.request.urlopen(
+            url, timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+        ) as response, open(dest, 'wb') as out:
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > _RAW_SAT_MAX_BYTES:
+                    logger.warning(
+                        'Download for %s exceeded %d-byte cap '
+                        '(read %d bytes); aborting',
+                        url, _RAW_SAT_MAX_BYTES, bytes_written,
+                    )
+                    out.close()
+                    _safe_remove(dest, logger)
+                    return False
+                out.write(chunk)
+        return True
+    except (URLError, OSError) as ex:
+        logger.warning('Download failed for %s: %s', url, ex)
+        _safe_remove(dest, logger)
+        return False
+
+
 def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
     """
     Download, trim, and save a single satellite file.
@@ -708,14 +761,8 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
 
     raw_path = os.path.join(obs2d_dir, f'{sat_dat}'.split('/')[-1])
 
-    # --- Network fetch (narrow except for deterministic cleanup) ---
-    # URLError covers HTTPError; OSError covers ConnectionError, TimeoutError,
-    # and socket.timeout (which is an alias for TimeoutError since 3.10).
-    try:
-        urllib.request.urlretrieve(sat_dat, raw_path)
-    except (URLError, OSError) as ex:
-        logger.warning('Download failed for %s: %s', sat_dat, ex)
-        _safe_remove(raw_path, logger)
+    # --- Network fetch (timeout + size cap; cleanup on any failure) ---
+    if not _download_with_limits(sat_dat, raw_path, logger):
         return None
 
     # --- Validate raw download size before trying to parse it ---

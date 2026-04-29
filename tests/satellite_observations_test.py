@@ -47,6 +47,35 @@ def _make_byte_file(path, n_bytes):
         f.write(b'\x00' * n_bytes)
 
 
+class _FakeStreamingResponse:
+    """Minimal urlopen response stand-in that yields ``total`` bytes
+    of zero-padding in chunked reads."""
+
+    def __init__(self, total):
+        self.remaining = total
+
+    def read(self, n):
+        if self.remaining <= 0:
+            return b''
+        give = min(n, self.remaining)
+        self.remaining -= give
+        return b'\x00' * give
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _patch_urlopen_yielding(n_bytes):
+    """Returns a patch context that makes urlopen yield exactly ``n_bytes``."""
+    return patch.object(
+        sat.urllib.request, 'urlopen',
+        return_value=_FakeStreamingResponse(n_bytes),
+    )
+
+
 # ===========================================================================
 # _download_single_file — size validation + cleanup behavior
 # ===========================================================================
@@ -64,13 +93,7 @@ class TestDownloadSizeValidation:
         """48 KB truncated raw download is removed; returns None."""
         obs2d_dir = str(tmp_path)
 
-        def fake_urlretrieve(url, dest):
-            _make_byte_file(dest, 48 * 1024)
-            return dest, None
-
-        with patch.object(
-            sat.urllib.request, 'urlretrieve', side_effect=fake_urlretrieve,
-        ):
+        with _patch_urlopen_yielding(48 * 1024):
             result = sat._download_single_file(
                 self.URL, obs2d_dir, logger, 'GOES',
             )
@@ -100,14 +123,8 @@ class TestDownloadSizeValidation:
         _make_byte_file(sat_fname, 10 * 1024)
         assert os.path.exists(sat_fname)
 
-        # Make the retry fail too — undersized again.
-        def fake_urlretrieve(url, dest):
-            _make_byte_file(dest, 48 * 1024)
-            return dest, None
-
-        with patch.object(
-            sat.urllib.request, 'urlretrieve', side_effect=fake_urlretrieve,
-        ):
+        # Make the retry fail too — undersized again (48 KB < 1 MB raw min).
+        with _patch_urlopen_yielding(48 * 1024):
             result = sat._download_single_file(
                 self.URL, obs2d_dir, logger, 'GOES',
             )
@@ -117,18 +134,72 @@ class TestDownloadSizeValidation:
         # rejected, so sat_fname stays absent at the end).
         assert not os.path.exists(sat_fname)
 
-    def test_returns_none_on_urlretrieve_oserror(self, tmp_path, logger):
-        """Mid-stream socket reset returns None; partial file is cleaned up."""
+    def test_returns_none_on_connection_error(self, tmp_path, logger):
+        """A mid-stream connection reset (OSError subclass) returns None;
+        any partial file is cleaned up."""
         obs2d_dir = str(tmp_path)
         os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
 
-        def fake_urlretrieve(url, dest):
-            # Simulate partial write before the connection drops.
-            _make_byte_file(dest, 30 * 1024)
-            raise ConnectionResetError('connection reset by peer')
+        with patch.object(
+            sat.urllib.request, 'urlopen',
+            side_effect=ConnectionResetError('connection reset by peer'),
+        ):
+            result = sat._download_single_file(
+                self.URL, obs2d_dir, logger, 'GOES',
+            )
+
+        assert result is None
+        raw_path = os.path.join(obs2d_dir, self.URL.rsplit('/', 1)[-1])
+        assert not os.path.exists(raw_path)
+
+    def test_download_aborts_on_size_cap_exceeded(self, tmp_path, logger):
+        """A misbehaving upstream that streams more than _RAW_SAT_MAX_BYTES
+        is aborted mid-stream; partial file is removed; returns None."""
+        obs2d_dir = str(tmp_path)
+        os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
+
+        # Build a fake response that yields chunks summing to > cap.
+        oversize_total = sat._RAW_SAT_MAX_BYTES + 4 * sat._DOWNLOAD_CHUNK_BYTES
+
+        class FakeResponse:
+            def __init__(self, total):
+                self.remaining = total
+
+            def read(self, n):
+                if self.remaining <= 0:
+                    return b''
+                give = min(n, self.remaining)
+                self.remaining -= give
+                return b'\x00' * give
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
 
         with patch.object(
-            sat.urllib.request, 'urlretrieve', side_effect=fake_urlretrieve,
+            sat.urllib.request, 'urlopen',
+            return_value=FakeResponse(oversize_total),
+        ):
+            result = sat._download_single_file(
+                self.URL, obs2d_dir, logger, 'GOES',
+            )
+
+        assert result is None
+        raw_path = os.path.join(obs2d_dir, self.URL.rsplit('/', 1)[-1])
+        assert not os.path.exists(raw_path)
+
+    def test_download_returns_none_on_timeout(self, tmp_path, logger):
+        """A connect/read timeout raises socket.timeout (an OSError);
+        the helper catches it, cleans up, and returns None."""
+        import socket as _socket
+        obs2d_dir = str(tmp_path)
+        os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
+
+        with patch.object(
+            sat.urllib.request, 'urlopen',
+            side_effect=_socket.timeout('read timed out'),
         ):
             result = sat._download_single_file(
                 self.URL, obs2d_dir, logger, 'GOES',
@@ -148,9 +219,9 @@ class TestDownloadSizeValidation:
         )
         _make_byte_file(sat_fname, 100 * 1024)  # > _TRIMMED_SAT_MIN_BYTES
 
-        # urlretrieve must NOT be called.
+        # urlopen must NOT be called.
         with patch.object(
-            sat.urllib.request, 'urlretrieve',
+            sat.urllib.request, 'urlopen',
             side_effect=AssertionError('should not download'),
         ):
             result = sat._download_single_file(
