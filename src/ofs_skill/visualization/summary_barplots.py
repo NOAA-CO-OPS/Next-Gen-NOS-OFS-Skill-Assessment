@@ -104,8 +104,9 @@ def _figure_title(prop, variable: str, name_var: str) -> str:
     )
 
 
-def _ymax_for_rmse(values: Sequence[float], x1: float) -> float:
-    arr = np.array(values, dtype=float)
+def _ymax_for_rmse(values: Sequence[float | None], x1: float) -> float:
+    arr = np.array([v if v is not None else np.nan for v in values],
+                   dtype=float)
     if not np.isfinite(arr).any():
         return x1 * 2
     mult = np.ceil(np.nanmax(arr) / x1) if x1 > 0 else 2
@@ -139,7 +140,7 @@ def write_static_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
     axs[0].set_xticklabels(labels, rotation=60, ha='right', fontsize=12)
     axs[0].set_ylim(0, rmse_ymax)
     axs[0].axhline(y=x1, color='red', linewidth=1, linestyle='--',
-                   label=f'Target error range (±{x1})')
+                   label=f'Target error range ({x1})')
     axs[0].legend(fontsize=14, loc='upper right',
                   facecolor='white', framealpha=0.75)
 
@@ -191,7 +192,7 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
         shared_xaxes=True,
         vertical_spacing=0.08,
         subplot_titles=(
-            f'RMSE per station (target ±{x1})',
+            f'RMSE per station (target {x1})',
             'Central frequency per station (≥ 90% pass)',
         ),
     )
@@ -217,10 +218,8 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
         row=1, col=1,
     )
     fig.add_hline(y=x1, line_dash='dash', line_color='red', row=1, col=1,
-                  annotation_text=f'Target error range (±{x1})',
+                  annotation_text=f'Target error range ({x1})',
                   annotation_position='top right')
-    fig.add_hline(y=-x1, line_dash='dash', line_color='red',
-                  row=1, col=1)
 
     fig.add_trace(
         go.Bar(
@@ -247,8 +246,10 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
 
     axis_title_font = dict(family='Open Sans', color='black')
     axis_tick_font = dict(family='Open Sans', size=14, color='black')
+    rmse_ymax = _ymax_for_rmse(rmse_vals, x1)
     fig.update_yaxes(title_text='RMSE', title_font=axis_title_font,
-                     tickfont=axis_tick_font, row=1, col=1)
+                     tickfont=axis_tick_font,
+                     range=[0, rmse_ymax], row=1, col=1)
     fig.update_yaxes(title_text='Central frequency (%)',
                      title_font=axis_title_font,
                      tickfont=axis_tick_font,
