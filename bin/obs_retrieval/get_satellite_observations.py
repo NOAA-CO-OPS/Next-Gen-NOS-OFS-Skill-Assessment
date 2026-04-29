@@ -77,15 +77,24 @@ from ofs_skill.obs_retrieval import utils
 _RAW_SAT_MIN_BYTES = 1 * 1024 * 1024
 # Upper bound — defends against a misbehaving upstream serving an
 # unbounded response (HTML error page, gzip bomb, mirror serving a
-# different giant product). SPoRT global L4 raw can be ~30–100 MB,
-# so 500 MB is comfortably above any plausible legitimate product
-# while still catching disk-fill scenarios within seconds.
-_RAW_SAT_MAX_BYTES = 500 * 1024 * 1024
-# Per-request timeout (seconds) for urlopen. Long enough to fetch a
-# legitimate ~8 MB file over a slow connection, short enough that a
-# slow-loris upstream cannot pin a ThreadPoolExecutor worker forever.
+# different giant product). SPoRT global L4 raw is documented at
+# ~30–100 MB; GOES L3C is ~8 MB. 200 MB gives 2x headroom over the
+# largest plausible legitimate product while keeping disk-fill
+# blast radius small.
+_RAW_SAT_MAX_BYTES = 200 * 1024 * 1024
+# Socket-level (per-read) timeout used by urlopen. Long enough to
+# tolerate a slow connection, short enough to abort a stalled read.
 _DOWNLOAD_TIMEOUT_SECONDS = 60
-# Streaming chunk size for download writes.
+# Wall-clock cap for an entire single-file download. The socket
+# timeout above only fires when a read blocks; a slow-loris upstream
+# trickling bytes every <60s can otherwise dribble up to
+# _RAW_SAT_MAX_BYTES across many minutes. This total cap converts
+# that pathological case into a deterministic abort. Set generously
+# above normal completion times (seconds for ~8 MB on a healthy link).
+_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 300
+# Streaming chunk size for download writes — matches the
+# shutil.copyfileobj default and balances syscall overhead against
+# how often the cumulative-size and wall-clock checks are evaluated.
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 # Trimmed per-hour file (most variables dropped) is smaller; threshold
 # tuned to flag obviously-empty writes without rejecting legitimate output.
@@ -669,24 +678,46 @@ def _safe_remove(path, logger):
 
 def _download_with_limits(url, dest, logger):
     """
-    Download ``url`` to ``dest`` with a per-request timeout and a
-    cumulative byte cap.
+    Download ``url`` to ``dest`` with three independent bounds:
 
-    Replaces ``urllib.request.urlretrieve`` (which has no timeout kwarg
-    and no streaming size limit). Streams the response in fixed-size
-    chunks; aborts immediately if cumulative bytes exceed
-    ``_RAW_SAT_MAX_BYTES`` so a misbehaving upstream cannot fill the
-    disk. Cleans up the partial file on any failure path.
+    1. Per-read socket timeout (``_DOWNLOAD_TIMEOUT_SECONDS``) so a
+       blocked recv aborts.
+    2. Cumulative byte cap (``_RAW_SAT_MAX_BYTES``) so an unbounded
+       response cannot fill the disk.
+    3. Wall-clock cap (``_DOWNLOAD_TOTAL_TIMEOUT_SECONDS``) so a
+       slow-loris upstream that trickles bytes within the per-read
+       timeout still aborts in bounded time.
 
-    Returns True on success, False on any failure (logged at WARNING).
-    Never raises — the caller treats False as "skip this hour."
+    Replaces ``urllib.request.urlretrieve`` (which has no timeout
+    kwarg and no streaming size limit). Streams the response in
+    fixed-size chunks and cleans up the partial file on any failure
+    path.
+
+    Returns True on success, False on any failure (logged at
+    WARNING). The ``(URLError, OSError)`` catch covers all expected
+    network/filesystem errors; the caller treats False as "skip this
+    hour." Unexpected exceptions (e.g. ``MemoryError``,
+    ``KeyboardInterrupt``) propagate.
     """
     bytes_written = 0
+    deadline = time.monotonic() + _DOWNLOAD_TOTAL_TIMEOUT_SECONDS
     try:
         with urllib.request.urlopen(
             url, timeout=_DOWNLOAD_TIMEOUT_SECONDS,
         ) as response, open(dest, 'wb') as out:
             while True:
+                if time.monotonic() > deadline:
+                    logger.warning(
+                        'Download for %s exceeded %d-second total '
+                        'wall-clock budget (read %d bytes); aborting',
+                        url, _DOWNLOAD_TOTAL_TIMEOUT_SECONDS,
+                        bytes_written,
+                    )
+                    # Close before unlink: required on Windows, where
+                    # os.remove on an open file raises PermissionError.
+                    out.close()
+                    _safe_remove(dest, logger)
+                    return False
                 chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
                 if not chunk:
                     break
@@ -697,6 +728,8 @@ def _download_with_limits(url, dest, logger):
                         '(read %d bytes); aborting',
                         url, _RAW_SAT_MAX_BYTES, bytes_written,
                     )
+                    # Close before unlink: required on Windows, where
+                    # os.remove on an open file raises PermissionError.
                     out.close()
                     _safe_remove(dest, logger)
                     return False

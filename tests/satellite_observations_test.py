@@ -10,6 +10,7 @@ rebuild logic, and unify path prefixes across stages.
 import importlib.util
 import logging
 import os
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,30 +159,8 @@ class TestDownloadSizeValidation:
         obs2d_dir = str(tmp_path)
         os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
 
-        # Build a fake response that yields chunks summing to > cap.
         oversize_total = sat._RAW_SAT_MAX_BYTES + 4 * sat._DOWNLOAD_CHUNK_BYTES
-
-        class FakeResponse:
-            def __init__(self, total):
-                self.remaining = total
-
-            def read(self, n):
-                if self.remaining <= 0:
-                    return b''
-                give = min(n, self.remaining)
-                self.remaining -= give
-                return b'\x00' * give
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        with patch.object(
-            sat.urllib.request, 'urlopen',
-            return_value=FakeResponse(oversize_total),
-        ):
+        with _patch_urlopen_yielding(oversize_total):
             result = sat._download_single_file(
                 self.URL, obs2d_dir, logger, 'GOES',
             )
@@ -193,14 +172,43 @@ class TestDownloadSizeValidation:
     def test_download_returns_none_on_timeout(self, tmp_path, logger):
         """A connect/read timeout raises socket.timeout (an OSError);
         the helper catches it, cleans up, and returns None."""
-        import socket as _socket
         obs2d_dir = str(tmp_path)
         os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
 
         with patch.object(
             sat.urllib.request, 'urlopen',
-            side_effect=_socket.timeout('read timed out'),
+            side_effect=socket.timeout('read timed out'),
         ):
+            result = sat._download_single_file(
+                self.URL, obs2d_dir, logger, 'GOES',
+            )
+
+        assert result is None
+        raw_path = os.path.join(obs2d_dir, self.URL.rsplit('/', 1)[-1])
+        assert not os.path.exists(raw_path)
+
+    def test_download_aborts_on_wall_clock_timeout(
+        self, tmp_path, logger, monkeypatch,
+    ):
+        """A slow-loris upstream sending bytes within the per-read timeout
+        but never finishing must be aborted by the wall-clock guard."""
+        obs2d_dir = str(tmp_path)
+        os.makedirs(os.path.join(obs2d_dir, 'G19'), exist_ok=True)
+
+        # Force the wall-clock budget to expire immediately on the
+        # second monotonic() call (inside the loop). The first call
+        # captures the deadline; subsequent calls jump past it.
+        clock = [0.0]
+
+        def fake_monotonic():
+            clock[0] += sat._DOWNLOAD_TOTAL_TIMEOUT_SECONDS + 1
+            return clock[0]
+
+        monkeypatch.setattr(sat.time, 'monotonic', fake_monotonic)
+
+        # urlopen returns a stream that would otherwise yield healthy
+        # bytes — but the wall-clock check trips before any read.
+        with _patch_urlopen_yielding(8 * 1024 * 1024):
             result = sat._download_single_file(
                 self.URL, obs2d_dir, logger, 'GOES',
             )
