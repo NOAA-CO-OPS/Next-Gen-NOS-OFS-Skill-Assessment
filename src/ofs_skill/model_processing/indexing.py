@@ -448,10 +448,14 @@ def index_nearest_depth(
                 z_np = np.array(model_netcdf['z'])    # Node depths
             else:
                 # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
-                # approximate from sigma coordinates and bathymetry
-                siglay = np.array(model_netcdf['siglay'])
-                h = np.array(model_netcdf['h'])
-                z_np = siglay * h
+                # compute from sigma coordinates and bathymetry. Do the
+                # multiplication on the xarray DataArrays so broadcasting
+                # aligns by named dim ('node') — after multi-file concat
+                # `h` carries a time dim, so raw numpy broadcasting on
+                # (siglay, node) * (time, node) fails on trailing axes.
+                z_np = np.array(
+                    model_netcdf['siglay'] * model_netcdf['h']
+                )
         elif model_source == 'roms':
             lon_rho_np = np.array(model_netcdf['lon_rho'])
             s_rho_np = np.array(model_netcdf['s_rho'])
@@ -681,10 +685,14 @@ def index_nearest_depth(
                 z_np = np.array(model_netcdf['z'])
             else:
                 # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
-                # compute from sigma coordinates and bathymetry
-                siglay = np.array(model_netcdf['siglay'])
-                h = np.array(model_netcdf['h'])
-                z_np = siglay * h
+                # compute from sigma coordinates and bathymetry. Do the
+                # multiplication on the xarray DataArrays so broadcasting
+                # aligns by named dim ('node') — after multi-file concat
+                # `h` carries a time dim, so raw numpy broadcasting on
+                # (siglay, node) * (time, node) fails on trailing axes.
+                z_np = np.array(
+                    model_netcdf['siglay'] * model_netcdf['h']
+                )
         elif model_source == 'roms':
             s_rho_np = np.array(model_netcdf['s_rho'])
             h_np = np.array(model_netcdf['h'])
