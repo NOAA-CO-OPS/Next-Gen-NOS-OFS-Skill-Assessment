@@ -680,6 +680,12 @@ def get_skill(prop, logger):
         prop.path, dir_params['data_dir'], dir_params['visual_dir'], )
     os.makedirs(prop.visuals_1d_station_path, exist_ok=True)
 
+    # Path to save plotly maps
+    prop.plotly_maps = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'],
+        dir_params['visual_maps'])
+    os.makedirs(prop.plotly_maps, exist_ok=True)
+
     # This outer loop is used to download all data for all variables
     # Inside this loop there is another loop that will go over each line
     # in the station ctl file and will try to download the data from TandC,

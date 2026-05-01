@@ -2,8 +2,8 @@
 Create skill assessment maps.
 
 This module makes plotly express maps of skill assessment output. Each
-observation station is mapped, with markers color-coded by RMSE between
-observations and model. Clicking on a station shows all skill statistics.
+observation station is mapped, with markers color-coded by RMSE,
+Central Frequency, and Mean Bias. Includes a dropdown to toggle views.
 
 Created on Wed Sep 4 14:33:17 2024
 
@@ -28,39 +28,10 @@ def make_skill_maps(
     logger: Logger,
 ) -> None:
     """
-    Create interactive skill assessment maps.
-
-    Generates a Plotly Express map showing observation stations color-coded
-    by RMSE values. Clicking on stations reveals detailed skill statistics.
-
-    Parameters
-    ----------
-    output : Dict[str, List]
-        Dictionary containing skill assessment results with keys:
-        - 'station_id': List of station IDs
-        - 'node': List of model node IDs
-        - 'X': List of longitudes
-        - 'Y': List of latitudes
-        - 'skill': List of skill metric tuples
-    prop : Any
-        Properties object containing:
-        - path: Base path for configuration
-        - ofs: OFS name
-        - whichcast: Forecast type
-        - start_date_full: Start date string
-        - end_date_full: End date string
-        - visuals_1d_station_path: Path to save visualizations
-    name_var : str
-        Variable name ('wl', 'temp', 'salt', or 'cu')
-    logger : Logger
-        Logger instance for logging messages
-
-    Returns
-    -------
-    None
-        Saves HTML map to visuals_1d_station_path
+    Create interactive skill assessment maps with a dropdown toggle.
     """
     logger.info('Making skill maps...')
+
     # First make dataframe from stats table
     df = pd.DataFrame(
         {
@@ -121,115 +92,344 @@ def make_skill_maps(
     df['X '] = pd.to_numeric(df['X '])
     df['Y '] = pd.to_numeric(df['Y '])
 
-    # But first, get data sorted out
+    # Absolute mean bias for marker sizing
+    df['Abs mean bias '] = df['Mean bias '].abs()
+
     datestrend = (prop.end_date_full).split('T')[0]
     datestrbeg = (prop.start_date_full).split('T')[0]
-    # Map variable names to display titles
-    title_map = {'wl': 'water level', 'salt': 'salinity', 'temp': 'temperature', 'cu': 'current speed'}
-    title_var = title_map.get(name_var, name_var)
 
-    plottitle = f"{prop.ofs.upper()} {prop.whichcast} {title_var} skill statistics, {datestrbeg} - {datestrend}"
-    # calculate the center coordinates of your data
+    title_map = {'wl': 'water level', 'salt': 'salinity', 'temp': 'temperature', 'cu': 'current speed'}
+    unit_map = {'wl': 'm', 'salt': 'PSU', 'temp': '\u00b0C', 'cu': 'm/s'}
+    title_var = title_map.get(name_var, name_var)
+    title_unit = unit_map.get(name_var, name_var)
+
+    map_width = 1000
+    map_height = 650
+
+    # Calculate the center coordinates of your data
     center_lat = df['Y '].mean()
     center_lon = df['X '].mean()
 
-    # calculate the optimal starting zoom level
+    # Calculate the optimal starting zoom level
     lat_diff = df['Y '].max() - df['Y '].min()
     lon_diff = df['X '].max() - df['X '].min()
 
     if lat_diff == 0 and lon_diff == 0:
-        zoom_level = 10 # Default zoom if there's only one station
+        zoom_level = 10
     else:
-        # Base math for calculating mapbox zoom levels.
-        # Subtracting ~1.2 provides a nice visual buffer so edge points aren't cut off.
         zoom_lon = math.log2(360 / lon_diff) if lon_diff > 0 else 15
         zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15
         zoom_level = min(zoom_lon, zoom_lat) - 0.25
 
-    # --- NEW SECTION: CUSTOM COLOR SCALE FOR RMSE ---
-    # Load the target errors from the provided CSV file
+    # Base Titles
+    plottitle_rmse = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} RMSE statistics, {datestrbeg} - {datestrend}"
+    plottitle_cf = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} central frequency, {datestrbeg} - {datestrend}"
+    plottitle_mb = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} mean bias, {datestrbeg} - {datestrend}"
+
+    # ========================================================
+    #                     CALCULATE RMSE LOGIC
+    # ========================================================
     target_error = df['Target RMSE '].iloc[0]
-
     actual_max_rmse = df['RMSE '].max()
+    min_rmse_extent = target_error * 2
+    rmse_cap = target_error * 6.0
 
-    # Cap the colorbar at 3x the target error to prevent extreme outliers from washing out the scale.
-    # You can change this multiplier to 2, 4, etc., depending on your preference.
-    rmse_cap = target_error * 6
-    display_max = min(actual_max_rmse, rmse_cap)
+    display_max_rmse = max(actual_max_rmse, min_rmse_extent)
+    display_max_rmse = min(display_max_rmse, rmse_cap)
+    norm_target_rmse = target_error / display_max_rmse
 
-    if display_max <= target_error:
-        # All points are within the target error range
-        custom_color_scale = [[0, 'green'], [1, 'green']]
-        range_c = [0, display_max if display_max > 0 else target_error]
-        tick_values = [0, target_error]
-        tick_labels = ['0', f'Target ({target_error})']
+    color_scale_rmse = [
+        [0, '#5aa17f'],
+        [norm_target_rmse, '#92ddc8'],
+        [norm_target_rmse, '#ffcccb'],
+        [1, '#e35336']
+    ]
+
+    if actual_max_rmse > display_max_rmse:
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f}+)']
+    elif actual_max_rmse <= target_error:
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Scale Limit ({display_max_rmse:.2f})']
     else:
-        # Calculate the relative position of the target error against our capped maximum
-        norm_target = target_error / display_max
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f})']
 
-        custom_color_scale = [
-            [0, '#5aa17f'],
-            [norm_target, '#92ddc8'],
-            [norm_target, '#ffcccb'],
-            [1, '#e35336']
-        ]
-        range_c = [0, display_max]
+    # ========================================================
+    #                     CALCULATE CF LOGIC
+    # ========================================================
+    if df['Central freq '].max() > 2:
+        target_cf = 90
+        cf_upper_bound = 100
+    else:
+        target_cf = 0.90
+        cf_upper_bound = 1.0
 
-        # If the actual max is higher than our cap, add a "+" to the label so the user knows it's capped
-        if actual_max_rmse > display_max:
-            tick_values = [0, target_error, display_max]
-            tick_labels = ['0', f'Target ({target_error})', f'Max ({display_max:.2f}+)']
-        else:
-            tick_values = [0, target_error, display_max]
-            tick_labels = ['0', f'Target ({target_error})', f'Max ({display_max:.2f})']
-    # --------------------------------------------------------
+    actual_max_cf = df['Central freq '].max()
+    display_max_cf = max(actual_max_cf, cf_upper_bound)
 
-    # create the map with the dynamic center and zoom_level
-    fig = px.scatter_mapbox(df, lat='Y ', lon='X ',
-                     color='RMSE ',
-                     hover_name='ID ',
-                     mapbox_style='carto-positron',
-                     hover_data=['Target RMSE ', 'Mean bias ', 'R ', 'Central freq ', 'CF pass/fail ',
-                                 'Positive outlier freq ', 'PO freq pass/fail ',
-                                 'Negative outlier freq ', 'NO freq pass/fail '],
-                     size='RMSE ',
-                     title=plottitle,
-                     height=600,
-                     zoom=zoom_level,
-                     center=dict(lat=center_lat, lon=center_lon),
-                     color_continuous_scale=custom_color_scale,
-                     range_color=range_c
-                     )
-    # Extract the generated marker data
-    outline_trace = copy.deepcopy(fig.data[0])
+    if display_max_cf == 0:
+        norm_target_cf = 1
+    else:
+        norm_target_cf = target_cf / display_max_cf
 
-    # Turn the background markers black and detach them from the colorbar
-    outline_trace.marker.color = 'black'
-    outline_trace.marker.coloraxis = None
+    color_scale_cf = [
+        [0, '#e35336'],
+        [norm_target_cf, '#ffcccb'],
+        [norm_target_cf, '#92ddc8'],
+        [1, '#5aa17f']
+    ]
 
-    # Increase the size to create a border effect (Multiplier adjusts thickness)
-    outline_trace.marker.size = outline_trace.marker.size * 1.1
+    if actual_max_cf < target_cf:
+        tick_values_cf = [0, target_cf, display_max_cf]
+        tick_labels_cf = ['0', f'Target ({target_cf} %)', f'Scale Limit ({display_max_cf} %)']
+    else:
+        tick_values_cf = [0, target_cf, display_max_cf]
+        tick_labels_cf = ['0', f'Target ({target_cf} %)', f'Max ({display_max_cf} %)']
 
-    # Disable hovering and legends for the background shadow
-    outline_trace.hovertemplate = None
-    outline_trace.hoverinfo = 'skip'
-    outline_trace.showlegend = False
+    # ========================================================
+    #                 CALCULATE MEAN BIAS LOGIC
+    # ========================================================
+    mb_cap = target_error * 3.0
+    actual_max_mb = df['Mean bias '].max()
+    actual_min_mb = df['Mean bias '].min()
 
-    # Add the outline trace to the figure
-    fig.add_trace(outline_trace)
+    # NEW: Full Diverging Scale (Blue -> White -> Red)
+    # Hard jumps at the +/- target threshold to maintain visual boundaries.
+# The acceptable colors (-Target to +Target) are more saturated/darker to stand out.
+    color_scale_mb = [
+        [0.0, '#08519c'],           # -3x target (Dark Blue)
+        [1/3, '#3182bd'],           # -Target limit (Medium Blue)
+        [1/3, '#6baed6'],           # -Target acceptable (Darker Pale Blue)
+        [0.5, '#ffffff'],           # 0 Bias (White / Perfect)
+        [2/3, '#ffe066'],           # +Target acceptable (Darker Pale Yellow)
+        [2/3, '#ffb300'],           # +Target limit (Rich Golden Yellow)
+        [1.0, '#cc7a00']            # +3x target (Dark Gold/Ochre)
+    ]
 
-    # Swap the rendering order so the black circles render UNDERNEATH the colored ones
-    fig.data = (fig.data[1], fig.data[0])
+    label_min_mb = f'Min ({-mb_cap:.2f}-)' if actual_min_mb < -mb_cap else f'Min ({-mb_cap:.2f})'
+    label_max_mb = f'Max ({mb_cap:.2f}+)' if actual_max_mb > mb_cap else f'Max ({mb_cap:.2f})'
 
+    tick_values_mb = [-mb_cap, -target_error, 0, target_error, mb_cap]
+    tick_labels_mb = [label_min_mb, f'-Target ({-target_error})', '0', f'+Target ({target_error})', label_max_mb]
+
+    # ========================================================
+    #                     BUILD COMBINED FIGURE
+    # ========================================================
+
+    # 1. Define custom data arrays to strictly control hover order
+    cols_rmse = [
+        'RMSE ', 'Target RMSE ', 'Mean bias ', 'Central freq ',
+        'CF pass/fail ', 'R ', 'Positive outlier freq ',
+        'PO freq pass/fail ', 'Negative outlier freq ', 'NO freq pass/fail '
+    ]
+
+    cols_cf = [
+        'Central freq ', 'CF pass/fail ', 'RMSE ', 'Target RMSE ',
+        'Mean bias ', 'R ', 'Positive outlier freq ',
+        'PO freq pass/fail ', 'Negative outlier freq ', 'NO freq pass/fail '
+    ]
+
+    cols_mb = [
+        'Mean bias ', 'RMSE ', 'Target RMSE ', 'Central freq ',
+        'CF pass/fail ', 'R ', 'Positive outlier freq ',
+        'PO freq pass/fail ', 'Negative outlier freq ', 'NO freq pass/fail '
+    ]
+
+    # Helper function to build a clean, perfectly ordered hover template
+    def build_hovertemplate(cols):
+        template = "<b>%{hovertext}</b><br><br>"
+        for i, col in enumerate(cols):
+            label = col.strip() # Cleans up the trailing spaces in your column names
+            template += f"{label}: %{{customdata[{i}]}}<br>"
+        template += "<extra></extra>" # Hides the secondary trace name box
+        return template
+
+    # 2. Generate RMSE Traces
+    fig_rmse_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='RMSE ', hover_name='ID ',
+                     custom_data=cols_rmse,
+                     size='RMSE ')
+
+    rmse_trace = fig_rmse_temp.data[0]
+    rmse_trace.marker.coloraxis = "coloraxis"
+    rmse_trace.hovertemplate = build_hovertemplate(cols_rmse) # Apply custom hover
+
+    rmse_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='RMSE ').data[0]
+    rmse_outline.marker.color = 'black'
+    rmse_outline.marker.size = rmse_trace.marker.size * 1.1
+    rmse_outline.hovertemplate = None
+    rmse_outline.hoverinfo = 'skip'
+    rmse_outline.showlegend = False
+
+    # 3. Generate CF Traces
+    fig_cf_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='Central freq ', hover_name='ID ',
+                     custom_data=cols_cf,
+                     size='Central freq ')
+
+    cf_trace = fig_cf_temp.data[0]
+    cf_trace.marker.coloraxis = "coloraxis2"
+    cf_trace.hovertemplate = build_hovertemplate(cols_cf) # Apply custom hover
+
+    cf_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='Central freq ').data[0]
+    cf_outline.marker.color = 'black'
+    cf_outline.marker.size = cf_trace.marker.size * 1.1
+    cf_outline.hovertemplate = None
+    cf_outline.hoverinfo = 'skip'
+    cf_outline.showlegend = False
+
+    # 4. Generate Mean Bias Traces
+    fig_mb_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='Mean bias ', hover_name='ID ',
+                     custom_data=cols_mb,
+                     size='Abs mean bias ')
+
+    mb_trace = fig_mb_temp.data[0]
+    mb_trace.marker.coloraxis = "coloraxis3"
+    mb_trace.hovertemplate = build_hovertemplate(cols_mb) # Apply custom hover
+
+    mb_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='Abs mean bias ').data[0]
+    mb_outline.marker.color = 'black'
+    mb_outline.marker.size = mb_trace.marker.size * 1.1
+    mb_outline.hovertemplate = None
+    mb_outline.hoverinfo = 'skip'
+    mb_outline.showlegend = False
+
+    # 5. Assemble Final Figure
+    import plotly.graph_objects as go
+    fig = go.Figure()
+
+    # Traces 0 & 1: RMSE (Visible by default)
+    fig.add_trace(rmse_outline)
+    fig.add_trace(rmse_trace)
+
+    # Traces 2 & 3: CF (Hidden by default)
+    cf_outline.visible = False
+    cf_trace.visible = False
+    fig.add_trace(cf_outline)
+    fig.add_trace(cf_trace)
+
+    # Traces 4 & 5: Mean Bias (Hidden by default)
+    mb_outline.visible = False
+    mb_trace.visible = False
+    fig.add_trace(mb_outline)
+    fig.add_trace(mb_trace)
+
+    # 5. Layout & Dropdown Menus
     fig.update_layout(
-        coloraxis_colorbar=dict(
-            title="RMSE",
-            tickvals=tick_values,
-            ticktext=tick_labels,
-            thickness=20 # Optional: makes the colorbar slightly thinner/sleeker
-        )
+        mapbox_style='carto-positron',
+        mapbox=dict(zoom=zoom_level, center=dict(lat=center_lat, lon=center_lon)),
+        height=map_height,
+        width=map_width,
+        title=dict(text=plottitle_rmse, font=dict(color='black', size=22), x=0.5),
+
+        # Primary Colorbar (RMSE) - Visible by default
+        coloraxis=dict(
+            colorscale=color_scale_rmse,
+            cmin=0, cmax=display_max_rmse,
+            colorbar=dict(
+                title=dict(text=f"RMSE ({title_unit})", font=dict(color='black')),
+                tickfont=dict(color='black'),
+                tickvals=tick_values_rmse,
+                ticktext=tick_labels_rmse,
+                thickness=20,
+                len=0.6
+            )
+        ),
+
+        # Secondary Colorbar (CF) - Hidden by default
+        coloraxis2=dict(
+            colorscale=color_scale_cf,
+            cmin=0, cmax=display_max_cf,
+            showscale=False,
+            colorbar=dict(
+                title=dict(text="Central frequency (%)", font=dict(color='black')),
+                tickfont=dict(color='black'),
+                tickvals=tick_values_cf,
+                ticktext=tick_labels_cf,
+                thickness=20,
+                len=0.6
+            )
+        ),
+
+        # Tertiary Colorbar (Mean Bias) - Hidden by default
+        coloraxis3=dict(
+            colorscale=color_scale_mb,
+            cmin=-mb_cap, cmax=mb_cap, # Bounded entirely between -3x and +3x target
+            showscale=False,
+            colorbar=dict(
+                title=dict(text=f"Mean bias ({title_unit})", font=dict(color='black')),
+                tickfont=dict(color='black'),
+                tickvals=tick_values_mb,
+                ticktext=tick_labels_mb,
+                thickness=20,
+                len=0.6
+            )
+        ),
+
+        annotations=[
+            dict(
+                text="<i>Select mapped statistics from dropdown:</i>",
+                x=0.01,
+                y=1.01,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color='black', size=13)
+            )
+        ],
+
+        # The Dropdown Menu
+        updatemenus=[
+            dict(
+                type="dropdown",
+                direction="down",
+                x=0.01,
+                xanchor="left",
+                y=0.99,
+                yanchor="top",
+                buttons=list([
+                    dict(
+                        label="RMSE view",
+                        method="update",
+                        args=[
+                            {"visible": [True, True, False, False, False, False]},
+                            {"title.text": plottitle_rmse,
+                             "coloraxis.showscale": True,
+                             "coloraxis2.showscale": False,
+                             "coloraxis3.showscale": False}
+                        ]
+                    ),
+                    dict(
+                        label="Central Frequency view",
+                        method="update",
+                        args=[
+                            {"visible": [False, False, True, True, False, False]},
+                            {"title.text": plottitle_cf,
+                             "coloraxis.showscale": False,
+                             "coloraxis2.showscale": True,
+                             "coloraxis3.showscale": False}
+                        ]
+                    ),
+                    dict(
+                        label="Mean Bias view",
+                        method="update",
+                        args=[
+                            {"visible": [False, False, False, False, True, True]},
+                            {"title.text": plottitle_mb,
+                             "coloraxis.showscale": False,
+                             "coloraxis2.showscale": False,
+                             "coloraxis3.showscale": True}
+                        ]
+                    )
+                ])
+            )
+        ]
     )
-    savename = prop.ofs + '_' + name_var + '_' + prop.whichcast + '_RMSE_map' + '.html'
-    filepath = os.path.join(prop.visuals_1d_station_path, savename)
+
+    # 6. Save the single combined file
+    savename = prop.ofs + '_' + name_var + '_' + prop.whichcast + '_Skill_Map.html'
+    filepath = os.path.join(prop.plotly_maps, savename)
+
     plotly.offline.plot(fig, filename=filepath, auto_open=False, config={'scrollZoom': True})
-    logger.info('Skill map for %s complete', name_var)
+    logger.info('Combined interactive map for %s complete', name_var)
