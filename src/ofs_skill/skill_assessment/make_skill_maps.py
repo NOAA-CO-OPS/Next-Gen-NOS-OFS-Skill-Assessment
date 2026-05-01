@@ -10,15 +10,17 @@ Created on Wed Sep 4 14:33:17 2024
 @author: PL
 """
 
-import os
 import math
+import os
 from logging import Logger
 from typing import Any
-import copy
 
 import pandas as pd
 import plotly
 import plotly.express as px
+import plotly.graph_objects as go
+
+from ofs_skill.skill_assessment.nos_metrics import get_error_threshold
 
 
 def make_skill_maps(
@@ -89,8 +91,16 @@ def make_skill_maps(
             logger.error('DataFrame is empty, cannot make skill maps!')
             return
 
-    df['X '] = pd.to_numeric(df['X '])
-    df['Y '] = pd.to_numeric(df['Y '])
+    df['X '] = pd.to_numeric(df['X '], errors='coerce')
+    df['Y '] = pd.to_numeric(df['Y '], errors='coerce')
+
+    # Drop stations with missing or sentinel (0,0) coordinates so they don't
+    # skew the auto-zoom / center-of-mass calculation below.
+    df = df[df['X '].notna() & df['Y '].notna()
+            & ~((df['X '] == 0) & (df['Y '] == 0))]
+    if df.empty:
+        logger.error('No stations with valid coordinates; cannot make skill maps!')
+        return
 
     # Absolute mean bias for marker sizing
     df['Abs mean bias '] = df['Mean bias '].abs()
@@ -115,10 +125,10 @@ def make_skill_maps(
     lon_diff = df['X '].max() - df['X '].min()
 
     if lat_diff == 0 and lon_diff == 0:
-        zoom_level = 10
+        zoom_level = 10.0
     else:
-        zoom_lon = math.log2(360 / lon_diff) if lon_diff > 0 else 15
-        zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15
+        zoom_lon = math.log2(360 / lon_diff) if lon_diff > 0 else 15.0
+        zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15.0
         zoom_level = min(zoom_lon, zoom_lat) - 0.25
 
     # Base Titles
@@ -129,7 +139,10 @@ def make_skill_maps(
     # ========================================================
     #                     CALCULATE RMSE LOGIC
     # ========================================================
-    target_error = df['Target RMSE '].iloc[0]
+    target_error, _ = get_error_threshold(
+        name_var,
+        os.path.join(prop.path, 'conf', 'error_ranges.csv'),
+    )
     actual_max_rmse = df['RMSE '].max()
     min_rmse_extent = target_error * 2
     rmse_cap = target_error * 6.0
@@ -158,12 +171,10 @@ def make_skill_maps(
     # ========================================================
     #                     CALCULATE CF LOGIC
     # ========================================================
-    if df['Central freq '].max() > 2:
-        target_cf = 90
-        cf_upper_bound = 100
-    else:
-        target_cf = 0.90
-        cf_upper_bound = 1.0
+    # Central frequency is always reported as a percentage (0-100) by
+    # nos_metrics.central_frequency; the NOS skill-assessment pass threshold is 90 %.
+    target_cf = 90
+    cf_upper_bound = 100
 
     actual_max_cf = df['Central freq '].max()
     display_max_cf = max(actual_max_cf, cf_upper_bound)
@@ -238,63 +249,39 @@ def make_skill_maps(
 
     # Helper function to build a clean, perfectly ordered hover template
     def build_hovertemplate(cols):
-        template = "<b>%{hovertext}</b><br><br>"
+        template = '<b>%{hovertext}</b><br><br>'
         for i, col in enumerate(cols):
             label = col.strip() # Cleans up the trailing spaces in your column names
-            template += f"{label}: %{{customdata[{i}]}}<br>"
-        template += "<extra></extra>" # Hides the secondary trace name box
+            template += f'{label}: %{{customdata[{i}]}}<br>'
+        template += '<extra></extra>' # Hides the secondary trace name box
         return template
 
-    # 2. Generate RMSE Traces
-    fig_rmse_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='RMSE ', hover_name='ID ',
-                     custom_data=cols_rmse,
-                     size='RMSE ')
+    # Build a (colored trace, black outline trace) pair per view.
+    # Returns plotly Scattermapbox traces ready to add to the final figure.
+    def build_view(color_col, size_col, custom_cols, coloraxis_id):
+        fig_tmp = px.scatter_mapbox(
+            df, lat='Y ', lon='X ', color=color_col, hover_name='ID ',
+            custom_data=custom_cols, size=size_col,
+        )
+        trace = fig_tmp.data[0]
+        trace.marker.coloraxis = coloraxis_id
+        trace.hovertemplate = build_hovertemplate(custom_cols)
 
-    rmse_trace = fig_rmse_temp.data[0]
-    rmse_trace.marker.coloraxis = "coloraxis"
-    rmse_trace.hovertemplate = build_hovertemplate(cols_rmse) # Apply custom hover
+        outline = px.scatter_mapbox(
+            df, lat='Y ', lon='X ', hover_name='ID ', size=size_col,
+        ).data[0]
+        outline.marker.color = 'black'
+        outline.marker.size = trace.marker.size * 1.1
+        outline.hovertemplate = None
+        outline.hoverinfo = 'skip'
+        outline.showlegend = False
+        return trace, outline
 
-    rmse_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='RMSE ').data[0]
-    rmse_outline.marker.color = 'black'
-    rmse_outline.marker.size = rmse_trace.marker.size * 1.1
-    rmse_outline.hovertemplate = None
-    rmse_outline.hoverinfo = 'skip'
-    rmse_outline.showlegend = False
-
-    # 3. Generate CF Traces
-    fig_cf_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='Central freq ', hover_name='ID ',
-                     custom_data=cols_cf,
-                     size='Central freq ')
-
-    cf_trace = fig_cf_temp.data[0]
-    cf_trace.marker.coloraxis = "coloraxis2"
-    cf_trace.hovertemplate = build_hovertemplate(cols_cf) # Apply custom hover
-
-    cf_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='Central freq ').data[0]
-    cf_outline.marker.color = 'black'
-    cf_outline.marker.size = cf_trace.marker.size * 1.1
-    cf_outline.hovertemplate = None
-    cf_outline.hoverinfo = 'skip'
-    cf_outline.showlegend = False
-
-    # 4. Generate Mean Bias Traces
-    fig_mb_temp = px.scatter_mapbox(df, lat='Y ', lon='X ', color='Mean bias ', hover_name='ID ',
-                     custom_data=cols_mb,
-                     size='Abs mean bias ')
-
-    mb_trace = fig_mb_temp.data[0]
-    mb_trace.marker.coloraxis = "coloraxis3"
-    mb_trace.hovertemplate = build_hovertemplate(cols_mb) # Apply custom hover
-
-    mb_outline = px.scatter_mapbox(df, lat='Y ', lon='X ', hover_name='ID ', size='Abs mean bias ').data[0]
-    mb_outline.marker.color = 'black'
-    mb_outline.marker.size = mb_trace.marker.size * 1.1
-    mb_outline.hovertemplate = None
-    mb_outline.hoverinfo = 'skip'
-    mb_outline.showlegend = False
+    rmse_trace, rmse_outline = build_view('RMSE ', 'RMSE ', cols_rmse, 'coloraxis')
+    cf_trace, cf_outline = build_view('Central freq ', 'Central freq ', cols_cf, 'coloraxis2')
+    mb_trace, mb_outline = build_view('Mean bias ', 'Abs mean bias ', cols_mb, 'coloraxis3')
 
     # 5. Assemble Final Figure
-    import plotly.graph_objects as go
     fig = go.Figure()
 
     # Traces 0 & 1: RMSE (Visible by default)
@@ -326,7 +313,7 @@ def make_skill_maps(
             colorscale=color_scale_rmse,
             cmin=0, cmax=display_max_rmse,
             colorbar=dict(
-                title=dict(text=f"RMSE ({title_unit})", font=dict(color='black')),
+                title=dict(text=f'RMSE ({title_unit})', font=dict(color='black')),
                 tickfont=dict(color='black'),
                 tickvals=tick_values_rmse,
                 ticktext=tick_labels_rmse,
@@ -341,7 +328,7 @@ def make_skill_maps(
             cmin=0, cmax=display_max_cf,
             showscale=False,
             colorbar=dict(
-                title=dict(text="Central frequency (%)", font=dict(color='black')),
+                title=dict(text='Central frequency (%)', font=dict(color='black')),
                 tickfont=dict(color='black'),
                 tickvals=tick_values_cf,
                 ticktext=tick_labels_cf,
@@ -356,7 +343,7 @@ def make_skill_maps(
             cmin=-mb_cap, cmax=mb_cap, # Bounded entirely between -3x and +3x target
             showscale=False,
             colorbar=dict(
-                title=dict(text=f"Mean bias ({title_unit})", font=dict(color='black')),
+                title=dict(text=f'Mean bias ({title_unit})', font=dict(color='black')),
                 tickfont=dict(color='black'),
                 tickvals=tick_values_mb,
                 ticktext=tick_labels_mb,
@@ -367,14 +354,14 @@ def make_skill_maps(
 
         annotations=[
             dict(
-                text="<i>Select mapped statistics from dropdown:</i>",
+                text='<i>Select mapped statistics from dropdown:</i>',
                 x=0.01,
                 y=1.01,
-                xref="paper",
-                yref="paper",
+                xref='paper',
+                yref='paper',
                 showarrow=False,
-                xanchor="left",
-                yanchor="bottom",
+                xanchor='left',
+                yanchor='bottom',
                 font=dict(color='black', size=13)
             )
         ],
@@ -382,44 +369,44 @@ def make_skill_maps(
         # The Dropdown Menu
         updatemenus=[
             dict(
-                type="dropdown",
-                direction="down",
+                type='dropdown',
+                direction='down',
                 x=0.01,
-                xanchor="left",
+                xanchor='left',
                 y=0.99,
-                yanchor="top",
+                yanchor='top',
                 buttons=list([
                     dict(
-                        label="RMSE view",
-                        method="update",
+                        label='RMSE view',
+                        method='update',
                         args=[
-                            {"visible": [True, True, False, False, False, False]},
-                            {"title.text": plottitle_rmse,
-                             "coloraxis.showscale": True,
-                             "coloraxis2.showscale": False,
-                             "coloraxis3.showscale": False}
+                            {'visible': [True, True, False, False, False, False]},
+                            {'title.text': plottitle_rmse,
+                             'coloraxis.showscale': True,
+                             'coloraxis2.showscale': False,
+                             'coloraxis3.showscale': False}
                         ]
                     ),
                     dict(
-                        label="Central Frequency view",
-                        method="update",
+                        label='Central Frequency view',
+                        method='update',
                         args=[
-                            {"visible": [False, False, True, True, False, False]},
-                            {"title.text": plottitle_cf,
-                             "coloraxis.showscale": False,
-                             "coloraxis2.showscale": True,
-                             "coloraxis3.showscale": False}
+                            {'visible': [False, False, True, True, False, False]},
+                            {'title.text': plottitle_cf,
+                             'coloraxis.showscale': False,
+                             'coloraxis2.showscale': True,
+                             'coloraxis3.showscale': False}
                         ]
                     ),
                     dict(
-                        label="Mean Bias view",
-                        method="update",
+                        label='Mean Bias view',
+                        method='update',
                         args=[
-                            {"visible": [False, False, False, False, True, True]},
-                            {"title.text": plottitle_mb,
-                             "coloraxis.showscale": False,
-                             "coloraxis2.showscale": False,
-                             "coloraxis3.showscale": True}
+                            {'visible': [False, False, False, False, True, True]},
+                            {'title.text': plottitle_mb,
+                             'coloraxis.showscale': False,
+                             'coloraxis2.showscale': False,
+                             'coloraxis3.showscale': True}
                         ]
                     )
                 ])
