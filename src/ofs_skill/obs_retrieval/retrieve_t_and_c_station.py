@@ -393,15 +393,13 @@ def get_station_deployment(
 
     url = (f'{mdapi_url}/webapi/stations/{station_id}/deployments.json'
            '?units=metric')
-    try:
-        response = _rate_limited_get(url, timeout=120)
-        response.raise_for_status()
-        payload = response.json()
-    except requests.exceptions.RequestException as ex:
-        logger.warning(
-            'CO-OPS deployment metadata retrieval failed for %s: %s',
-            station_id, ex)
-        _station_deployment_cache[station_id] = None
+    payload = _get_with_retry(url, station_id, 'deployment-metadata',
+                              logger)
+    if payload is None:
+        # Don't pin a None result in the cache — a transient 5xx/403
+        # must not silently downgrade every subsequent caller for the
+        # rest of the process. Caching only the success path means the
+        # next caller gets a fresh retry budget.
         return None
 
     info = payload if isinstance(payload, dict) else None

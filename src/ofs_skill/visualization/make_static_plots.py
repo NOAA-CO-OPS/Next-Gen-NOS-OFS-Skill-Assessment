@@ -21,19 +21,28 @@ def _add_assumed_surface_note(ax, station_id, name_var):
     """Annotate matplotlib axis when obs depth is an assumed surface (0 m).
 
     Mirrors the HTML annotation in ``plotting_scalar``/``plotting_vector``.
-    Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default.
-    CO-OPS (bins endpoint / side-looking resolver) and NDBC report
-    authoritative depths; water level has no meaningful depth.
+    Fires for USGS/CHS (where 0.0 is a hard-coded fallback) and for
+    CO-OPS side-looking ADCPs whose ``sensor_depth`` was unavailable
+    from MDAPI — the latter is signalled by a ``depth unknown``
+    substring appended to the station name suffix by ``write_obs_ctlfile``.
+    Water level has no meaningful depth so wl is excluded.
     """
     if name_var == 'wl':
         return
-    if len(station_id) <= 3 or station_id[2] not in ('USGS', 'CHS'):
+    if len(station_id) <= 3:
         return
     try:
         obs_depth = float(station_id[3])
     except (TypeError, ValueError):
         return
     if obs_depth != 0.0:
+        return
+    name = str(station_id[1]) if len(station_id) > 1 else ''
+    is_usgs_chs = station_id[2] in ('USGS', 'CHS')
+    is_coops_unknown = (
+        station_id[2] == 'CO-OPS' and 'depth unknown' in name.lower()
+    )
+    if not (is_usgs_chs or is_coops_unknown):
         return
     ax.text(
         0.02, 0.03,

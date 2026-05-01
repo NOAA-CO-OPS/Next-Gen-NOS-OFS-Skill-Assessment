@@ -334,10 +334,10 @@ def _emit_summary_barplots(prop, var_info, logger):
             prop.whichcast = whichcast
             try:
                 summary_barplots.make_summary_bars(prop, var_info, logger)
-            except Exception as ex:
-                logger.warning(
-                    'Summary bar plot failed for %s/%s/%s: %s',
-                    prop.ofs, var_info[0], whichcast, ex)
+            except Exception:
+                logger.exception(
+                    'Summary bar plot failed for %s/%s/%s',
+                    prop.ofs, var_info[0], whichcast)
     finally:
         if saved_whichcast is not None:
             prop.whichcast = saved_whichcast

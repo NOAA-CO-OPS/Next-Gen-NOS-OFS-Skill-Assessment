@@ -447,14 +447,21 @@ def index_nearest_depth(
             if 'z' in model_netcdf:
                 z_np = np.array(model_netcdf['z'])    # Node depths
             else:
-                # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
-                # compute from sigma coordinates and bathymetry. Do the
-                # multiplication on the xarray DataArrays so broadcasting
-                # aligns by named dim ('node') — after multi-file concat
-                # `h` carries a time dim, so raw numpy broadcasting on
-                # (siglay, node) * (time, node) fails on trailing axes.
-                z_np = np.array(
-                    model_netcdf['siglay'] * model_netcdf['h']
+                # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z.
+                # The stations branch below has a working fallback, but
+                # the fields branch downstream code (`z_np[node, :]`
+                # below) expects shape (node, depth), and any siglay*h
+                # synthesised here either has the wrong shape or the
+                # wrong dim ordering. No real OFS currently exercises
+                # fields-mode FVCOM without pre-computed `z`; raising
+                # loudly avoids silently emitting wrong nearest-depth
+                # picks. Tracked under issue #129
+                # (plan_simplify_fvcom_z_fallback.md) — once fix_fvcom
+                # always assigns `z`, this branch becomes dead code.
+                raise NotImplementedError(
+                    'FVCOM fields-mode depth indexing requires a '
+                    "precomputed 'z' variable on the dataset. "
+                    'Tracked at issue #129.'
                 )
         elif model_source == 'roms':
             lon_rho_np = np.array(model_netcdf['lon_rho'])

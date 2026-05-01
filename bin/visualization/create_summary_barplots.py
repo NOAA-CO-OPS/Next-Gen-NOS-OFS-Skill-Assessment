@@ -90,10 +90,10 @@ def main(prop):
             prop.whichcast = whichcast
             try:
                 summary_barplots.make_summary_bars(prop, var_info, logger)
-            except Exception as ex:
-                logger.error(
-                    'Summary bar plot failed for %s/%s/%s: %s',
-                    prop.ofs, variable, whichcast, ex)
+            except Exception:
+                logger.exception(
+                    'Summary bar plot failed for %s/%s/%s',
+                    prop.ofs, variable, whichcast)
     logger.info('Finished create_summary_barplots')
 
 

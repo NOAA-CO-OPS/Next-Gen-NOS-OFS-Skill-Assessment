@@ -534,24 +534,32 @@ def oned_vector_plot1(
     )
 
     # Add annotation if assumed surface depth (no depth data from API).
-    # Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default
-    # rather than a resolved value. CO-OPS (bins endpoint / side-looking
-    # resolver) and NDBC report authoritative depths.
-    if len(station_id) > 3 and station_id[2] in ('USGS', 'CHS'):
-        try:
-            obs_depth = float(station_id[3])
-            if obs_depth == 0.0:
-                fig.add_annotation(
-                    text='<b>Note: no obs depth<br>available from API.<br>'
-                         'Assumed surface (0 m)</b>',
-                    xref='x domain', yref='y domain',
-                    font=dict(size=12, color='#E68A00'),
-                    x=0, y=0.0,
-                    showarrow=False,
-                    row=1, col=1,
-                )
-        except (ValueError, TypeError):
-            pass
+    # Fires for USGS/CHS (0.0 is a hard-coded fallback) and for CO-OPS
+    # side-looking ADCPs whose sensor_depth was unavailable from MDAPI
+    # (signalled by a "depth unknown" substring in the station name
+    # suffix written by write_obs_ctlfile). NDBC and resolved CO-OPS
+    # bins always report authoritative depths.
+    if len(station_id) > 3:
+        name = str(station_id[1]) if len(station_id) > 1 else ''
+        is_usgs_chs = station_id[2] in ('USGS', 'CHS')
+        is_coops_unknown = (
+            station_id[2] == 'CO-OPS' and 'depth unknown' in name.lower()
+        )
+        if is_usgs_chs or is_coops_unknown:
+            try:
+                obs_depth = float(station_id[3])
+                if obs_depth == 0.0:
+                    fig.add_annotation(
+                        text='<b>Note: no obs depth<br>available from API.<br>'
+                             'Assumed surface (0 m)</b>',
+                        xref='x domain', yref='y domain',
+                        font=dict(size=12, color='#E68A00'),
+                        x=0, y=0.0,
+                        showarrow=False,
+                        row=1, col=1,
+                    )
+            except (ValueError, TypeError):
+                pass
 
     # Set x-axis moving bar
     fig.update_xaxes(

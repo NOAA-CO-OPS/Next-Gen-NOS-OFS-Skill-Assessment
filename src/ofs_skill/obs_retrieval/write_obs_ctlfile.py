@@ -117,6 +117,7 @@ def _emit_coops_currents_entries(
         except (TypeError, ValueError):
             hfb = 0.0
         suffix = f'bin {int(bin_num):02d}'
+        depth_unknown = bool(bin_df.attrs.get('depth_unknown', False))
 
         override = (
             bin_overrides.get(bin_num)
@@ -128,8 +129,14 @@ def _emit_coops_currents_entries(
                 # User-specified depth supersedes the
                 # height_from_bottom side-looking path.
                 hfb = 0.0
+                depth_unknown = False
             if override.name:
                 suffix = f'bin {int(bin_num):02d} / {override.name}'
+        if depth_unknown:
+            # Surface the side-looker / legacy-fallback flag in the
+            # plot title; downstream "Assumed surface (0 m)" annotation
+            # gates on this substring.
+            suffix = f'{suffix}, depth unknown'
 
         virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
         entries.append(
