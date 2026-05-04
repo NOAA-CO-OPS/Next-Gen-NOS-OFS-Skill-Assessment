@@ -146,8 +146,17 @@ class TestParseWktPolygon:
 # ===========================================================================
 class TestParseUtcTimestamp:
     def test_valid_timestamp(self):
-        result = hf.parse_utc_timestamp('2026031512')
+        result = hf.parse_utc_timestamp('2026-03-15T12:00:00Z')
         assert result == datetime(2026, 3, 15, 12)
+
+    def test_valid_timestamp_with_minutes_seconds(self):
+        result = hf.parse_utc_timestamp('2026-03-15T12:34:56Z')
+        assert result == datetime(2026, 3, 15, 12, 34, 56)
+
+    def test_legacy_format_returns_none(self):
+        # Old YYYYMMDDHH form is no longer accepted
+        result = hf.parse_utc_timestamp('2026031512')
+        assert result is None
 
     def test_invalid_returns_none(self):
         result = hf.parse_utc_timestamp('not-a-date')
@@ -353,13 +362,17 @@ class TestProcessFilesDaily:
         assert (obs_2d / 'sfbofs_dir_20260315_hfradar.txt').exists()
 
         # Hourly .asc files should also be created (both modes always produced)
-        # 25 hours span 00:00-24:00; the 25th (00:00 next day) has date 20260316
-        hourly_asc = list(out_dir.glob('sfbofs_hfradar_mag_*_*.asc'))
+        # 25 hours span 00:00-24:00; new stamp format is YYYYMMDD-HHz
+        hourly_asc = list(out_dir.glob('sfbofs_hfradar_mag_*-*z.asc'))
         assert len(hourly_asc) == 25
 
         # Hourly JSON files should also be created
-        hourly_json = list(obs_2d.glob('sfbofs_*_*_ssu_hfradar.json'))
+        hourly_json = list(obs_2d.glob('sfbofs_*-*z_ssu_hfradar.json'))
         assert len(hourly_json) == 25
+
+        # Spot-check the new stamp format on a specific hour
+        assert (out_dir / 'sfbofs_hfradar_mag_20260315-00z.asc').exists()
+        assert (obs_2d / 'sfbofs_20260315-00z_ssu_hfradar.json').exists()
 
     def test_daily_min_count_threshold(self, tmp_path):
         """Cells with < 13 valid observations should be NaN in output."""
@@ -417,17 +430,17 @@ class TestProcessFilesHourly:
         hf.process_files(matching, datetime(2026, 3, 15), tmp_path, gdf,
                          'sfbofs', 'hourly', start, end)
 
-        # Hourly .asc files
-        assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0000.asc').exists()
-        assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0100.asc').exists()
-        assert (tmp_path / 'sfbofs_hfradar_mag_20260315_0200.asc').exists()
+        # Hourly .asc files (new YYYYMMDD-HHz stamp)
+        assert (tmp_path / 'sfbofs_hfradar_mag_20260315-00z.asc').exists()
+        assert (tmp_path / 'sfbofs_hfradar_mag_20260315-01z.asc').exists()
+        assert (tmp_path / 'sfbofs_hfradar_mag_20260315-02z.asc').exists()
 
         # Hourly JSON + txt files
         obs_2d = tmp_path / '2d'
-        assert (obs_2d / 'sfbofs_20260315_0000_ssu_hfradar.json').exists()
-        assert (obs_2d / 'sfbofs_20260315_0100_ssu_hfradar.json').exists()
-        assert (obs_2d / 'sfbofs_20260315_0200_ssu_hfradar.json').exists()
-        assert (obs_2d / 'sfbofs_mag_20260315_0000_hfradar.txt').exists()
+        assert (obs_2d / 'sfbofs_20260315-00z_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_20260315-01z_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_20260315-02z_ssu_hfradar.json').exists()
+        assert (obs_2d / 'sfbofs_mag_20260315-00z_hfradar.txt').exists()
 
         # Daily averaged files should also be created
         assert (tmp_path / 'sfbofs_hfradar_mag_20260315.asc').exists()
@@ -662,23 +675,49 @@ class TestCLIValidation:
     def test_help_flag(self):
         result = self._run(['--help'])
         assert result.returncode == 0
-        assert '-d' in result.stdout
+        assert '-s' in result.stdout
+        assert '-e' in result.stdout
         assert '-C' in result.stdout
+        # Old -d/--date flag should be gone
+        assert '--date' not in result.stdout
+        # Help text should advertise the ISO 8601 format
+        assert 'YYYY-MM-DDT' in result.stdout
 
     def test_missing_required_args(self):
         result = self._run([])
         assert result.returncode == 2
         assert 'required' in result.stderr
 
-    def test_hourly_without_start_end(self):
+    def test_legacy_date_flag_rejected(self):
+        # The old -d/--date flag has been removed in favor of -s/-e ISO 8601.
+        # Supply valid -s/-e so argparse reaches the unknown-arg check.
         result = self._run([
-            '-d', '20260315', '-C', '/tmp/test', '-o', 'sfbofs', '-m', 'hourly',
+            '-s', '2026-03-15T00:00:00Z', '-e', '2026-03-16T00:00:00Z',
+            '-d', '20260315', '-C', '/tmp/test', '-o', 'sfbofs',
         ])
         assert result.returncode == 2
-        assert 'start' in result.stderr.lower() or 'end' in result.stderr.lower()
+        assert 'unrecognized' in result.stderr.lower() or '-d' in result.stderr
+
+    def test_legacy_yyyymmddhh_format_rejected(self):
+        # The old YYYYMMDDHH form for -s/-e is no longer accepted
+        result = self._run([
+            '-s', '2026031500', '-e', '2026031523',
+            '-C', '/tmp/test', '-o', 'sfbofs',
+        ])
+        assert result.returncode == 2
+
+    def test_end_before_start_rejected(self):
+        result = self._run([
+            '-s', '2026-03-16T00:00:00Z', '-e', '2026-03-15T00:00:00Z',
+            '-C', '/tmp/test', '-o', 'sfbofs',
+        ])
+        assert result.returncode == 2
 
     def test_neither_bounds_nor_ofs(self):
-        result = self._run(['-d', '20260315', '-C', '/tmp/test'])
+        result = self._run([
+            '-s', '2026-03-15T00:00:00Z', '-e', '2026-03-16T00:00:00Z',
+            '-C', '/tmp/test',
+        ])
         assert result.returncode == 2
         assert 'bounds' in result.stderr.lower() or 'ofs' in result.stderr.lower()
 
