@@ -112,6 +112,32 @@ _CONCAT_VERIFY_MIN_KB = 50
 _MASKED_MIN_KB = 50
 
 
+def _silence_hdf5_errors():
+    """
+    Disable HDF5's automatic stderr printer on the calling thread.
+
+    netCDF4's ``Dataset(path, mode='w')`` (driving ``xr.Dataset.to_netcdf``)
+    probes whether ``path`` already exists as HDF5 before writing. On a
+    first-time write the probe raises ENOENT inside the HDF5 C library,
+    which prints a multi-line ``HDF5-DIAG`` trace to stderr. The probe
+    failure is non-fatal — the write succeeds — but the trace is alarming
+    and obscures real log lines under the parallel download path. HDF5's
+    error-printer state is thread-local, so the disable must be applied
+    on every thread that drives netCDF4 writes (main + each pool worker).
+    Best-effort: silently no-ops if libhdf5 cannot be opened.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+        soname = ctypes.util.find_library('hdf5') or 'libhdf5.so'
+        ctypes.CDLL(soname).H5Eset_auto2(ctypes.c_int64(0), None, None)
+    except (OSError, AttributeError):
+        pass
+
+
+_silence_hdf5_errors()
+
+
 def hours_range(start_date, end_date):
     """
     This function takes the start and end date and returns
@@ -900,7 +926,9 @@ def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
     list_of_files = []
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(
+        max_workers=max_workers, initializer=_silence_hdf5_errors,
+    ) as executor:
         futures = {
             executor.submit(
                 _download_single_file, url, obs2d_dir, logger, sat_type,
