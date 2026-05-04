@@ -904,6 +904,12 @@ def get_node_ofs(prop, logger, model_dataset=None):
     prop.data_model_1d_node_path = Path(prop.data_model_1d_node_path).as_posix()
     os.makedirs(prop.data_model_1d_node_path, exist_ok = True)
 
+    # Path to save plotly maps
+    prop.plotly_maps = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'],
+        dir_params['visual_maps'])
+    os.makedirs(prop.plotly_maps, exist_ok=True)
+
     # Reformat start & end dates
     # Convert ISO format to internal format for processing
     # Use local variables to avoid modifying prop permanently

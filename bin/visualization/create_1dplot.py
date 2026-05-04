@@ -785,6 +785,12 @@ def create_1dplot(prop, logger):
         dir_params['om_dir'])
     os.makedirs(prop.om_files, exist_ok=True)
 
+    # Path to save plotly maps
+    prop.plotly_maps = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'],
+        dir_params['visual_maps'])
+    os.makedirs(prop.plotly_maps, exist_ok=True)
+
     # Before starting, let's check if all necessary model files are
     # available. If not, program will exit. Or, if exception, program will
     # continue onwards but not before shouting a warning at you :)
