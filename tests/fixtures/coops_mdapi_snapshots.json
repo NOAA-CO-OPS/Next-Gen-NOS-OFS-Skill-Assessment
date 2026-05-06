@@ -1,0 +1,1888 @@
+{
+  "ca0101": {
+    "bins": {
+      "bin_size": 4.0,
+      "bins": [
+        {
+          "depth": null,
+          "distance": 5.49,
+          "is_pics": false,
+          "num": 1,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 9.51,
+          "is_pics": false,
+          "num": 2,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 13.5,
+          "is_pics": false,
+          "num": 3,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 17.5,
+          "is_pics": false,
+          "num": 4,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 21.49,
+          "is_pics": false,
+          "num": 5,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 25.51,
+          "is_pics": false,
+          "num": 6,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 29.5,
+          "is_pics": false,
+          "num": 7,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 33.5,
+          "is_pics": true,
+          "num": 8,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 37.49,
+          "is_pics": false,
+          "num": 9,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 41.51,
+          "is_pics": false,
+          "num": 10,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 45.51,
+          "is_pics": false,
+          "num": 11,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 49.5,
+          "is_pics": false,
+          "num": 12,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 53.49,
+          "is_pics": false,
+          "num": 13,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 57.49,
+          "is_pics": true,
+          "num": 14,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 61.51,
+          "is_pics": false,
+          "num": 15,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 65.5,
+          "is_pics": false,
+          "num": 16,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 69.5,
+          "is_pics": false,
+          "num": 17,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 73.49,
+          "is_pics": false,
+          "num": 18,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 77.51,
+          "is_pics": false,
+          "num": 19,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 81.5,
+          "is_pics": true,
+          "num": 20,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 85.5,
+          "is_pics": false,
+          "num": 21,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 89.49,
+          "is_pics": false,
+          "num": 22,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 93.51,
+          "is_pics": false,
+          "num": 23,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 97.51,
+          "is_pics": false,
+          "num": 24,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 101.5,
+          "is_pics": false,
+          "num": 25,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 105.49,
+          "is_pics": false,
+          "num": 26,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 109.52,
+          "is_pics": false,
+          "num": 27,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 113.51,
+          "is_pics": false,
+          "num": 28,
+          "ping_int": null,
+          "qc_flag": 1
+        }
+      ],
+      "center_bin_1_dist": 5.5,
+      "max_pics_bin": 28,
+      "nbr_of_bins": 28,
+      "real_time_bin": 14,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/bins.json",
+      "units": "meters"
+    },
+    "deployments": {
+      "deployments": [
+        {
+          "deployed": "2019-12-09 00:00:00",
+          "frequency": "250",
+          "id": "ca0101",
+          "instrument_desc": "Sontek ADP/Nortek AWAC",
+          "instrument_id": 32279,
+          "lat": 41.7375,
+          "lng": -70.62487,
+          "nbr_beams": "2",
+          "real_time_bin": null,
+          "retrieved": "2020-01-24 18:45:00",
+          "serial_num": "*5"
+        },
+        {
+          "deployed": "2020-04-28 00:00:00",
+          "frequency": "250",
+          "id": "ca0101",
+          "instrument_desc": "Sontek ADP/Nortek AWAC",
+          "instrument_id": 33512,
+          "lat": 41.73749923706055,
+          "lng": -70.6249008178711,
+          "nbr_beams": "2",
+          "real_time_bin": null,
+          "retrieved": "",
+          "serial_num": "M1457"
+        }
+      ],
+      "depth": 8.0,
+      "first_good_data": "",
+      "flood_direction_degrees": 40.0,
+      "height_from_bottom": 4.0,
+      "last_good_data": "",
+      "measured_depth": 8.0,
+      "orientation": "side",
+      "ping_int": null,
+      "sample_interval": 360,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/deployments.json",
+      "sensor_depth": 4.0,
+      "units": "meters"
+    },
+    "station": {
+      "count": 1,
+      "self": null,
+      "stations": [
+        {
+          "affiliations": "",
+          "bins": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/bins.json"
+          },
+          "center_bin_1_dist": 5.5,
+          "deployed": "2020-04-28 00:00:00",
+          "deployments": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/deployments.json"
+          },
+          "disclaimers": null,
+          "expand": "deployments,bins,harcon",
+          "harmonicConstituents": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/harcon.json"
+          },
+          "height_from_bottom": 4.0,
+          "id": "ca0101",
+          "lat": 41.73749923706055,
+          "lng": -70.6249008178711,
+          "name": "Cape Cod Canal, West End",
+          "noaachart": null,
+          "notices": null,
+          "observedst": true,
+          "portscode": "ca",
+          "products": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/products.json"
+          },
+          "project": "Cape Cod/Buzzards Bay PORTS",
+          "project_type": "PORTS",
+          "retrieved": "",
+          "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101.json",
+          "tideType": "",
+          "timezone_offset": "-5"
+        }
+      ],
+      "units": null
+    }
+  },
+  "cb0102": {
+    "bins": {
+      "bin_size": 1.0,
+      "bins": [
+        {
+          "depth": 3.51,
+          "distance": null,
+          "is_pics": false,
+          "num": 1,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 4.51,
+          "distance": null,
+          "is_pics": false,
+          "num": 2,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 5.52,
+          "distance": null,
+          "is_pics": false,
+          "num": 3,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 6.52,
+          "distance": null,
+          "is_pics": true,
+          "num": 4,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 7.53,
+          "distance": null,
+          "is_pics": false,
+          "num": 5,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 8.5,
+          "distance": null,
+          "is_pics": false,
+          "num": 6,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 9.51,
+          "distance": null,
+          "is_pics": false,
+          "num": 7,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 10.52,
+          "distance": null,
+          "is_pics": false,
+          "num": 8,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 11.52,
+          "distance": null,
+          "is_pics": true,
+          "num": 9,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 12.53,
+          "distance": null,
+          "is_pics": false,
+          "num": 10,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 13.53,
+          "distance": null,
+          "is_pics": false,
+          "num": 11,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 14.51,
+          "distance": null,
+          "is_pics": false,
+          "num": 12,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 15.51,
+          "distance": null,
+          "is_pics": false,
+          "num": 13,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 16.52,
+          "distance": null,
+          "is_pics": true,
+          "num": 14,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 17.53,
+          "distance": null,
+          "is_pics": false,
+          "num": 15,
+          "ping_int": null,
+          "qc_flag": 1
+        }
+      ],
+      "center_bin_1_dist": 1.4,
+      "max_pics_bin": 15,
+      "nbr_of_bins": 15,
+      "real_time_bin": 4,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/bins.json",
+      "units": "meters"
+    },
+    "deployments": {
+      "deployments": [
+        {
+          "deployed": "2004-05-14 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16187,
+          "lat": 36.95917,
+          "lng": -76.01278,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2005-02-08 00:00:00",
+          "serial_num": "0733"
+        },
+        {
+          "deployed": "2005-02-09 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16195,
+          "lat": 36.95917,
+          "lng": -76.01278,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2005-10-17 23:54:00",
+          "serial_num": "1310"
+        },
+        {
+          "deployed": "2005-10-18 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16200,
+          "lat": 36.95917,
+          "lng": -76.01278,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2005-11-07 23:54:00",
+          "serial_num": "1034"
+        },
+        {
+          "deployed": "2005-11-08 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16200,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2006-05-17 23:54:00",
+          "serial_num": "1034"
+        },
+        {
+          "deployed": "2006-05-18 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16198,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2006-12-13 11:00:00",
+          "serial_num": "1308"
+        },
+        {
+          "deployed": "2006-12-14 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16196,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2007-01-12 13:00:00",
+          "serial_num": "1524"
+        },
+        {
+          "deployed": "2007-01-12 15:45:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16210,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2007-06-19 15:00:00",
+          "serial_num": "1788"
+        },
+        {
+          "deployed": "2007-06-19 15:47:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16197,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2007-07-19 09:00:00",
+          "serial_num": "1307"
+        },
+        {
+          "deployed": "2007-07-26 15:48:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16202,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2007-08-27 13:30:00",
+          "serial_num": "1780"
+        },
+        {
+          "deployed": "2007-08-30 15:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16202,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2007-12-05 15:30:00",
+          "serial_num": "1780"
+        },
+        {
+          "deployed": "2007-12-05 16:32:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16215,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2008-07-30 14:10:00",
+          "serial_num": "1686"
+        },
+        {
+          "deployed": "2008-07-30 18:38:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16186,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2009-01-22 14:20:00",
+          "serial_num": "899"
+        },
+        {
+          "deployed": "2009-01-22 15:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16208,
+          "lat": 36.95903,
+          "lng": -76.012627,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2009-06-19 12:30:00",
+          "serial_num": "1232"
+        },
+        {
+          "deployed": "2009-06-19 13:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16202,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2009-08-25 17:00:00",
+          "serial_num": "1780"
+        },
+        {
+          "deployed": "2009-08-27 15:50:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16202,
+          "lat": 36.95903,
+          "lng": -76.01263,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2010-01-15 15:45:00",
+          "serial_num": "1780"
+        },
+        {
+          "deployed": "2010-01-15 16:20:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16214,
+          "lat": 36.9592,
+          "lng": -76.013,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2010-07-15 18:45:00",
+          "serial_num": "1825"
+        },
+        {
+          "deployed": "2010-07-15 19:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16210,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2011-02-16 15:00:00",
+          "serial_num": "1788"
+        },
+        {
+          "deployed": "2011-02-16 16:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16189,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2011-09-28 15:15:00",
+          "serial_num": "1274"
+        },
+        {
+          "deployed": "2011-09-28 17:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16341,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2012-03-22 14:00:00",
+          "serial_num": "5321"
+        },
+        {
+          "deployed": "2012-03-22 15:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16351,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2012-05-04 16:00:00",
+          "serial_num": "9109"
+        },
+        {
+          "deployed": "2012-05-11 19:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16351,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2012-09-21 18:00:00",
+          "serial_num": "9109"
+        },
+        {
+          "deployed": "2012-09-21 19:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16272,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2013-05-09 15:15:00",
+          "serial_num": "2885"
+        },
+        {
+          "deployed": "2013-05-09 16:50:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16351,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2013-08-06 23:00:00",
+          "serial_num": "9109"
+        },
+        {
+          "deployed": "2013-08-07 14:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16351,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2014-01-06 13:00:00",
+          "serial_num": "9109"
+        },
+        {
+          "deployed": "2014-01-06 14:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16272,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2014-06-24 23:00:00",
+          "serial_num": "2885"
+        },
+        {
+          "deployed": "2014-06-25 15:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16273,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2015-01-06 16:00:00",
+          "serial_num": "2889"
+        },
+        {
+          "deployed": "2015-01-06 17:10:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16361,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2015-06-23 17:00:00",
+          "serial_num": "6412"
+        },
+        {
+          "deployed": "2015-06-23 18:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16203,
+          "lat": 36.95922,
+          "lng": -76.01302,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2015-10-22 16:30:00",
+          "serial_num": "1337"
+        },
+        {
+          "deployed": "2015-10-22 17:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16203,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2016-03-01 15:00:00",
+          "serial_num": "1337"
+        },
+        {
+          "deployed": "2016-03-01 15:30:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16361,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2016-10-20 12:45:00",
+          "serial_num": "6412"
+        },
+        {
+          "deployed": "2016-10-20 12:50:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16272,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2017-04-14 20:58:00",
+          "serial_num": "2885"
+        },
+        {
+          "deployed": "2017-04-17 21:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16350,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2017-11-03 16:55:00",
+          "serial_num": "9107"
+        },
+        {
+          "deployed": "2017-11-03 16:56:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16402,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2018-05-24 19:36:00",
+          "serial_num": "11735"
+        },
+        {
+          "deployed": "2018-05-24 19:37:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 25858,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2018-12-27 13:00:00",
+          "serial_num": "*2"
+        },
+        {
+          "deployed": "2018-12-27 13:01:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16269,
+          "lat": 36.95939,
+          "lng": -76.01281,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2019-05-29 12:20:00",
+          "serial_num": "2879"
+        },
+        {
+          "deployed": "2019-05-29 12:21:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16272,
+          "lat": 36.95939,
+          "lng": -76.01821,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2019-11-14 17:30:00",
+          "serial_num": "2885"
+        },
+        {
+          "deployed": "2019-11-14 17:31:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 33513,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2020-07-08 13:00:00",
+          "serial_num": "*9107"
+        },
+        {
+          "deployed": "2020-07-08 13:01:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16189,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2020-12-03 17:00:00",
+          "serial_num": "1274"
+        },
+        {
+          "deployed": "2020-12-03 18:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 29083,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2021-07-20 11:50:00",
+          "serial_num": "14185"
+        },
+        {
+          "deployed": "2021-07-20 12:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 16327,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2022-08-03 12:30:00",
+          "serial_num": "5268"
+        },
+        {
+          "deployed": "2022-08-03 12:35:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 21859,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2022-11-07 16:00:00",
+          "serial_num": "AQD 13430/AQP 8125"
+        },
+        {
+          "deployed": "2022-11-07 16:15:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 23127,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2023-03-27 21:09:00",
+          "serial_num": "AQD 2343/AQP 7350"
+        },
+        {
+          "deployed": "2023-06-05 00:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 36740,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2023-12-05 16:25:00",
+          "serial_num": "AQD 12191/AQP 7166"
+        },
+        {
+          "deployed": "2023-12-05 16:30:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 35875,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2024-06-12 11:25:00",
+          "serial_num": "AQD 2709/AQP 2634"
+        },
+        {
+          "deployed": "2024-06-12 11:30:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 41421,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2024-06-12 11:31:00",
+          "serial_num": "AQD 18125/AQP 12945"
+        },
+        {
+          "deployed": "2024-06-12 11:32:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 41421,
+          "lat": 36.9594,
+          "lng": -76.0128,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "2025-01-27 14:55:00",
+          "serial_num": "AQD 18125/AQP 12945"
+        },
+        {
+          "deployed": "2025-01-27 15:00:00",
+          "frequency": "1000",
+          "id": "cb0102",
+          "instrument_desc": "Nortek Gen 1 ADCP",
+          "instrument_id": 23114,
+          "lat": 36.95940017700195,
+          "lng": -76.01280212402344,
+          "nbr_beams": "3",
+          "real_time_bin": null,
+          "retrieved": "",
+          "serial_num": "AQD 1780/AQP 10549"
+        }
+      ],
+      "depth": 22.0,
+      "first_good_data": "",
+      "flood_direction_degrees": 280.0,
+      "height_from_bottom": 0.0,
+      "last_good_data": "",
+      "measured_depth": 22.0,
+      "orientation": "down",
+      "ping_int": null,
+      "sample_interval": 360,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/deployments.json",
+      "sensor_depth": 1.925,
+      "units": "meters"
+    },
+    "station": {
+      "count": 1,
+      "self": null,
+      "stations": [
+        {
+          "affiliations": "",
+          "bins": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/bins.json"
+          },
+          "center_bin_1_dist": 1.4,
+          "deployed": "2025-01-27 15:00:00",
+          "deployments": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/deployments.json"
+          },
+          "disclaimers": null,
+          "expand": "deployments,bins,harcon",
+          "harmonicConstituents": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/harcon.json"
+          },
+          "height_from_bottom": 0.0,
+          "id": "cb0102",
+          "lat": 36.95940017700195,
+          "lng": -76.01280212402344,
+          "name": "Cape Henry LB 2CH",
+          "noaachart": 12222,
+          "notices": null,
+          "observedst": true,
+          "portscode": "cs",
+          "products": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102/products.json"
+          },
+          "project": "Chesapeake Bay South PORTS",
+          "project_type": "PORTS",
+          "retrieved": "",
+          "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0102.json",
+          "tideType": "",
+          "timezone_offset": "-5"
+        }
+      ],
+      "units": null
+    }
+  },
+  "cb1401": {
+    "bins": {
+      "bin_size": 4.0,
+      "bins": [
+        {
+          "depth": null,
+          "distance": 5.0,
+          "is_pics": false,
+          "num": 1,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 8.99,
+          "is_pics": false,
+          "num": 2,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 13.02,
+          "is_pics": false,
+          "num": 3,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 17.01,
+          "is_pics": false,
+          "num": 4,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 21.0,
+          "is_pics": false,
+          "num": 5,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 24.99,
+          "is_pics": false,
+          "num": 6,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 28.99,
+          "is_pics": false,
+          "num": 7,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 33.01,
+          "is_pics": false,
+          "num": 8,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 37.0,
+          "is_pics": false,
+          "num": 9,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 41.0,
+          "is_pics": false,
+          "num": 10,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 44.99,
+          "is_pics": false,
+          "num": 11,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 49.01,
+          "is_pics": false,
+          "num": 12,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 53.01,
+          "is_pics": false,
+          "num": 13,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 57.0,
+          "is_pics": false,
+          "num": 14,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 60.99,
+          "is_pics": false,
+          "num": 15,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 65.01,
+          "is_pics": false,
+          "num": 16,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 69.01,
+          "is_pics": false,
+          "num": 17,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 73.0,
+          "is_pics": false,
+          "num": 18,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 76.99,
+          "is_pics": false,
+          "num": 19,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 80.99,
+          "is_pics": true,
+          "num": 20,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 85.01,
+          "is_pics": false,
+          "num": 21,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 89.0,
+          "is_pics": false,
+          "num": 22,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 93.0,
+          "is_pics": false,
+          "num": 23,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 96.99,
+          "is_pics": false,
+          "num": 24,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 101.01,
+          "is_pics": false,
+          "num": 25,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 105.0,
+          "is_pics": false,
+          "num": 26,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 109.0,
+          "is_pics": false,
+          "num": 27,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 112.99,
+          "is_pics": false,
+          "num": 28,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 117.01,
+          "is_pics": false,
+          "num": 29,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 121.01,
+          "is_pics": true,
+          "num": 30,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 125.0,
+          "is_pics": false,
+          "num": 31,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 128.99,
+          "is_pics": false,
+          "num": 32,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 133.02,
+          "is_pics": false,
+          "num": 33,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 137.01,
+          "is_pics": false,
+          "num": 34,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 141.0,
+          "is_pics": false,
+          "num": 35,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 145.0,
+          "is_pics": false,
+          "num": 36,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 148.99,
+          "is_pics": false,
+          "num": 37,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 153.01,
+          "is_pics": false,
+          "num": 38,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 157.0,
+          "is_pics": false,
+          "num": 39,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 161.0,
+          "is_pics": true,
+          "num": 40,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 164.99,
+          "is_pics": false,
+          "num": 41,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 169.01,
+          "is_pics": false,
+          "num": 42,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 173.01,
+          "is_pics": false,
+          "num": 43,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 177.0,
+          "is_pics": false,
+          "num": 44,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 180.99,
+          "is_pics": false,
+          "num": 45,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 185.02,
+          "is_pics": false,
+          "num": 46,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 189.01,
+          "is_pics": false,
+          "num": 47,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": null,
+          "distance": 193.0,
+          "is_pics": false,
+          "num": 48,
+          "ping_int": null,
+          "qc_flag": 1
+        }
+      ],
+      "center_bin_1_dist": 5.0,
+      "max_pics_bin": 48,
+      "nbr_of_bins": 48,
+      "real_time_bin": 30,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/bins.json",
+      "units": "meters"
+    },
+    "deployments": {
+      "deployments": [
+        {
+          "deployed": "2021-02-24 10:00:00",
+          "frequency": "500",
+          "id": "cb1401",
+          "instrument_desc": "Sontek ADP/Nortek AWAC",
+          "instrument_id": 34944,
+          "lat": 36.98379898071289,
+          "lng": -76.443603515625,
+          "nbr_beams": "2",
+          "real_time_bin": null,
+          "retrieved": "",
+          "serial_num": "M1442"
+        }
+      ],
+      "depth": 17.0,
+      "first_good_data": "",
+      "flood_direction_degrees": 335.0,
+      "height_from_bottom": 10.3,
+      "last_good_data": "",
+      "measured_depth": 17.0,
+      "orientation": "side",
+      "ping_int": null,
+      "sample_interval": 360,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/deployments.json",
+      "sensor_depth": 6.7,
+      "units": "meters"
+    },
+    "station": {
+      "count": 1,
+      "self": null,
+      "stations": [
+        {
+          "affiliations": "",
+          "bins": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/bins.json"
+          },
+          "center_bin_1_dist": 5.0,
+          "deployed": "2021-02-24 10:00:00",
+          "deployments": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/deployments.json"
+          },
+          "disclaimers": null,
+          "expand": "deployments,bins,harcon",
+          "harmonicConstituents": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/harcon.json"
+          },
+          "height_from_bottom": 10.3,
+          "id": "cb1401",
+          "lat": 36.98379898071289,
+          "lng": -76.443603515625,
+          "name": "Newport News Shipbuilding",
+          "noaachart": null,
+          "notices": null,
+          "observedst": true,
+          "portscode": "cs",
+          "products": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/products.json"
+          },
+          "project": "Chesapeake Bay South PORTS",
+          "project_type": "PORTS",
+          "retrieved": "",
+          "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401.json",
+          "tideType": "",
+          "timezone_offset": "-5"
+        }
+      ],
+      "units": null
+    }
+  },
+  "n03020": {
+    "bins": {
+      "bin_size": 1.0,
+      "bins": [
+        {
+          "depth": 9.94,
+          "distance": null,
+          "is_pics": false,
+          "num": 1,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 8.93,
+          "distance": null,
+          "is_pics": true,
+          "num": 2,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 7.92,
+          "distance": null,
+          "is_pics": false,
+          "num": 3,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 6.92,
+          "distance": null,
+          "is_pics": false,
+          "num": 4,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 5.94,
+          "distance": null,
+          "is_pics": false,
+          "num": 5,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 4.94,
+          "distance": null,
+          "is_pics": false,
+          "num": 6,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 3.93,
+          "distance": null,
+          "is_pics": true,
+          "num": 7,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 2.93,
+          "distance": null,
+          "is_pics": false,
+          "num": 8,
+          "ping_int": null,
+          "qc_flag": 1
+        },
+        {
+          "depth": 1.92,
+          "distance": null,
+          "is_pics": true,
+          "num": 9,
+          "ping_int": null,
+          "qc_flag": 1
+        }
+      ],
+      "center_bin_1_dist": 1.88,
+      "max_pics_bin": 9,
+      "nbr_of_bins": 9,
+      "real_time_bin": 9,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/bins.json",
+      "units": "meters"
+    },
+    "deployments": {
+      "deployments": [
+        {
+          "deployed": "2005-02-18 00:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16168,
+          "lat": 40.60725,
+          "lng": -74.03912,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2006-04-23 23:54:00",
+          "serial_num": "3096"
+        },
+        {
+          "deployed": "2006-04-24 00:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16231,
+          "lat": 40.60725,
+          "lng": -74.03912,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2006-08-16 23:54:00",
+          "serial_num": "3418"
+        },
+        {
+          "deployed": "2006-08-17 00:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16168,
+          "lat": 40.60725,
+          "lng": -74.03912,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2007-08-28 09:00:00",
+          "serial_num": "3096"
+        },
+        {
+          "deployed": "2007-08-28 10:14:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16205,
+          "lat": 40.60728,
+          "lng": -74.0391,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2009-06-24 13:42:00",
+          "serial_num": "948"
+        },
+        {
+          "deployed": "2009-06-24 15:14:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16148,
+          "lat": 40.60725,
+          "lng": -74.0391,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2010-08-25 16:00:00",
+          "serial_num": "942"
+        },
+        {
+          "deployed": "2010-08-25 21:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16239,
+          "lat": 40.60695,
+          "lng": -74.03875,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2011-12-21 12:00:00",
+          "serial_num": "3030"
+        },
+        {
+          "deployed": "2011-12-21 15:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16205,
+          "lat": 40.6062,
+          "lng": -74.03835,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2012-01-26 12:31:00",
+          "serial_num": "948"
+        },
+        {
+          "deployed": "2012-01-26 12:37:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16205,
+          "lat": 40.6062,
+          "lng": -74.03835,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2012-10-29 22:00:00",
+          "serial_num": "948"
+        },
+        {
+          "deployed": "2014-07-17 14:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16395,
+          "lat": 40.60625,
+          "lng": -74.0383,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2015-12-17 10:00:00",
+          "serial_num": "21560"
+        },
+        {
+          "deployed": "2015-12-17 10:06:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16381,
+          "lat": 40.60623,
+          "lng": -74.03842,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2017-05-10 12:00:00",
+          "serial_num": "18372"
+        },
+        {
+          "deployed": "2017-05-10 12:01:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16231,
+          "lat": 40.60599899291992,
+          "lng": -74.03810119628906,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "2021-11-30 00:00:00",
+          "serial_num": "3418"
+        },
+        {
+          "deployed": "2023-04-04 00:00:00",
+          "frequency": "600",
+          "id": "n03020",
+          "instrument_desc": "tRDI Workhorse ADCP",
+          "instrument_id": 16381,
+          "lat": 40.60639953613281,
+          "lng": -74.03800201416016,
+          "nbr_beams": "4",
+          "real_time_bin": null,
+          "retrieved": "",
+          "serial_num": "18372"
+        }
+      ],
+      "depth": 15.7,
+      "first_good_data": "",
+      "flood_direction_degrees": 324.0,
+      "height_from_bottom": 0.9,
+      "last_good_data": "",
+      "measured_depth": 15.7,
+      "orientation": "up",
+      "ping_int": null,
+      "sample_interval": 360,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/deployments.json",
+      "sensor_depth": 14.8,
+      "units": "meters"
+    },
+    "station": {
+      "count": 1,
+      "self": null,
+      "stations": [
+        {
+          "affiliations": "",
+          "bins": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/bins.json"
+          },
+          "center_bin_1_dist": 1.88,
+          "deployed": "2023-04-04 00:00:00",
+          "deployments": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/deployments.json"
+          },
+          "disclaimers": null,
+          "expand": "deployments,bins,harcon",
+          "harmonicConstituents": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/harcon.json"
+          },
+          "height_from_bottom": 0.9,
+          "id": "n03020",
+          "lat": 40.60639953613281,
+          "lng": -74.03800201416016,
+          "name": "The Narrows",
+          "noaachart": 12327,
+          "notices": null,
+          "observedst": true,
+          "portscode": "ny",
+          "products": {
+            "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020/products.json"
+          },
+          "project": "New York/New Jersey Harbor PORTS",
+          "project_type": "PORTS",
+          "retrieved": "",
+          "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/n03020.json",
+          "tideType": "",
+          "timezone_offset": "-5"
+        }
+      ],
+      "units": null
+    }
+  }
+}

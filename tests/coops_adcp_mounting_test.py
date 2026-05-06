@@ -32,13 +32,22 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-_FIXTURES = Path(__file__).parent / 'fixtures' / 'coops_mdapi'
+_FIXTURES = Path(__file__).parent / 'fixtures'
+_SNAPSHOTS_PATH = _FIXTURES / 'coops_mdapi_snapshots.json'
+
+with open(_SNAPSHOTS_PATH, encoding='utf-8') as _fh:
+    _SNAPSHOTS = json.load(_fh)
 
 
 def _load_fixture(stem: str) -> dict:
-    path = _FIXTURES / stem
-    with open(path, encoding='utf-8') as fh:
-        return json.load(fh)
+    """Look up a captured MDAPI response by the legacy
+    ``{station_id}_{endpoint}.json`` filename. Routes through the
+    consolidated ``coops_mdapi_snapshots.json`` so the fixtures live
+    in one file rather than scattered across a sub-directory.
+    """
+    name = stem.removesuffix('.json')
+    station_id, _, endpoint = name.rpartition('_')
+    return _SNAPSHOTS[station_id][endpoint]
 
 
 @pytest.fixture
