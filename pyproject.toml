@@ -123,4 +123,5 @@ python_functions = ["test_*"]
 addopts = "--verbose --cov=src/ofs_skill --cov-report=html --cov-report=term-missing"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
+    "manual: marks tests as opt-in / live-API audits (run with '-m manual')",
 ]

@@ -1,0 +1,41 @@
+{
+  "count": 1,
+  "units": null,
+  "stations": [
+    {
+      "project": "Boston Harbor PORTS",
+      "deployed": "2025-11-17 00:02:00",
+      "retrieved": "",
+      "timezone_offset": "-5",
+      "observedst": true,
+      "project_type": "PORTS",
+      "noaachart": null,
+      "deployments": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101/deployments.json"
+      },
+      "bins": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101/bins.json"
+      },
+      "harmonicConstituents": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101/harcon.json"
+      },
+      "height_from_bottom": 4.0,
+      "center_bin_1_dist": 6.0,
+      "id": "bh0101",
+      "name": "Castle Island",
+      "lat": 42.34086227416992,
+      "lng": -71.01233673095703,
+      "affiliations": "",
+      "portscode": "bh",
+      "products": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101/products.json"
+      },
+      "disclaimers": null,
+      "notices": null,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101.json",
+      "expand": "deployments,bins,harcon",
+      "tideType": ""
+    }
+  ],
+  "self": null
+}

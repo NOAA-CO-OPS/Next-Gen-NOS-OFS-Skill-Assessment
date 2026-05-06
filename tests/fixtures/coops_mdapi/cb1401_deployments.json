@@ -1,0 +1,29 @@
+{
+  "units": "meters",
+  "flood_direction_degrees": 335.0,
+  "orientation": "side",
+  "sensor_depth": 6.7,
+  "depth": 17.0,
+  "measured_depth": 17.0,
+  "height_from_bottom": 10.3,
+  "sample_interval": 360,
+  "ping_int": null,
+  "first_good_data": "",
+  "last_good_data": "",
+  "deployments": [
+    {
+      "id": "cb1401",
+      "deployed": "2021-02-24 10:00:00",
+      "retrieved": "",
+      "lat": 36.98379898071289,
+      "lng": -76.443603515625,
+      "instrument_id": 34944,
+      "instrument_desc": "Sontek ADP/Nortek AWAC",
+      "real_time_bin": null,
+      "serial_num": "M1442",
+      "frequency": "500",
+      "nbr_beams": "2"
+    }
+  ],
+  "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/deployments.json"
+}

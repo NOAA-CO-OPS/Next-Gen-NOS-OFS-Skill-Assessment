@@ -1,0 +1,42 @@
+{
+  "units": "meters",
+  "flood_direction_degrees": 310.0,
+  "orientation": "side",
+  "sensor_depth": 8.5,
+  "depth": 12.5,
+  "measured_depth": 12.5,
+  "height_from_bottom": 4.0,
+  "sample_interval": 360,
+  "ping_int": null,
+  "first_good_data": "",
+  "last_good_data": "",
+  "deployments": [
+    {
+      "id": "bh0101",
+      "deployed": "2025-11-17 00:00:00",
+      "retrieved": "2025-11-17 00:00:00",
+      "lat": 42.34086227416992,
+      "lng": -71.01233673095703,
+      "instrument_id": 26984,
+      "instrument_desc": "Sontek ADP/Nortek AWAC",
+      "real_time_bin": null,
+      "serial_num": "*2",
+      "frequency": "250",
+      "nbr_beams": "2"
+    },
+    {
+      "id": "bh0101",
+      "deployed": "2025-11-17 00:02:00",
+      "retrieved": "",
+      "lat": 42.34086227416992,
+      "lng": -71.01233673095703,
+      "instrument_id": 52259,
+      "instrument_desc": "Sontek ADP/Nortek AWAC",
+      "real_time_bin": null,
+      "serial_num": "*3",
+      "frequency": "250",
+      "nbr_beams": "2"
+    }
+  ],
+  "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/bh0101/deployments.json"
+}

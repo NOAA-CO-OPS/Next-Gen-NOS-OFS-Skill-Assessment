@@ -1,0 +1,41 @@
+{
+  "count": 1,
+  "units": null,
+  "stations": [
+    {
+      "project": "Tampa Bay PORTS",
+      "deployed": "2020-09-15 13:00:00",
+      "retrieved": "",
+      "timezone_offset": "-5",
+      "observedst": true,
+      "project_type": "PORTS",
+      "noaachart": null,
+      "deployments": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010/deployments.json"
+      },
+      "bins": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010/bins.json"
+      },
+      "harmonicConstituents": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010/harcon.json"
+      },
+      "height_from_bottom": 0.0,
+      "center_bin_1_dist": 1.44,
+      "id": "t03010",
+      "name": "Port Manatee",
+      "lat": 27.663949966430664,
+      "lng": -82.59877014160156,
+      "affiliations": "",
+      "portscode": "tb",
+      "products": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010/products.json"
+      },
+      "disclaimers": null,
+      "notices": null,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010.json",
+      "expand": "deployments,bins,harcon",
+      "tideType": ""
+    }
+  ],
+  "self": null
+}

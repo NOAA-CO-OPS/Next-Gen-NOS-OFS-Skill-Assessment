@@ -1,0 +1,41 @@
+{
+  "count": 1,
+  "units": null,
+  "stations": [
+    {
+      "project": "Chesapeake Bay South PORTS",
+      "deployed": "2021-02-24 10:00:00",
+      "retrieved": "",
+      "timezone_offset": "-5",
+      "observedst": true,
+      "project_type": "PORTS",
+      "noaachart": null,
+      "deployments": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/deployments.json"
+      },
+      "bins": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/bins.json"
+      },
+      "harmonicConstituents": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/harcon.json"
+      },
+      "height_from_bottom": 10.3,
+      "center_bin_1_dist": 5.0,
+      "id": "cb1401",
+      "name": "Newport News Shipbuilding",
+      "lat": 36.98379898071289,
+      "lng": -76.443603515625,
+      "affiliations": "",
+      "portscode": "cs",
+      "products": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401/products.json"
+      },
+      "disclaimers": null,
+      "notices": null,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb1401.json",
+      "expand": "deployments,bins,harcon",
+      "tideType": ""
+    }
+  ],
+  "self": null
+}

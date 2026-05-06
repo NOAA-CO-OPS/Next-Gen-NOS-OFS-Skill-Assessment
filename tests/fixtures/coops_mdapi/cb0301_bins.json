@@ -1,0 +1,131 @@
+{
+  "nbr_of_bins": 15,
+  "max_pics_bin": 15,
+  "units": "meters",
+  "bin_size": 1.0,
+  "center_bin_1_dist": 1.4,
+  "real_time_bin": 2,
+  "bins": [
+    {
+      "num": 1,
+      "depth": 3.63,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": true
+    },
+    {
+      "num": 2,
+      "depth": 4.63,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": true
+    },
+    {
+      "num": 3,
+      "depth": 5.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 4,
+      "depth": 6.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 5,
+      "depth": 7.65,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 6,
+      "depth": 8.63,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 7,
+      "depth": 9.63,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 8,
+      "depth": 10.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": true
+    },
+    {
+      "num": 9,
+      "depth": 11.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 10,
+      "depth": 12.65,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 11,
+      "depth": 13.66,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 12,
+      "depth": 14.63,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 13,
+      "depth": 15.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 14,
+      "depth": 16.64,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    },
+    {
+      "num": 15,
+      "depth": 17.65,
+      "distance": null,
+      "qc_flag": 1,
+      "ping_int": null,
+      "is_pics": false
+    }
+  ],
+  "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/cb0301/bins.json"
+}

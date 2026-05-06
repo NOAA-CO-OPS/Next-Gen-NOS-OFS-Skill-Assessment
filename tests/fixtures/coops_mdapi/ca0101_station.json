@@ -1,0 +1,41 @@
+{
+  "count": 1,
+  "units": null,
+  "stations": [
+    {
+      "project": "Cape Cod/Buzzards Bay PORTS",
+      "deployed": "2020-04-28 00:00:00",
+      "retrieved": "",
+      "timezone_offset": "-5",
+      "observedst": true,
+      "project_type": "PORTS",
+      "noaachart": null,
+      "deployments": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/deployments.json"
+      },
+      "bins": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/bins.json"
+      },
+      "harmonicConstituents": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/harcon.json"
+      },
+      "height_from_bottom": 4.0,
+      "center_bin_1_dist": 5.5,
+      "id": "ca0101",
+      "name": "Cape Cod Canal, West End",
+      "lat": 41.73749923706055,
+      "lng": -70.6249008178711,
+      "affiliations": "",
+      "portscode": "ca",
+      "products": {
+        "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101/products.json"
+      },
+      "disclaimers": null,
+      "notices": null,
+      "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/ca0101.json",
+      "expand": "deployments,bins,harcon",
+      "tideType": ""
+    }
+  ],
+  "self": null
+}

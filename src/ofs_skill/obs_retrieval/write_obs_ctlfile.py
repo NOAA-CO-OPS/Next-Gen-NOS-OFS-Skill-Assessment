@@ -40,6 +40,9 @@ from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_station
 from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
 from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
+    canonicalize_mounting_symbol,
+    emit_adcp_mounting_summary,
+    reset_run_counters,
     retrieve_t_and_c_station,
 )
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
@@ -80,11 +83,18 @@ def _emit_coops_currents_entries(
     currents — one DataFrame per ADCP bin. Emit one CTL entry per bin
     using virtual-ID ``{parent}_b{NN}``.
 
-    For side-looking (PICS) ADCPs the MDAPI leaves ``depth`` null on
-    every bin. We emit a 6th field on the coord line carrying
-    ``height_from_bottom`` so that the model-CTL writer can later
-    resolve an accurate obs depth from the model bathymetry
-    (``depth = h - height_from_bottom``).
+    The coord line carries (in order):
+      lat lon zdiff depth shift height_from_bottom mounting_type
+
+    The 6th field (``height_from_bottom``) is non-zero only for
+    side-looking ADCPs whose per-bin MDAPI ``depth`` is null; it lets
+    the model-CTL writer resolve an accurate obs depth via
+    ``water_depth - height_from_bottom``. The 7th field is the
+    canonical mounting symbol (``side``/``up``/``down``/``unknown``)
+    propagated from MDAPI's deployment ``orientation`` so downstream
+    plotters / CTL readers do not have to re-derive it from numeric
+    fields. Old CTL files without the 7th token are forward-compatible
+    (callers default to empty).
 
     When ``bin_overrides`` is a ``dict[int, BinSpec]``, only bins listed
     in the user CSV are emitted; any per-row depth/orientation/name
@@ -116,6 +126,8 @@ def _emit_coops_currents_entries(
             hfb = float(hfb_raw) if hfb_raw is not None else 0.0
         except (TypeError, ValueError):
             hfb = 0.0
+        mounting_type = canonicalize_mounting_symbol(
+            bin_df.attrs.get('mounting_type'))
         suffix = f'bin {int(bin_num):02d}'
         depth_unknown = bool(bin_df.attrs.get('depth_unknown', False))
 
@@ -132,6 +144,13 @@ def _emit_coops_currents_entries(
                 depth_unknown = False
             if override.name:
                 suffix = f'bin {int(bin_num):02d} / {override.name}'
+            if override.orientation:
+                # User CSV's free-form orientation column overrides
+                # the MDAPI-derived mounting symbol. Canonicalised so
+                # an inconsistent CSV value (e.g. ``Side-Looking``)
+                # still emits a clean token to the CTL 7th field.
+                mounting_type = canonicalize_mounting_symbol(
+                    override.orientation)
         if depth_unknown:
             # Surface the side-looker / legacy-fallback flag in the
             # plot title; downstream "Assumed surface (0 m)" annotation
@@ -144,7 +163,7 @@ def _emit_coops_currents_entries(
             f'{name_var}_{ofs}_CO-OPS '
             f'"{name} ({suffix})"\n  '
             f'{y_value:.3f} {x_value:.3f} 0.0  '
-            f'{depth:.2f}  0.0  {hfb:.2f}\n'
+            f'{depth:.2f}  0.0  {hfb:.2f}  {mounting_type}\n'
         )
     if bin_overrides is not None:
         logger.info(
@@ -959,6 +978,12 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
         else _USGS_MAX_WORKERS_NO_KEY
     )
 
+    # Reset run-level counters before kicking off the variable workers.
+    # The counter is module-level state in retrieve_t_and_c_station; if a
+    # prior run lived in the same Python process its tally would otherwise
+    # leak into this run's end-of-run summary log.
+    reset_run_counters()
+
     with ThreadPoolExecutor(max_workers=len(var_list)) as executor:
         futures = []
         for variable in var_list:
@@ -972,3 +997,9 @@ def write_obs_ctlfile(start_date , end_date , datum , path , ofs, stationowner,
         # Wait for all variables to complete; re-raise any exceptions
         for future in futures:
             future.result()
+
+    # Emit the ADCP mounting-type tally now that all currents stations
+    # have been processed. Mirrors the per-station 'CO-OPS retrieval
+    # summary' lines and surfaces 'unknown' counts at WARNING so a
+    # future MDAPI vocabulary change is loud rather than silent.
+    emit_adcp_mounting_summary(logger)

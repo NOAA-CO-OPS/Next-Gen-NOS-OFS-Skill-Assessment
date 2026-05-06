@@ -1,0 +1,55 @@
+{
+  "units": "meters",
+  "flood_direction_degrees": 38.0,
+  "orientation": "up",
+  "sensor_depth": 16.2,
+  "depth": 16.7,
+  "measured_depth": 16.7,
+  "height_from_bottom": 0.0,
+  "sample_interval": 360,
+  "ping_int": null,
+  "first_good_data": "",
+  "last_good_data": "",
+  "deployments": [
+    {
+      "id": "t03010",
+      "deployed": "2017-01-24 00:00:00",
+      "retrieved": "2017-03-08 21:06:00",
+      "lat": 27.66453,
+      "lng": -82.59918,
+      "instrument_id": 16363,
+      "instrument_desc": "tRDI Workhorse ADCP",
+      "real_time_bin": null,
+      "serial_num": "9923",
+      "frequency": "1200",
+      "nbr_beams": "4"
+    },
+    {
+      "id": "t03010",
+      "deployed": "2017-03-08 21:12:00",
+      "retrieved": "2020-09-15 12:00:00",
+      "lat": 27.664499282836914,
+      "lng": -82.59919738769531,
+      "instrument_id": 16363,
+      "instrument_desc": "tRDI Workhorse ADCP",
+      "real_time_bin": null,
+      "serial_num": "9923",
+      "frequency": "1200",
+      "nbr_beams": "4"
+    },
+    {
+      "id": "t03010",
+      "deployed": "2020-09-15 13:00:00",
+      "retrieved": "",
+      "lat": 27.663949966430664,
+      "lng": -82.59877014160156,
+      "instrument_id": 16188,
+      "instrument_desc": "tRDI Workhorse ADCP",
+      "real_time_bin": null,
+      "serial_num": "3741",
+      "frequency": "1200",
+      "nbr_beams": "4"
+    }
+  ],
+  "self": "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/t03010/deployments.json"
+}
