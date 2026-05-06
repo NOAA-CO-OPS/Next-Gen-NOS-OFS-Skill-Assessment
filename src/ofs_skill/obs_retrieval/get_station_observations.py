@@ -781,24 +781,29 @@ def _process_variable_obs(
             ) as executor:
                 futures = {}
                 for station_info, station_metadata in station_pairs:
-                    future = executor.submit(
-                        _fetch_and_format_station,
-                        station_info,
-                        station_metadata,
-                        variable,
-                        name_var,
-                        effective_datum,
-                        datum_list,
-                        start_date,
-                        end_date,
-                        start_date_full,
-                        end_date_full,
-                        ofs,
+                    obs_path = os.path.join(
                         data_observations_1d_station_path,
-                        logger,
-                        config_file,
-                    )
-                    futures[future] = station_info[0]
+                        str(station_info[0] + '_' + ofs + '_' +
+                            name_var + '_station.obs'))
+                    if not os.path.isfile(obs_path):
+                        future = executor.submit(
+                            _fetch_and_format_station,
+                            station_info,
+                            station_metadata,
+                            variable,
+                            name_var,
+                            effective_datum,
+                            datum_list,
+                            start_date,
+                            end_date,
+                            start_date_full,
+                            end_date_full,
+                            ofs,
+                            data_observations_1d_station_path,
+                            logger,
+                            config_file,
+                        )
+                        futures[future] = station_info[0]
 
                 for future in as_completed(futures):
                     sid = futures[future]
