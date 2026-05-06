@@ -389,9 +389,11 @@ def oned_scalar_plot_ice(now_fores_paired, name_var, station_id, node,
             tickvals=[-100, -75, -50, -25, 0, 25, 50, 75, 100],
         ),
     )
-    tmargin = 120
-    if len(prop.whichcasts) > 1:
-        tmargin = 150
+    # Issue #136: each whichcast above 1 adds another legend row that
+    # otherwise overlaps the title. Use the same formula as the scalar
+    # and vector plots (60% of their base since the ice figure is 600
+    # px tall vs 700 px and starts narrower).
+    tmargin = 120 + 30 * max(0, len(prop.whichcasts) - 1)
     fig.update_layout(
         transition_ordering='traces first', dragmode='zoom',
         hovermode='x unified', height=figheight, width=figwidth,
