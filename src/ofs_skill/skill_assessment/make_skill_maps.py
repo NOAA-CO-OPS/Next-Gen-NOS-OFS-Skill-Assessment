@@ -163,9 +163,8 @@ def make_skill_maps(
     min_rmse_extent = target_error * 2
     rmse_cap = target_error * 6.0
 
-    # display_max_rmse = max(actual_max_rmse, min_rmse_extent)
-    # display_max_rmse = min(display_max_rmse, rmse_cap)
-    display_max_rmse = target_error * 4
+    display_max_rmse = max(actual_max_rmse, min_rmse_extent)
+    display_max_rmse = min(display_max_rmse, rmse_cap)
     norm_target_rmse = target_error / display_max_rmse
 
     color_scale_rmse = [
@@ -175,15 +174,15 @@ def make_skill_maps(
         [1, '#e35336']
     ]
 
-    # if actual_max_rmse > display_max_rmse:
-    #     tick_values_rmse = [0, target_error, display_max_rmse]
-    #     tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f}+)']
-    # elif actual_max_rmse <= target_error:
-    tick_values_rmse = [0, target_error, display_max_rmse]
-    tick_labels_rmse = ['0', f'Target ({target_error})', f'Scale Limit ({display_max_rmse:.2f})']
-    # else:
-    #     tick_values_rmse = [0, target_error, display_max_rmse]
-    #     tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f})']
+    if actual_max_rmse > display_max_rmse:
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f}+)']
+    elif actual_max_rmse <= target_error:
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Scale Limit ({display_max_rmse:.2f})']
+    else:
+        tick_values_rmse = [0, target_error, display_max_rmse]
+        tick_labels_rmse = ['0', f'Target ({target_error})', f'Max ({display_max_rmse:.2f})']
 
     # ========================================================
     #                     CALCULATE CF LOGIC
