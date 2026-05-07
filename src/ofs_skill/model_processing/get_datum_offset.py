@@ -34,16 +34,15 @@ Created: Fri Jun 6 09:11:51 2025
 
 import os
 from logging import Logger
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 import numpy as np
 import pandas as pd
 import s3fs
 import xarray as xr
-from coastalmodeling_vdatum import vdatum
 
+from ofs_skill.obs_retrieval import utils, vdatum_resilient
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-from ofs_skill.obs_retrieval import utils
 
 
 def is_number(n: Any) -> bool:
@@ -542,24 +541,24 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 dummyval = 10.0
                 # account for the mistake in stofs-3d-atl files
                 if prop.ofs == 'stofs_3d_atl' and model['x'][0,node]> 0:
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
                                         model['x'][0,node],
                                         model['y'][0,node],
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                 elif prop.ofs == 'stofs_3d_pac':
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
                                         model['y'][0,node],
                                         model['x'][0,node]-360,
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
 
                 elif prop.ofs == 'loofs2':
@@ -568,24 +567,24 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                         # (LWD is 74.2 m below IGLD85 datum zero)
                         z = dummyval - 74.2
                     else:
-                        _,_,z = vdatum.convert(
+                        _,_,z = vdatum_resilient.convert(
                                             nativedatum,
                                             prop.datum.lower(),
                                             model['lat'][0,node],
                                             model['lon'][0,node],
                                             dummyval, #use dummy value
-                                            online=True,
-                                            epoch=None
+                                            epoch=None,
+                                            logger=logger,
                                             )
                 else:
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
                                         model['y'][0,node],
                                         model['x'][0,node],
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                 datum_offset = float(round(z-dummyval, 2))
 
@@ -593,14 +592,14 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 if prop.ofs == 'stofs_2d_glo':
                     nativedatum = 'lmsl'
                     dummyval = 10.0
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
                                         model['y'][0,node],
                                         model['x'][0,node],
                                         dummyval,
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC station. This is probably because the station location is outside of the coastalmodeling_vdatum tool coverage area. Check if coordinates are correct. Returning -9992.')
@@ -631,28 +630,28 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 elif prop.ofs == 'loofs2':
                     nativedatum = 'LWD'
                 dummyval = 10.0
-                _,_,z = vdatum.convert(
+                _,_,z = vdatum_resilient.convert(
                                     nativedatum,
                                     prop.datum.lower(),
                                     model['SCHISM_hgrid_node_y'][node],
                                     model['SCHISM_hgrid_node_x'][node],
                                     dummyval, #use dummy value
-                                    online=True,
-                                    epoch=None
+                                    epoch=None,
+                                    logger=logger,
                                     )
                 datum_offset = round(z-dummyval,2)
             if prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
                     nativedatum = 'lmsl'
                     dummyval = 10.0
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                         nativedatum,
                         prop.datum.lower(),
                         model['y'][0,node],
                         model['x'][0,node],
                         dummyval,
-                        online=True,
-                        epoch=None
+                        epoch=None,
+                        logger=logger,
                     )
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC node. This is probably because the node location is outside of the coastalmodeling_vdatum tool coverage area. Check if the coordinates are correct. Returning -9993.')

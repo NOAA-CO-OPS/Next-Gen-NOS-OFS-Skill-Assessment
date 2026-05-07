@@ -57,3 +57,12 @@ dependencies:
     - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git
     - git+https://github.com/oceanmodeling/searvey.git@master
     - utide>=0.3.0
+
+# Activation-time env vars exported into the conda env.
+# PROJ_NETWORK=ON lets PROJ fetch the remote MLLW <-> NAVD88 / IGLD85
+# vdatum grids from the NOAA S3 bucket on demand. Without this, the
+# coastalmodeling_vdatum.convert calls in obs_retrieval and
+# model_processing fail with ProjError 1029 ("File not found or
+# invalid") for stations whose datum conversion needs the remote grid.
+variables:
+  PROJ_NETWORK: "ON"

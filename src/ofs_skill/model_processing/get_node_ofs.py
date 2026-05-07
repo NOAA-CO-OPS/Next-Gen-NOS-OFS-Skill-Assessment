@@ -35,6 +35,66 @@ from ofs_skill.model_processing.write_ofs_ctlfile import write_ofs_ctlfile
 from ofs_skill.obs_retrieval import scalar, utils, vector
 from ofs_skill.obs_retrieval.utils import get_parallel_config
 
+logger = logging.getLogger(__name__)
+
+
+# Per-variable physical bounds used to catch blended SCHISM dry/wet
+# sentinel values that NCEP post-processing produces by linearly averaging
+# the -999 dry-cell sentinel with real ocean values across the wet/dry
+# interface. Anything outside these bounds is treated as invalid and
+# replaced with NaN. Water level keeps the looser |val| >= 999 mask
+# because datum offsets and units vary by OFS.
+_SCHISM_PHYSICAL_BOUNDS = {
+    'temp': (-5.0, 50.0),
+    'temperature': (-5.0, 50.0),
+    'salt': (-1.0, 50.0),
+    'salinity': (-1.0, 50.0),
+    'currents': (0.0, 10.0),       # speed magnitude
+    'currents_uv': (-10.0, 10.0),  # raw u or v component
+}
+
+
+def _mask_schism_sentinels(arr, kind, station_id, ofs, log):
+    """Mask SCHISM dry/wet sentinels and blended transitional values.
+
+    SCHISM uses ``-999.0`` as a dry-cell sentinel. NCEP post-processing
+    of STOFS-3D-Atl points files can emit values that are linear blends
+    of ``-999`` with real ocean values across a dry/wet transition
+    (e.g. ``-596.91`` between ``-999`` and ``5 °C``). The previous mask
+    of ``|val| >= 999`` caught only the pure sentinels and let the
+    blended values pass through into plots and skill statistics.
+
+    This helper masks both: pure-fill (``|val| >= 999``) and blended
+    values that fall outside per-variable physical bounds. It logs a
+    WARNING when blended values are encountered (so the upstream data
+    issue is traceable in the log file) and an INFO when only
+    pure-fill values are masked. Clean stations produce no log line.
+    """
+    arr = np.asarray(arr, dtype=float).copy()
+    finite = np.isfinite(arr)
+    pure_fill = finite & ((arr <= -999) | (arr >= 999))
+    lo, hi = _SCHISM_PHYSICAL_BOUNDS.get(kind, (-999.0, 999.0))
+    physical = finite & ((arr < lo) | (arr > hi))
+    transitional = physical & ~pure_fill
+    n_pure = int(pure_fill.sum())
+    n_trans = int(transitional.sum())
+    if n_trans:
+        bad = arr[transitional]
+        log.warning(
+            '%s station %s %s: %d blended sentinel values in '
+            '[%.2f, %.2f] masked (source: NCEP post-processing '
+            'dry/wet interpolation). %d pure-fill values also masked.',
+            ofs, station_id, kind, n_trans,
+            float(bad.min()), float(bad.max()), n_pure,
+        )
+    elif n_pure:
+        log.info(
+            '%s station %s %s: %d pure-fill (-999) values masked.',
+            ofs, station_id, kind, n_pure,
+        )
+    arr[physical] = np.nan
+    return arr
+
 
 def parse_arguments_to_list(argument, logger):
     '''
@@ -342,8 +402,8 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
         model_time = precomputed['model_time']
         model_obs = precomputed['scalar_data'][:, i].copy()
         if prop.model_source == 'schism':
-            invalid_mask = (model_obs <= -999) | (model_obs >= 999)
-            model_obs[invalid_mask] = np.nan
+            model_obs = _mask_schism_sentinels(
+                model_obs, model_var, ofs_ctlfile[4][i], prop.ofs, logger)
     elif prop.model_source=='fvcom':
         if prop.ofsfiletype == 'fields':
             model_time = np.array(model['time'])
@@ -397,8 +457,8 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
             else:
                 model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i]),
                                                       int(ofs_ctlfile[2][i])])
-            invalid_mask = (model_obs <= -999) | (model_obs >= 999)
-            model_obs[invalid_mask] = np.nan
+            model_obs = _mask_schism_sentinels(
+                model_obs, model_var, ofs_ctlfile[4][i], prop.ofs, logger)
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
             # We raise en exception here for STOFS-2D-Global because it does
@@ -445,14 +505,16 @@ def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
         mfp.model_time = precomputed['model_time']
         u_i = precomputed['u_data'][:, i]
         v_i = precomputed['v_data'][:, i]
+        if prop.model_source == 'schism':
+            station_id = ofs_ctlfile[4][i]
+            u_i = _mask_schism_sentinels(
+                u_i, 'currents_uv', station_id, prop.ofs, logger)
+            v_i = _mask_schism_sentinels(
+                v_i, 'currents_uv', station_id, prop.ofs, logger)
         mfp.model_obs = np.array(u_i**2 + v_i**2) ** 0.5
         mfp.model_ang = np.array(
             [math.atan2(u_i[t], v_i[t]) / math.pi * 180 % 360.0
              for t in range(len(mfp.model_time))])
-        if prop.model_source == 'schism':
-            invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
-            mfp.model_obs[invalid_mask] = np.nan
-            mfp.model_ang[invalid_mask] = np.nan
     elif prop.model_source=='fvcom':
         mfp = ModelFormatProperties()
         mfp.model_time = np.array(model['time'])
@@ -566,15 +628,16 @@ def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
                     model['v'][:, int(ofs_ctlfile[1][i])]
                 )
 
+            station_id = ofs_ctlfile[4][i]
+            u_i = _mask_schism_sentinels(
+                u_i, 'currents_uv', station_id, prop.ofs, logger)
+            v_i = _mask_schism_sentinels(
+                v_i, 'currents_uv', station_id, prop.ofs, logger)
             mfp.model_obs = np.array(u_i**2 + v_i**2) ** 0.5
             mfp.model_ang = np.array(
                 [math.atan2(u_i[t], v_i[t]) / math.pi * \
                  180 % 360.0 for t in range(
                     len(np.array(mfp.model_time)))])
-            mfp.model_obs = mfp.model_obs
-            invalid_mask = (mfp.model_obs <= -999) | (mfp.model_obs >= 999)
-            mfp.model_obs[invalid_mask] = np.nan
-            mfp.model_ang[invalid_mask] = np.nan
     elif prop.model_source == 'adcirc':
         if prop.ofs == 'stofs_2d_glo':
             # We raise en exception here for STOFS-2D-Global because it does

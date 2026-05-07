@@ -30,9 +30,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-from coastalmodeling_vdatum import vdatum
 
-from ofs_skill.obs_retrieval import retrieve_properties, utils
+from ofs_skill.obs_retrieval import retrieve_properties, utils, vdatum_resilient
 from ofs_skill.obs_retrieval.currents_bins_override import (
     bin_spec_lookup,
     load_currents_bins_csv,
@@ -118,6 +117,7 @@ def _emit_coops_currents_entries(
         except (TypeError, ValueError):
             hfb = 0.0
         suffix = f'bin {int(bin_num):02d}'
+        depth_unknown = bool(bin_df.attrs.get('depth_unknown', False))
 
         override = (
             bin_overrides.get(bin_num)
@@ -129,8 +129,14 @@ def _emit_coops_currents_entries(
                 # User-specified depth supersedes the
                 # height_from_bottom side-looking path.
                 hfb = 0.0
+                depth_unknown = False
             if override.name:
                 suffix = f'bin {int(bin_num):02d} / {override.name}'
+        if depth_unknown:
+            # Surface the side-looker / legacy-fallback flag in the
+            # plot title; downstream "Assumed surface (0 m)" annotation
+            # gates on this substring.
+            suffix = f'{suffix}, depth unknown'
 
         virt_id = f'{str(id_number)}_b{int(bin_num):02d}'
         entries.append(
@@ -276,14 +282,15 @@ def _process_coops_station(id_number, name, x_value, y_value,
                       datum_list):
                     ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                         str(datum_found).lower(),
                         ldatum,
                         y_value,
                         x_value,
                         dummyval, #use dummy value
-                        online=True,
-                        epoch=None)
+                        epoch=None,
+                        station_id=str(id_number),
+                        logger=logger)
                     if math.isinf(z):
                         zdiff = 'RANGE'
                     else:
@@ -407,14 +414,15 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                             datum != 'NAVD88'):
                         ldatum = _normalize_vdatum_name(datum).lower()
                         dummyval = 10
-                        _,_,z = vdatum.convert(
+                        _,_,z = vdatum_resilient.convert(
                             timeseries['Datum'][1].lower(),
                             ldatum,
                             y_value,
                             x_value,
                             dummyval, #use dummy value
-                            online=True,
-                            epoch=None)
+                            epoch=None,
+                            station_id=str(id_number),
+                            logger=logger)
                         if math.isinf(z):
                             zdiff = 'RANGE'
                         else:
@@ -510,14 +518,15 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
                     datum != 'MLLW'):
                 ldatum = _normalize_vdatum_name(datum).lower()
                 dummyval = 10
-                _,_,z = vdatum.convert(
+                _,_,z = vdatum_resilient.convert(
                     data_station['Datum'][1].lower(),
                     ldatum,
                     y_value,
                     x_value,
                     dummyval, #use dummy value
-                    online=True,
-                    epoch=None)
+                    epoch=None,
+                    station_id=str(id_number),
+                    logger=logger)
                 if math.isinf(z):
                     zdiff = 'RANGE'
                 else:
@@ -612,14 +621,15 @@ def _process_chs_station(id_number, name, x_value, y_value,
                 else:
                     ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                         data_station['Datum'][1].lower(),
                         ldatum,
                         y_value,
                         x_value,
                         dummyval, #use dummy value
-                        online=True,
-                        epoch=None)
+                        epoch=None,
+                        station_id=str(id_number),
+                        logger=logger)
                     if math.isinf(z):
                         zdiff = 'RANGE'
                     else:
