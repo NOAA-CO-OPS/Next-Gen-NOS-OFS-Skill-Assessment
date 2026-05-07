@@ -196,5 +196,5 @@ use_s3_fallback=True
 # True = load filenames from user-provided text file
 # False = default; SA will fetch file names either from the S3 bucket, or locally
 # If True, set 'filename_path' to the path to your text file, including the filename.
-use_custom_filenames=True
+use_custom_filenames=False
 filename_path=path/to/filename.txt
