@@ -89,7 +89,7 @@ nssr_sport=https://nssrgeo.ndc.nasa.gov/SPoRT/enhanced_sst/ghrsst_netcdf
 [datums]
 # List of vertical datums that the program can convert between. If a new datum
 # is added to the package, include it here!
-datum_list = MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
+datum_list=MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
 
 
 [station_IDs]
@@ -101,7 +101,7 @@ datum_list = MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
 # `--Station_Owner list`
 # If using `-so list` and the list below is blank, the skill
 # assessment will include all stations found in an OFS.
-station_ID_list = 8551910 8571421
+station_ID_list=8551910 8571421
 
 
 [user_xy_inputs]
@@ -116,7 +116,7 @@ station_ID_list = 8551910 8571421
 # For example:
 #    myloc1 39.582 -75.589 0
 #    myloc2 37.996 -76.464 2
-user_xy_path = path/to/filename.txt
+user_xy_path=path/to/filename.txt
 
 
 [parallelization]
@@ -191,3 +191,10 @@ static_plots=False
 # True = automatically read from NODD S3 bucket if local files are missing
 # False = exit with error if local files are missing (original behavior)
 use_s3_fallback=True
+
+# Use a custom list of model files?
+# True = load filenames from user-provided text file
+# False = default; SA will fetch file names either from the S3 bucket, or locally
+# If True, set 'filename_path' to the path to your text file, including the filename.
+use_custom_filenames=True
+filename_path=path/to/filename.txt

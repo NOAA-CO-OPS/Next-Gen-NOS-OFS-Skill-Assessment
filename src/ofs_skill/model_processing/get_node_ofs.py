@@ -904,6 +904,12 @@ def parameter_validation(prop, dir_params, logger):
             prop.var_list = ['water_level']
             # I think we can alter its state here, but maybe there's a reason not to?
 
+def read_custom_filenames(filepath):
+    with open(filepath) as file:
+        # Reads the whole file and splits it into a list, removing '\n'
+        lines = file.read().splitlines()
+    return lines
+
 
 def get_node_ofs(prop, logger, model_dataset=None):
     """
@@ -946,6 +952,14 @@ def get_node_ofs(prop, logger, model_dataset=None):
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
+
+    # Check if custom filename input is enabled
+    try:
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
+        use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+    except Exception:
+        use_custom_files = False
+
     # Parse variable selection input to list
     prop.var_list = parse_arguments_to_list(prop.var_list, logger)
     # Parameter validation
@@ -995,8 +1009,23 @@ def get_node_ofs(prop, logger, model_dataset=None):
         model = model_dataset
         logger.info('Using pre-loaded model dataset (skipping intake_model)')
     else:
-        dir_list = list_of_dir(prop, logger)
-        list_files = list_of_files_func(prop, dir_list, logger)
+        if not use_custom_files:
+            dir_list = list_of_dir(prop, logger)
+            list_files = list_of_files_func(prop, dir_list, logger)
+        else:
+            filepath = (utils.Utils(_conf).read_config_section('settings', logger)\
+                               ['filename_path'])
+            try:
+                list_files = read_custom_filenames(filepath)
+            except FileNotFoundError:
+                logger.error('No custom model filename file found in get_node_ofs! '
+                             'Please check the file path and try again.')
+                raise SystemExit(1)
+            except Exception as e:
+                logger.error('Error when loading custom filenames from file in '
+                             'get_node_ofs! Error: %s', e)
+                raise SystemExit(1)
+
         logging.info('About to start intake_scisa from get_node ...')
         model = intake_model(list_files, prop, logger)
         logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)

@@ -741,10 +741,10 @@ def create_1dplot(prop, logger):
 
     # Hindcast validation -- LOOFS2 only! Also, LOOFS2 cannot use nowcast or
     # forecast yet.
-    if prop.ofs == 'loofs2':
+    if prop.ofs in ['loofs2']:
         prop.whichcasts = ['hindcast']
-    if 'hindcast' in prop.whichcasts and prop.ofs != 'loofs2':
-        logger.warning('Hindcast can only be used with loofs2! Switching to '
+    if 'hindcast' in prop.whichcasts and prop.ofs not in ['loofs2','necofs']:
+        logger.warning('Hindcast can only be used with loofs2 or necofs! Switching to '
                        'nowcast + forecast_b...')
         prop.whichcasts = ['nowcast', 'forecast_b']
 

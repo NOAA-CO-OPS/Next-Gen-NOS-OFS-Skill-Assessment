@@ -221,8 +221,8 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ]
         time_name = 'time'
 
-    if prop.ofs in ['necofs', 'loofs2','secofs']:
-        engine = 'netcdf4'
+    if prop.ofs in ['necofs', 'loofs2', 'secofs']:
+        engine = 'scipy'
     elif prop.ofs in ['stofs_2d_glo']:
         engine = 'scipy'
     else:
