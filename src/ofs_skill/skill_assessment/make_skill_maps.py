@@ -23,7 +23,6 @@ import plotly.graph_objects as go
 from ofs_skill.skill_assessment.nos_metrics import get_error_threshold
 
 
-
 def make_skill_maps(
     output: dict[str, list],
     prop: Any,
@@ -119,13 +118,13 @@ def make_skill_maps(
                  'currents_dir': 'current direction',
                  }
     unit_map = {'water_level': 'm',
-                 'water_level_hw': 'm',
-                 'water_level_lw': 'm',
-                 'salinity': 'PSU',
-                 'water_temperature': '\u00b0C',
-                 'currents': 'm/s',
-                 'currents_dir': '\u00b0',
-                 }
+                'water_level_hw': 'm',
+                'water_level_lw': 'm',
+                'salinity': 'PSU',
+                'water_temperature': '\u00b0C',
+                'currents': 'm/s',
+                'currents_dir': '\u00b0',
+                }
 
     title_var = title_map.get(variable, variable)
     title_unit = unit_map.get(variable, variable)
@@ -156,8 +155,9 @@ def make_skill_maps(
     # ========================================================
     #                     CALCULATE RMSE LOGIC
     # ========================================================
+    threshold_key = 'cu_dir' if variable == 'currents_dir' else name_var
     target_error, _ = get_error_threshold(
-        name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'),
+        threshold_key, os.path.join(prop.path, 'conf', 'error_ranges.csv'),
     )
     actual_max_rmse = df['RMSE '].max()
     min_rmse_extent = target_error * 2
