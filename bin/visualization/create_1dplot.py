@@ -66,6 +66,7 @@ Remarks:
 import argparse
 import copy
 import gc
+import glob
 import logging
 import logging.config
 import os
@@ -94,6 +95,88 @@ warnings.filterwarnings('ignore')
 
 def parameter_validation(prop, logger):
     """ Parameter validation """
+
+def get_variable_from_filename(filename):
+    """Determine the variable type based on keywords in the filename."""
+    name = filename.lower()
+    if 'water_level_hw' in name:
+        return 'Water Level high tide'
+    elif 'water_level_lw' in name:
+        return 'Water Level low tide'
+    elif 'water_level' in name:
+        return 'Water Level'
+    elif 'temperature' in name:
+        return 'Temperature'
+    elif 'currents_dir' in name:
+        return 'Current direction'
+    elif 'currents' in name:
+        return 'Current speed'
+    elif 'salinity' in name:
+        return 'Salinity'
+    else:
+        return 'Other'
+
+def get_forecast_type_from_filename(filename):
+    """Determine if the file is a nowcast or forecast based on the filename."""
+    name = filename.lower()
+    if 'nowcast' in name:
+        return 'Nowcast'
+    elif 'forecast' in name:
+        return 'Forecast'
+    else:
+        return 'Unknown'
+
+def combine_files_by_pattern(directory_path, output_filename, search_string=''):
+    """
+    Looks in a specified directory for files matching a custom search pattern,
+    extracts variable and forecast types, combines them into a single DataFrame,
+    and saves the result to a new CSV.
+    """
+    # Create a pattern that looks for the arbitrary string anywhere in the filename
+    search_pattern = f'*{search_string}*'
+    full_pattern = os.path.join(directory_path, search_pattern)
+    matched_files = glob.glob(full_pattern)
+
+    # ignore combined files AND exclude files with '2d' in their name
+    matched_files = [
+        f for f in matched_files
+        if 'combined' not in os.path.basename(f).lower()
+        and '2d' not in os.path.basename(f).lower()
+        and 'all' not in os.path.basename(f).lower()
+    ]
+
+    dataframes = []
+
+    for file in matched_files:
+        try:
+            # Read the file into a DataFrame
+            df = pd.read_csv(file)
+            filename = os.path.basename(file)
+
+            # Add metadata columns
+            df['source_file'] = filename
+            df['variable'] = get_variable_from_filename(filename)
+            df['type'] = get_forecast_type_from_filename(filename)
+
+            dataframes.append(df)
+            print(f"Loaded: {filename} -> {df['variable'].iloc[0]} ({df['type'].iloc[0]})")
+
+        except Exception as e:
+            print(f'Error reading {file}: {e}')
+
+    if not dataframes:
+        print(f"No files matching pattern '{search_pattern}' found in '{directory_path}'.")
+        return None
+
+    # Combine all DataFrames into one, ignoring the original indices
+    combined_df = pd.concat(dataframes, ignore_index=True)
+    combined_df = combined_df.reset_index(drop=True)
+
+    # Save the combined DataFrame to the specified output file
+    output_path = os.path.join(directory_path,output_filename)
+    combined_df.to_csv(output_path, index=False)
+    print(f"\nSuccessfully combined {len(dataframes)} files into '{output_filename}'")
+
 
 def ofs_ctlfile_read(prop, name_var, logger):
     '''
@@ -400,6 +483,10 @@ def create_1dplot_2nd_part(
     except FileNotFoundError:
         logger.error('Station ctl file not found.')
         sys.exit(-1)
+
+    # Take a second and combine all skill tables!
+    filename = f'{prop.ofs}_skill_all.csv'
+    combine_files_by_pattern(prop.data_skill_stats_path, filename, search_string=prop.ofs)
 
     # Ensure all paired data files exist before parallel dispatch.
     # get_skill() mutates prop and creates shared control files, so it
