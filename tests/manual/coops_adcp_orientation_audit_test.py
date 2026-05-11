@@ -38,14 +38,36 @@ _AUDIT_OUT = os.path.join(
     tempfile.gettempdir(), 'coops_adcp_orientation_audit.csv')
 _FETCH_DELAY_SEC = 0.1
 _HTTP_TIMEOUT_SEC = 15
+_FETCH_MAX_ATTEMPTS = 4
+_FETCH_BACKOFF_SEC = 2.0
 
 
 def _fetch(url: str) -> dict | None:
-    try:
-        with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT_SEC) as r:
-            return json.load(r)
-    except (urllib.error.URLError, json.JSONDecodeError):
-        return None
+    """GET + JSON decode with retry on transient network failure.
+
+    The audit issues ~176 sequential MDAPI calls; any single timeout or
+    socket blip would otherwise flip a healthy station's row to
+    ``FETCH_FAIL`` and fail the whole run. Retries on URLError /
+    timeout / JSONDecodeError with linear backoff. Returns ``None`` only
+    when every attempt fails — that is the genuine "metadata
+    unavailable" signal the assertion downstream is checking for.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_FETCH_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(
+                url, timeout=_HTTP_TIMEOUT_SEC
+            ) as r:
+                return json.load(r)
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt < _FETCH_MAX_ATTEMPTS - 1:
+                time.sleep(_FETCH_BACKOFF_SEC * (attempt + 1))
+    # Final failure — emit a hint to the test logs so the next CI run
+    # can distinguish a real outage from a flaky transient.
+    print(f'  _fetch gave up on {url} after '
+          f'{_FETCH_MAX_ATTEMPTS} attempts: {last_exc!r}')
+    return None
 
 
 def _classify_bin_depth_ordering(
