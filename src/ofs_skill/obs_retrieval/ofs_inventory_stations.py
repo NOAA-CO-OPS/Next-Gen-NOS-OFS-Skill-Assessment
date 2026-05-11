@@ -218,12 +218,25 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
     """
      Then these inventories are concatenated in order of priority
      t_c,usgs,ndbc,chs.
-     If there is any duplicated data (same lat and lon with lat and long
-     rounded to 2 decimals) t_c takes precedent over usgs, which takes
-     precedent over ndbc, which takes precedent over chs.
-     The only diference between dataset and dataset_2 is that dataset_2 has
-     lat and lon rounded to 2 decimal degrees,
-     that is necessary to find duplicates.
+
+     Within-source duplicates are collapsed by (Source, ID): every per-source
+     inventory module (`inventory_t_c_station`, `inventory_ndbc_station`,
+     `inventory_usgs_station`, `inventory_chs_station`) already emits one row
+     per unique station ID, so this is defensive — it never merges two
+     distinct station IDs. Cross-source duplicates at the same location are
+     intentionally preserved (CO-OPS may serve water level at the same site
+     where NDBC serves wind, etc.).
+
+     Note: an earlier implementation grouped by (Source, round(X,2),
+     round(Y,2)). That collapsed distinct CO-OPS stations whose lat/lon
+     rounded to the same 2-decimal grid cell — notably the Tampa PORTS
+     pair t02010 (currents ADCP, "Old Port Tampa") and 8726607 (tide gauge,
+     "Old Port Tampa"), which sit ~580 m apart and both round to
+     (27.86, -82.55). The aggregator kept the WL station ID but OR'd the
+     has_cu flag from the ADCP onto it, so downstream currents retrieval
+     fired against 8726607 (no ADCP deployment, 404 on /deployments.json,
+     400 on the datagetter) while the real ADCP was silently dropped from
+     the inventory.
 
      Variable availability columns (has_wl, has_temp, has_salt, has_cu) are
      preserved to enable efficient data retrieval by skipping stations that
@@ -242,17 +255,10 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
 
     dataset = pd.concat([t_c, usgs, ndbc, chs], ignore_index=True)
 
-    # For duplicate removal, only deduplicate within the same source.
-    # Different sources (CO-OPS, USGS, NDBC) may provide different
-    # variables at the same location and should all be preserved.
-    dataset_2 = dataset.copy()
-    dataset_2['X_round'] = dataset_2['X'].round(2)
-    dataset_2['Y_round'] = dataset_2['Y'].round(2)
-
-    # Group by source AND rounded coordinates to only remove
-    # duplicates within the same data source
+    # Defensive dedup on (Source, ID). Per-source inventories already
+    # enforce ID uniqueness, so this is a no-op for healthy inputs; if a
+    # source ever emits the same ID twice, OR the capability flags.
     agg_dict = {
-        'ID': 'first',
         'X': 'first',
         'Y': 'first',
         'Name': 'first',
@@ -261,17 +267,15 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
         'has_salt': 'max',
         'has_cu': 'max',
     }
-    dataset_dedup = dataset_2.groupby(
-        ['Source', 'X_round', 'Y_round'], as_index=False
+    dataset_dedup = dataset.groupby(
+        ['Source', 'ID'], as_index=False
     ).agg(agg_dict)
 
     # Convert back to bool
     for col in var_cols:
         dataset_dedup[col] = dataset_dedup[col].astype(bool)
 
-    # Drop the temporary rounded columns
-    dataset_final = dataset_dedup.drop(columns=['X_round', 'Y_round'])
-    dataset_final = dataset_final.reset_index(drop=True)
+    dataset_final = dataset_dedup.reset_index(drop=True)
 
     # This loop creates a set of x and y "Point" and test if it falls inside
     # poly if true the index is saved on a list (index_true) that is then
