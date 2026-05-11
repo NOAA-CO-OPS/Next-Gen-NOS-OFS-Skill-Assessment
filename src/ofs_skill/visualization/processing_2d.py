@@ -1161,34 +1161,52 @@ def write_2d_array_to_ascii_grid(
     """
     Write a 2D data array as an ESRI ASCII Grid (.asc/.txt) file.
 
-    Creates a geospatial raster file with a 6-line header followed by
-    space-separated grid data. Data rows are written north-to-south
-    per the ESRI ASCII Grid convention.
+    Coordinates in ``lon_grid`` / ``lat_grid`` are treated as CELL
+    CENTERS. The header ``xllcorner`` / ``yllcorner`` are emitted as
+    true cell corners (cell center minus half the cell size in each
+    axis). Cell sizes are computed from node spacing along each axis,
+    so non-square grids (e.g. HF radar feeds where dx != dy) are
+    written with separate ``dx`` / ``dy`` keywords matching the
+    format rasterio's AAIGrid driver produces. Square grids keep the
+    single ``cellsize`` keyword for backward compatibility.
+
+    Data rows are reordered north-to-south as required by the
+    ESRI ASCII Grid convention regardless of the input axis order.
 
     Args:
         data: 2D array of data values (same shape as lon_grid/lat_grid)
-        lon_grid: 2D meshgrid of longitudes
-        lat_grid: 2D meshgrid of latitudes
+        lon_grid: 2D meshgrid of longitudes (cell centers)
+        lat_grid: 2D meshgrid of latitudes (cell centers)
         filename: Output file path
         nodata_value: Value to represent missing data (default -9999)
     """
     nrows, ncols = data.shape
-    xllcorner = float(lon_grid[0, 0])
-    yllcorner = float(lat_grid[0, 0])
-    cellsize = float(lon_grid[0, 1] - lon_grid[0, 0])
+    lons_1d = np.asarray(lon_grid[0, :], dtype=float)
+    lats_1d = np.asarray(lat_grid[:, 0], dtype=float)
 
-    # Replace NaN with nodata_value
+    dx = float(abs(lons_1d[-1] - lons_1d[0]) / (ncols - 1)) if ncols > 1 else 0.0
+    dy = float(abs(lats_1d[-1] - lats_1d[0]) / (nrows - 1)) if nrows > 1 else 0.0
+    xllcorner = float(min(lons_1d[0], lons_1d[-1])) - dx / 2
+    yllcorner = float(min(lats_1d[0], lats_1d[-1])) - dy / 2
+
     out_data = np.where(np.isnan(data), nodata_value, data)
+    if nrows > 1 and lats_1d[0] < lats_1d[-1]:
+        out_data = out_data[::-1]
+    if ncols > 1 and lons_1d[0] > lons_1d[-1]:
+        out_data = out_data[:, ::-1]
 
-    # Flip rows so first row is northernmost (ESRI convention)
-    out_data = out_data[::-1]
+    square = abs(dx - dy) <= 1e-9 * max(dx, dy, 1.0)
 
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(f'ncols        {ncols}\n')
         f.write(f'nrows        {nrows}\n')
         f.write(f'xllcorner    {xllcorner:.12f}\n')
         f.write(f'yllcorner    {yllcorner:.12f}\n')
-        f.write(f'cellsize     {cellsize:.12f}\n')
+        if square:
+            f.write(f'cellsize     {dx:.12f}\n')
+        else:
+            f.write(f'dx           {dx:.12f}\n')
+            f.write(f'dy           {dy:.12f}\n')
         f.write(f'NODATA_value {nodata_value}\n')
         for row in out_data:
             f.write(' '.join(f'{v:g}' for v in row) + '\n')
