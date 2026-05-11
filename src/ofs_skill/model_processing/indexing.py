@@ -539,7 +539,7 @@ def index_nearest_depth(
                 if hasattr(prop, 'user_input_location') and prop.user_input_location:
                     station_depth = station_ctl_file_extract
                 else:
-                    station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                    station_depth = station_ctl_file_extract[idx][3]
 
                 # Find nearest depth level
                 # Model depths are negative, station depths are positive
@@ -605,7 +605,7 @@ def index_nearest_depth(
 
                 # Calculate depth levels for this location
                 model_depths = np.asarray(s_rho_np) * h_np[i_index, j_index]
-                station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                station_depth = station_ctl_file_extract[idx][3]
 
                 # Find nearest depth level
                 dist = [abs(float(station_depth) + depth) for depth in model_depths]
@@ -627,7 +627,7 @@ def index_nearest_depth(
                     z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).load()  # to handle memory error
                     node = index_min_dist[idx]
 
-                    if np.isnan(node) or np.isnan(float(np.array(station_ctl_file_extract)[:, 3][idx])):
+                    if np.isnan(node) or np.isnan(float(station_ctl_file_extract[idx][3])):
                        logger.warning(f'No nearby depth found for node {idx + 1}')
                        index_min_dist.append(-1)
                        depth_value.append(-1)
@@ -635,7 +635,7 @@ def index_nearest_depth(
 
                     #model_depths = z_coords_1d[0,node,:]
                     model_depths = z_coords_1d[node,:].values
-                    station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                    station_depth = station_ctl_file_extract[idx][3]
                     dist = []
                     # this is positive here because model depths (depth) are negative
                     # values and obs depths (station_depth) are positive
@@ -737,7 +737,7 @@ def index_nearest_depth(
                     index_min_depth.append(np.nan)
                     depth_value.append(np.nan)
                     continue
-                station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                station_depth = station_ctl_file_extract[idx][3]
                 dist = []
                 # this is positive here because model depths (depth) are negative
                 # values and obs depths (station_depth) are positive

@@ -143,6 +143,19 @@ def test_retrieve_currents_returns_per_bin(
 
     rtc._depth_cache.clear()
     rtc._depth_cache['8454000'] = bins_payload
+    rtc._station_info_cache.clear()
+    rtc._station_info_cache['8454000'] = {'height_from_bottom': 0.5}
+    # Orientation is sourced from the deployments endpoint, not from
+    # per-bin records (issue #141). Pre-populate the cache to avoid the
+    # extra HTTP call and pin the mounting type.
+    rtc._station_deployment_cache.clear()
+    rtc._station_deployment_cache['8454000'] = {
+        'orientation': 'up',
+        'sensor_depth': 12.5,
+        'measured_depth': 13.0,
+        'height_from_bottom': 0.5,
+        'deployments': [{'real_time_bin': 1}],
+    }
 
     fake_urls = {
         'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
@@ -172,7 +185,9 @@ def test_retrieve_currents_returns_per_bin(
     assert result[1].attrs['depth'] == -2.0
     assert result[2].attrs['depth'] == -4.0
     assert result[3].attrs['depth'] == -6.0
+    # Orientation propagates from the deployments endpoint.
     assert result[1].attrs['orientation'] == 'up'
+    assert result[1].attrs['mounting_type'] == 'up'
     assert result[1].attrs['bin'] == 1
     # Speed converted cm/s -> m/s
     assert result[1]['OBS'].iloc[0] == pytest.approx(0.50)
@@ -324,11 +339,14 @@ def test_side_looking_adcp_collapses_to_single_bin(
 def test_side_looking_adcp_real_time_bin_null_unfiltered_call(
     retrieve_input, side_bins_payload, logger
 ):
-    """Production cb1401 case: MDAPI reports ``real_time_bin: null``.
+    """Production cb1401 case: ``deployments[0].real_time_bin: null`` but
+    ``bins.json`` top-level still carries ``real_time_bin``.
 
-    Side branch should call the datagetter UNFILTERED (no ``&bin=N``
-    param), which returns the published real-time series, and label
-    the resulting virtual station ``bin=1``.
+    Side branch should pick that up, fetch the named bin via
+    ``&bin=N``, and label the result by that same bin number — which
+    matches the dissemination bin published on the PORTS website.
+    Compare against the misleading default-to-bin-1 behaviour the
+    earlier #114 fix attempted.
     """
     import importlib
     rtc = importlib.import_module(
@@ -367,18 +385,18 @@ def test_side_looking_adcp_real_time_bin_null_unfiltered_call(
         result = rtc.retrieve_t_and_c_station(retrieve_input, logger)
 
     assert isinstance(result, dict)
+    # bins.json's top-level real_time_bin (1) wins over deployments[0]
+    # (null). Side branch fetches that bin specifically.
     assert list(result.keys()) == [1]
     df = result[1]
     assert df.attrs['depth'] == 6.7
     assert df.attrs['orientation'] == 'side'
     assert df.attrs['bin'] == 1
-    # Datagetter was called WITHOUT a ``&bin=`` parameter — unfiltered
-    # call returning the real-time published series.
     datagetter_calls = [u for u in captured_urls if 'datagetter' in u]
     assert datagetter_calls, 'no datagetter URL was hit'
     for url in datagetter_calls:
-        assert 'bin=' not in url, (
-            f'expected unfiltered datagetter call, got: {url}')
+        assert 'bin=1' in url, (
+            f'expected bin=1 in datagetter call, got: {url}')
 
 
 def test_upward_looking_adcp_still_fans_out(
@@ -435,8 +453,10 @@ def test_upward_looking_adcp_still_fans_out(
 def test_side_looking_adcp_missing_sensor_depth_falls_back(
     retrieve_input, side_bins_payload, logger
 ):
-    """orientation=side without sensor_depth → single virtual station with
-    depth_unknown=True, depth=0.0."""
+    """orientation=side without ``sensor_depth`` → resolve depth from
+    ``measured_depth - height_from_bottom`` (geometrically equivalent
+    for a side-looking install), depth_unknown=False.
+    For cb1401-shaped fixture: 17.0 - 10.3 = 6.7 m."""
     import importlib
     rtc = importlib.import_module(
         'ofs_skill.obs_retrieval.retrieve_t_and_c_station')
@@ -473,8 +493,8 @@ def test_side_looking_adcp_missing_sensor_depth_falls_back(
     assert isinstance(result, dict)
     assert list(result.keys()) == [1]
     df = result[1]
-    assert df.attrs['depth'] == 0.0
-    assert df.attrs['depth_unknown'] is True
+    assert df.attrs['depth'] == pytest.approx(6.7)
+    assert df.attrs['depth_unknown'] is False
     assert df.attrs['orientation'] == 'side'
 
 
@@ -605,7 +625,9 @@ def test_split_virtual_currents_id_roundtrips():
 # get_title — bin-aware line
 # ---------------------------------------------------------------------------
 
-def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
+def test_get_title_includes_bin_line_for_virtual_id(
+    bins_payload, logger, tmp_path,
+):
     import importlib
 
     from ofs_skill.visualization import plotting_functions as pf
@@ -615,11 +637,25 @@ def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
     rtc._depth_cache.clear()
     rtc._depth_cache['8454000'] = bins_payload
 
+    # Drop any cached parses from earlier tests so the file we write
+    # below is the one that gets read.
+    pf._OBS_CTL_CACHE.clear()
+    pf._MODEL_CTL_CACHE.clear()
+
+    # An obs station.ctl with the new 7th token (mounting symbol). The
+    # title formatter prefers the CTL over the MDAPI fallback so this
+    # is the path that exercises the issue #141 fix.
+    ctl = tmp_path / 'cbofs_cu_station.ctl'
+    ctl.write_text(
+        '8454000_b02 8454000_b02_cu_cbofs_CO-OPS "Providence (bin 02)"\n'
+        '  41.807 -71.401 0.0  -4.00  0.0  0.50  up\n'
+    )
+
     prop = SimpleNamespace(
         start_date_full='20250101-00:00:00',
         end_date_full='20250102-00:00:00',
         ofs='cbofs',
-        control_files_path='/does/not/exist',  # no model ctl → obs-only
+        control_files_path=str(tmp_path),
     )
     # station_id per get_title: (station_number, station_name, source)
     station_id = (
@@ -630,8 +666,7 @@ def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
     title = pf.get_title(prop, '12345', station_id, 'cu', logger)
     assert 'Bin&nbsp;02' in title
     assert 'Obs&nbsp;depth&nbsp;4.0' in title
-    # orientation='up' in bins_payload renders as the upward-looking label
-    # emitted by _build_adcp_type_line on its own line.
+    # The new CTL 7th token drives the upward-looking label.
     assert 'Upward-Looking ADCP' in title
     # No model ctl file -> model depth should not appear
     assert 'Model&nbsp;depth' not in title

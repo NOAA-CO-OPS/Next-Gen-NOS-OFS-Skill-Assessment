@@ -525,6 +525,13 @@ def oned_scalar_plot(
     figheight = 700
     figwidth  = 950
     yoffset = 1.01
+    # Issue #136: each additional whichcast adds another row of legend
+    # entries (Obs + N model traces, all horizontal). The legend grows
+    # upward from y=yoffset (just above the plot area) and overlaps the
+    # title at y=0.97 once it wraps. Track the whichcast count to grow
+    # the top margin so the legend has somewhere to expand into. Uses
+    # the same dynamic-margin pattern as plotting_scalar_ice.py.
+    tmargin = 150 + 30 * max(0, len(prop.whichcasts) - 1)
     fig.update_layout(
         title=dict(
             text=get_title(prop, node, station_id, name_var, logger),
@@ -568,7 +575,7 @@ def oned_scalar_plot(
         transition_ordering='traces first', dragmode='zoom',
         hovermode='x unified', height=figheight, width=figwidth,
         template='plotly_white', margin=dict(
-            t=150, b=100,
+            t=tmargin, b=100,
         ),
         legend=dict(
             orientation='h', yanchor='bottom',

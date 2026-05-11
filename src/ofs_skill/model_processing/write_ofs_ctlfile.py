@@ -125,14 +125,18 @@ def _resolve_side_looking_depths(
 ) -> None:
     """Patch obs depths for side-looking ADCP bins in ``extract[-1]``.
 
-    The obs station ctl file carries a 6th field on each coord line
-    containing ``height_from_bottom`` (hfb, meters above channel
-    bottom) for CO-OPS ADCPs whose per-bin MDAPI ``depth`` is null.
-    When the 4th field (obs depth) is written as 0.0 for such a bin,
-    resolve it here as ``water_depth - hfb`` using model bathymetry
-    at the nearest node. Mutates ``extract[-1]`` in place and rewrites
-    the obs station.ctl file so downstream readers (index_nearest_depth,
-    the plot title code) see the corrected depth.
+    Trigger: the 7th coord-line token (canonical mounting symbol)
+    equals ``'side'`` AND the 4th token (obs depth) is ~0. On legacy
+    CTL files written before the mounting symbol was added, fall back
+    to ``height_from_bottom > 0`` as the side-looking signal — that is
+    consistent with PR #109 / issue #114 semantics where only PICS
+    ADCPs ever wrote a non-zero hfb in the 6th field.
+
+    Resolves the obs depth as ``water_depth - hfb`` using model
+    bathymetry at the nearest node. Mutates ``extract[-1]`` in place
+    and rewrites the obs station.ctl file so downstream readers
+    (``index_nearest_depth``, the plot title code) see the corrected
+    depth.
     """
     coord_rows = extract[-1]
     info_rows = extract[0]
@@ -145,7 +149,19 @@ def _resolve_side_looking_depths(
             hfb = float(coords[5])
         except (TypeError, ValueError, IndexError):
             continue
-        if hfb <= 0 or depth > 0.01:
+        mounting = ''
+        if len(coords) >= 7:
+            token = str(coords[6]).strip().lower()
+            if token in ('side', 'up', 'down', 'unknown'):
+                mounting = token
+        is_side = (
+            mounting == 'side'
+            if mounting
+            else hfb > 0
+        )
+        if not is_side or depth > 0.01:
+            continue
+        if hfb <= 0:
             continue
         if idx >= len(list_of_nearest_node):
             continue
@@ -186,6 +202,19 @@ def _resolve_side_looking_depths(
             logger.info(
                 'Updated %d side-looking ADCP obs depths in %s',
                 updated, control_file_path)
+            # Drop any cached parse of this CTL — plotting reads from
+            # the cache and would otherwise serve the pre-backpatch
+            # (depth=0) row, producing a misleading title.
+            try:
+                # Local import: plotting_functions transitively imports
+                # heavy plotly state and we want to keep the
+                # model_processing module light at import time.
+                from ofs_skill.visualization.plotting_functions import (
+                    _invalidate_obs_station_depths,
+                )
+                _invalidate_obs_station_depths(control_file_path)
+            except ImportError:
+                pass
         except OSError as ex:
             logger.warning(
                 'Could not rewrite obs ctl file with resolved depths: %s',
