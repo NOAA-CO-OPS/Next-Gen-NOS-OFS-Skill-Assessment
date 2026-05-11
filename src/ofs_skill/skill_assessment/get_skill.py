@@ -500,16 +500,16 @@ def name_convent(variable):
     Set variable names so they correspond to names used in model output data
     """
     name_var = []
-    if variable == 'water_level':
+    if 'water_level' in variable:
         name_var = 'wl'
 
-    elif variable == 'water_temperature':
+    elif 'water_temperature' in variable:
         name_var = 'temp'
 
-    elif variable == 'salinity':
+    elif 'salinity' in variable:
         name_var = 'salt'
 
-    elif variable == 'currents':
+    elif 'currents' in variable:
         name_var = 'cu'
 
     return name_var
@@ -885,9 +885,9 @@ def get_skill(prop, logger):
                     and len(skill_result.get('skill')) != 0
                 ):
 
-                    #Make overview maps and save them
+                    # Make overview maps and save them
                     make_skill_maps(skill_result,
-                                    prop, name_var,
+                                    prop, variable, name_var,
                                     logger)
                     tabledatum = prop.datum if name_var == 'wl' else None
 

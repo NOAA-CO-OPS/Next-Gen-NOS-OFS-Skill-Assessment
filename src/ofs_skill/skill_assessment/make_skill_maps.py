@@ -26,6 +26,7 @@ from ofs_skill.skill_assessment.nos_metrics import get_error_threshold
 def make_skill_maps(
     output: dict[str, list],
     prop: Any,
+    variable: str,
     name_var: str,
     logger: Logger,
 ) -> None:
@@ -108,10 +109,25 @@ def make_skill_maps(
     datestrend = (prop.end_date_full).split('T')[0]
     datestrbeg = (prop.start_date_full).split('T')[0]
 
-    title_map = {'wl': 'water level', 'salt': 'salinity', 'temp': 'temperature', 'cu': 'current speed'}
-    unit_map = {'wl': 'm', 'salt': 'PSU', 'temp': '\u00b0C', 'cu': 'm/s'}
-    title_var = title_map.get(name_var, name_var)
-    title_unit = unit_map.get(name_var, name_var)
+    title_map = {'water_level': 'water level',
+                 'water_level_hw': 'water level high water extrema',
+                 'water_level_lw': 'water level low water extrema',
+                 'salinity': 'salinity',
+                 'water_temperature': 'temperature',
+                 'currents': 'current speed',
+                 'currents_dir': 'current direction',
+                 }
+    unit_map = {'water_level': 'm',
+                'water_level_hw': 'm',
+                'water_level_lw': 'm',
+                'salinity': 'PSU',
+                'water_temperature': '\u00b0C',
+                'currents': 'm/s',
+                'currents_dir': '\u00b0',
+                }
+
+    title_var = title_map.get(variable, variable)
+    title_unit = unit_map.get(variable, variable)
 
     map_width = 1000
     map_height = 650
@@ -139,9 +155,9 @@ def make_skill_maps(
     # ========================================================
     #                     CALCULATE RMSE LOGIC
     # ========================================================
+    threshold_key = 'cu_dir' if variable == 'currents_dir' else name_var
     target_error, _ = get_error_threshold(
-        name_var,
-        os.path.join(prop.path, 'conf', 'error_ranges.csv'),
+        threshold_key, os.path.join(prop.path, 'conf', 'error_ranges.csv'),
     )
     actual_max_rmse = df['RMSE '].max()
     min_rmse_extent = target_error * 2
@@ -207,7 +223,7 @@ def make_skill_maps(
 
     # NEW: Full Diverging Scale (Blue -> White -> Red)
     # Hard jumps at the +/- target threshold to maintain visual boundaries.
-# The acceptable colors (-Target to +Target) are more saturated/darker to stand out.
+    # The acceptable colors (-Target to +Target) are more saturated/darker to stand out.
     color_scale_mb = [
         [0.0, '#08519c'],           # -3x target (Dark Blue)
         [1/3, '#3182bd'],           # -Target limit (Medium Blue)
@@ -415,8 +431,8 @@ def make_skill_maps(
     )
 
     # 6. Save the single combined file
-    savename = prop.ofs + '_' + name_var + '_' + prop.whichcast + '_Skill_Map.html'
+    savename = prop.ofs + '_' + variable + '_' + prop.whichcast + '_Skill_Map.html'
     filepath = os.path.join(prop.plotly_maps, savename)
 
     plotly.offline.plot(fig, filename=filepath, auto_open=False, config={'scrollZoom': True})
-    logger.info('Combined interactive map for %s complete', name_var)
+    logger.info('Combined interactive map for %s complete', variable)
