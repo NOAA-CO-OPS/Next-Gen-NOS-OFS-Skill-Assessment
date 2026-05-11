@@ -136,7 +136,7 @@ def list_of_json_files(filepath, prop1, logger):
                 and prop1.whichcast in af_name.split('.')[-2]):
                 spltstr.append(af_name.split('_')[1])  # Date info for sorting
                 files.append(filepath + '/' + af_name)  # Full file path
-        elif 'model' not in af_name and 'daily' not in af_name and 'lnc' not in af_name:  # ignore daily avg
+        elif 'model' not in af_name and 'daily' not in af_name and 'lnc' not in af_name and 'mag' not in af_name and 'dir' not in af_name:  # ignore daily avg
             if ((datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') >=
                   datetime.strptime(prop1.start_date_full, '%Y%m%d-%H:%M:%S'))
                 and (datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') <=
