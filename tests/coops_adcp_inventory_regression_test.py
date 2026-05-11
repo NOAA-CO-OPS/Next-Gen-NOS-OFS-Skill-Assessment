@@ -42,8 +42,9 @@ def _load_snapshot() -> dict[str, dict[str, str]]:
         pytest.fail(
             f'MDAPI audit snapshot missing: {_AUDIT_SNAPSHOT}. '
             'Run "pytest -m manual tests/manual/'
-            'coops_adcp_orientation_audit_test.py" then copy '
-            '/tmp/coops_adcp_orientation_audit.csv into '
+            'coops_adcp_orientation_audit_test.py", then copy the '
+            'coops_adcp_orientation_audit.csv it writes under '
+            'tempfile.gettempdir() (path printed at test end) into '
             'tests/fixtures/coops_adcp_audit_snapshot.csv. '
             'A failure here is preferable to a silent skip — the '
             'snapshot is the regression\'s ground truth.'

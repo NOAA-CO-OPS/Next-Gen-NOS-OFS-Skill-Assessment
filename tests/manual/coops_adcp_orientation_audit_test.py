@@ -1,7 +1,8 @@
 """
 Live MDAPI audit of every CO-OPS currents station (issues #140, #141).
 
-Produces a CSV at /tmp/coops_adcp_orientation_audit.csv with one row per
+Produces a CSV at ``<tempfile.gettempdir()>/coops_adcp_orientation_audit.csv``
+(``/tmp/...`` on POSIX, ``%TEMP%\\...`` on Windows) with one row per
 currents station, recording the deployment-level ``orientation`` and
 the per-bin shape needed to validate the pipeline's mounting-type
 classification. Asserts the invariants we depend on:
@@ -24,6 +25,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -31,7 +34,8 @@ import urllib.request
 import pytest
 
 _BASE = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi'
-_AUDIT_OUT = '/tmp/coops_adcp_orientation_audit.csv'
+_AUDIT_OUT = os.path.join(
+    tempfile.gettempdir(), 'coops_adcp_orientation_audit.csv')
 _FETCH_DELAY_SEC = 0.1
 _HTTP_TIMEOUT_SEC = 15
 
@@ -104,6 +108,7 @@ def test_audit_all_coops_currents_stations() -> None:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    print(f'\nAudit CSV written to: {_AUDIT_OUT}')
 
     fetch_failures = [r for r in rows if r['orientation'] == 'FETCH_FAIL']
     assert not fetch_failures, (
