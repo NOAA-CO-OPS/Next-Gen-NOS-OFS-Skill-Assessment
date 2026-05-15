@@ -1073,12 +1073,20 @@ def get_node_ofs(prop, logger, model_dataset=None):
         elif prop.model_source in ('fvcom', 'schism'):
             model = model.resample(
                 time=time_step).asfreq()
+        logger.info('Resample complete on a %s time axis.',
+                    prop.model_source)
+
+    logger.info(
+        'Dispatching variable processing for: %s',
+        list(prop.var_list),
+    )
 
     prop.ctl_flag = 0 #Need flag to track control file production if
                  #user_input_location == True
 
     def _extract_variable(variable, prop_local):
         """Process a single variable — extractable for parallel dispatch."""
+        logger.info('[%s] thread started, reading obs ctl file', variable)
         try:
             name_conventions = name_convent(variable)
             if not prop_local.user_input_location:
@@ -1311,6 +1319,8 @@ def get_node_ofs(prop, logger, model_dataset=None):
                          variable,
                          str(ex))
             logger.error('Full traceback:\n%s', traceback.format_exc())
+        finally:
+            logger.info('[%s] thread finished', variable)
 
     # Dispatch variable processing — parallel or sequential
     parallel_cfg = get_parallel_config(

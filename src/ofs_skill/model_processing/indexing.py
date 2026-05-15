@@ -81,6 +81,11 @@ def index_nearest_node(
     calculate_station_distance : Geographic distance calculation
     index_nearest_depth : Find nearest depth level
     """
+    logger.info(
+        '[%s] Computing nearest-node for %d obs stations on %s grid '
+        '(this may take several minutes)...',
+        name_var, len(ctl_file_extract), model_source,
+    )
     # Cache shared across all branches: coords-only key reuses nearest-node
     # computation when multiple ADCP bins live at the same parent location.
     coord_cache: dict[tuple, int] = {}
@@ -386,6 +391,12 @@ def index_nearest_node(
     else:
         raise ValueError(f'Unknown model source: {model_source}')
 
+    matched = sum(1 for v in index_min_dist if not isinstance(v, float)
+                  or not np.isnan(v))
+    logger.info(
+        '[%s] Nearest-node complete (%d matched / %d total stations)',
+        name_var, matched, len(index_min_dist),
+    )
     return index_min_dist
 
 
