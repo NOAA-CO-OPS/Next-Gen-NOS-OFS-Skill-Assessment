@@ -266,6 +266,45 @@ def roms_nodes(model, node_num):
     return i_index,j_index
 
 
+def _preload_static_coords(model, model_source, logger):
+    """Force-materialize non-time coordinate vars before parallel fan-out.
+
+    Why this exists: netCDF4's HDF5 backend isn't thread-safe under
+    concurrent reads. When the variable fan-out launches 4 threads and each
+    one calls ``np.array(model[lon])`` / ``np.array(model[lat])`` etc.
+    inside ``index_nearest_node``/``index_nearest_depth``, the threads
+    contend on the global HDF5 file lock across all backing files. Symptom:
+    one core pinned, others idle, zero log progress for 20+ minutes.
+
+    By pre-loading the static coords in the main thread (sequentially)
+    before dispatching, each thread's later access is served from cached
+    numpy buffers and never touches the file lock.
+
+    Only the coords actually consumed by indexing.index_nearest_node and
+    index_nearest_depth are targeted, to keep the upfront cost bounded.
+    """
+    candidate_coords = {
+        'fvcom': ['lon', 'lat', 'lonc', 'latc', 'siglay', 'h', 'z'],
+        'roms': ['lon_rho', 'lat_rho', 'mask_rho', 's_rho', 'h'],
+        'schism': ['lon', 'lat', 'station_name', 'zcoords', 'h'],
+        'adcirc': ['lon', 'lat'],
+    }
+    names = candidate_coords.get(model_source, [])
+    loaded = []
+    for name in names:
+        if name not in model.variables:
+            continue
+        try:
+            _ = np.asarray(model[name].values)
+            loaded.append(name)
+        except Exception as ex:
+            logger.debug('Skipping pre-load of %s: %s', name, ex)
+    logger.info(
+        'Pre-loaded %d static coord(s) before parallel dispatch: %s',
+        len(loaded), loaded,
+    )
+
+
 def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False):
     """Extract all stations for a variable via batched dask.compute().
 
@@ -1328,6 +1367,7 @@ def get_node_ofs(prop, logger, model_dataset=None):
         config_file=getattr(prop, 'config_file', None),
     )
     if parallel_cfg['parallel_variables'] and len(prop.var_list) > 1:
+        _preload_static_coords(model, prop.model_source, logger)
         logger.info('Processing %d variables in parallel', len(prop.var_list))
         with ThreadPoolExecutor(max_workers=min(len(prop.var_list), 4)) as executor:
             futures = []
