@@ -345,21 +345,35 @@ def _precompute_scalar_data(prop, model, ofs_ctlfile, model_var, logger):
     if prop.model_source == 'schism' and model_var == 'zeta':
         actual_var = 'elevation' if prop.ofsfiletype == 'fields' else model_var
 
+    # Some scalars are 2-D (time, station) — e.g. FVCOM/ROMS zeta in
+    # stations files. Indexing those with a depth axis raises
+    # "too many indices for array", which used to drop the whole run
+    # back to slow per-station extraction. Detect dimensionality up front
+    # so the batch path stays on for water level too.
+    is_2d = model[actual_var].ndim < 3
+
     if prop.model_source == 'fvcom':
-        scalar_data = _batch_extract(model, actual_var, indices, depths,
-                                     idx_first=False)
+        if is_2d:
+            scalar_data = _batch_extract(model, actual_var, indices, None)
+        else:
+            scalar_data = _batch_extract(model, actual_var, indices, depths,
+                                         idx_first=False)
     elif prop.model_source == 'roms':
-        scalar_data = _batch_extract(model, actual_var, indices, depths,
-                                     idx_first=True)
+        if is_2d:
+            scalar_data = _batch_extract(model, actual_var, indices, None)
+        else:
+            scalar_data = _batch_extract(model, actual_var, indices, depths,
+                                         idx_first=True)
     elif prop.model_source == 'schism':
         if 'stofs' in prop.ofs and model_var in ('temp', 'temperature'):
             scalar_data = _batch_extract(model, 'temperature', indices, None)
+        elif is_2d:
+            scalar_data = _batch_extract(model, actual_var, indices, None)
         else:
             try:
                 scalar_data = _batch_extract(model, actual_var, indices, depths,
                                              idx_first=False)
             except IndexError:
-                # 2D variable (e.g. water level) — no depth dimension
                 scalar_data = _batch_extract(model, actual_var, indices, None)
 
     return {'scalar_data': scalar_data}
