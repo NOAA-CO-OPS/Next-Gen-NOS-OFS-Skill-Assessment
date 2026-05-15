@@ -322,8 +322,10 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
             logger.warning('vdatum file not found on S3 bucket, trying '
                            'local fallback...')
             try:
-                dir_params = utils.Utils().read_config_section('directories',
-                                                               logger)
+                _conf = getattr(prop, 'config_file', None)
+                dir_params = utils.Utils(
+                    config_file=_conf
+                ).read_config_section('directories', logger)
                 local_vdatum = dir_params.get('local_vdatum')
                 if not local_vdatum:
                     logger.warning(

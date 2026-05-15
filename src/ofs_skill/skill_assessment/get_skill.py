@@ -460,7 +460,10 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])
     }
 
-    parallel_config = get_parallel_config(logger)
+    parallel_config = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     max_workers = parallel_config['skill_workers']
 
     def _append_entry(target_dict, entry):
@@ -785,7 +788,10 @@ def get_skill(prop, logger):
                     break
         return cached_model
 
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
 
     def _skill_for_variable(variable, p):
         """Process skill assessment for a single variable."""

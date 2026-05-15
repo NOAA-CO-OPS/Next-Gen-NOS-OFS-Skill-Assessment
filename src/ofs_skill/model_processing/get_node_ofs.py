@@ -1242,7 +1242,10 @@ def get_node_ofs(prop, logger, model_dataset=None):
                 return (datum_offset, model_station)
 
             # Dispatch station processing — parallel or sequential
-            parallel_cfg = get_parallel_config(logger)
+            parallel_cfg = get_parallel_config(
+                logger,
+                config_file=getattr(prop_local, 'config_file', None),
+            )
             n_stations = len(ofs_ctlfile[1])
             datum_offsets = []
             model_stations = []
@@ -1310,7 +1313,10 @@ def get_node_ofs(prop, logger, model_dataset=None):
             logger.error('Full traceback:\n%s', traceback.format_exc())
 
     # Dispatch variable processing — parallel or sequential
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     if parallel_cfg['parallel_variables'] and len(prop.var_list) > 1:
         logger.info('Processing %d variables in parallel', len(prop.var_list))
         with ThreadPoolExecutor(max_workers=min(len(prop.var_list), 4)) as executor:
