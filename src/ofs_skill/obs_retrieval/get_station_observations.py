@@ -418,6 +418,7 @@ def _fetch_and_format_station(
                     # available bin so the pipeline keeps producing data.
                     if bin_num is not None and bin_num in timeseries:
                         timeseries = timeseries[bin_num]
+                        logger.info('Picked currents bin successfully!')
                     elif timeseries:
                         fallback_key = sorted(timeseries.keys())[0]
                         logger.warning(

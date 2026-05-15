@@ -1289,7 +1289,6 @@ def _legacy_fallback_bin(
                 return rtb
     return 1
 
-
 def _fetch_currents_chunked(
     station_id: str,
     bin_num: Optional[int],
@@ -1301,6 +1300,9 @@ def _fetch_currents_chunked(
     """Pull currents data for a station (optionally a specific bin) in
     30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
 
+    If the full range isn't retrieved (but some data exists), retries by
+    searching backwards from end_dt_0 day-by-day.
+
     Returns ``None`` when no rows fall inside ``[start_dt_0, end_dt_0]``.
     """
     delta = timedelta(days=30)
@@ -1309,27 +1311,9 @@ def _fetch_currents_chunked(
     speeds: list[float] = []
     dirs: list[float] = []
 
-    while cur <= end_dt_0:
-        date_i = cur.strftime('%Y%m%d')
-        date_f = (cur + delta).strftime('%Y%m%d')
-        bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
-        url = (
-            f'{api_url}/datagetter?begin_date={date_i}&end_date={date_f}'
-            f'&station={station_id}&product=currents{bin_qs}'
-            f'&time_zone=gmt&units=metric&format=json'
-        )
-        context = (f'currents bin={bin_num}' if bin_num is not None
-                   else 'currents')
-        obs = _get_with_retry(url, station_id, context, logger)
-        if obs is None:
-            cur += delta
-            continue
-
-        for row in obs.get('data', []) or []:
-            # Defend against upstream API regressions: if the server
-            # echoes a bin number that doesn't match what we requested,
-            # skip the row rather than silently mis-pair it with the
-            # wrong bin's depth.
+    def _process_obs(obs_data: dict) -> None:
+        """Helper to extract and append rows from the API response."""
+        for row in obs_data.get('data', []) or []:
             if bin_num is not None:
                 row_bin_raw = row.get('b')
                 if row_bin_raw is not None:
@@ -1351,25 +1335,79 @@ def _fetch_currents_chunked(
                 direction = float(row['d'])
             except (TypeError, ValueError, KeyError):
                 direction = float('nan')
+
             dates.append(row['t'])
             speeds.append(speed_m)
             dirs.append(direction)
 
+    # forward chunking
+    while cur <= end_dt_0:
+        date_i = cur.strftime('%Y%m%d')
+        date_f = (cur + delta).strftime('%Y%m%d')
+        bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+        url = (
+            f'{api_url}/datagetter?begin_date={date_i}&end_date={date_f}'
+            f'&station={station_id}&product=currents{bin_qs}'
+            f'&time_zone=gmt&units=metric&format=json'
+        )
+        context = f'currents bin={bin_num}' if bin_num is not None else 'currents'
+        obs = _get_with_retry(url, station_id, context, logger)
+
+        if obs is not None:
+            _process_obs(obs)
+
         cur += delta
 
+    # bail if there is no data
     if not dates:
         return None
 
+    # check if the full date range was retrieved
+    max_dt = pd.to_datetime(max(dates))
+
+    # 1-hour tolerance for expected sampling intervals
+    if max_dt < end_dt_0 - timedelta(hours=1):
+        logger.info(
+            'Incomplete date range retrieved. '
+            'Searching backwards from %s to bridge gap...', end_dt_0
+        )
+        retry_cur = end_dt_0
+
+        # Iterate backward day-by-day until overlapping with previously retrieved data
+        while retry_cur > max_dt and retry_cur >= start_dt_0:
+            date_str = retry_cur.strftime('%Y%m%d')
+            bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+
+            url = (
+                f'{api_url}/datagetter?end_date={date_str}&range=24'
+                f'&station={station_id}&product=currents{bin_qs}'
+                f'&time_zone=gmt&units=metric&format=json'
+            )
+            context = (f'currents bin={bin_num} (retry)' if bin_num is not None
+                       else 'currents (retry)')
+
+            obs = _get_with_retry(url, station_id, context, logger)
+
+            if obs is not None:
+                _process_obs(obs)
+
+            # Step backwards by 24 hours
+            retry_cur -= timedelta(days=1)
+
+    # assemble and filter
     df = pd.DataFrame({
         'DateTime': pd.to_datetime(dates),
         'DEP01': pd.to_numeric(0.0),
         'DIR': pd.to_numeric(dirs),
         'OBS': pd.to_numeric(speeds),
     })
+
     mask = (df['DateTime'] >= start_dt_0) & (df['DateTime'] <= end_dt_0)
     df = df.loc[mask]
+
     if df.empty:
         return None
+
     df = df.sort_values(by='DateTime').drop_duplicates()
     return df
 
