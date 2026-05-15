@@ -815,6 +815,11 @@ def index_nearest_station(
     index_min_dist = []
     min_dist = []
 
+    logger.info(
+        '[%s] Matching %d obs stations to model stations on %s grid '
+        '(this may take several minutes)...',
+        name_var, len(ctl_file_extract), model_source,
+    )
     if 'stofs' in prop.ofs:
         length = len(ctl_file_extract)
 
@@ -931,5 +936,10 @@ def index_nearest_station(
                     f'Nearest station NOT found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
 
-
+    matched = sum(1 for v in index_min_dist
+                  if not (isinstance(v, float) and np.isnan(v)))
+    logger.info(
+        '[%s] Station-matching complete (%d matched / %d total stations)',
+        name_var, matched, len(index_min_dist),
+    )
     return index_min_dist

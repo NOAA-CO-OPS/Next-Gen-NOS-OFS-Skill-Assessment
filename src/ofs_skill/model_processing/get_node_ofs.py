@@ -295,7 +295,13 @@ def _preload_static_coords(model, model_source, logger):
         if name not in model.variables:
             continue
         try:
-            _ = np.asarray(model[name].values)
+            # .load() materializes AND caches the result back into the
+            # dataset, so subsequent thread access reads from a numpy
+            # buffer instead of re-running the Dask compute. Plain
+            # np.asarray(model[name].values) computes once and discards
+            # the buffer — worker threads then re-materialize and deadlock
+            # on the HDF5 file lock all over again.
+            model[name].load()
             loaded.append(name)
         except Exception as ex:
             logger.debug('Skipping pre-load of %s: %s', name, ex)
