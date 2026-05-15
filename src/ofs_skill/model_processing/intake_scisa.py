@@ -447,6 +447,14 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     elif prop.ofsfiletype == 'stations' and prop.whichcast == 'forecast_a':
         ds = ds.drop_duplicates(dim=time_name, keep='first')
 
+    # forecast_b stacks overlapping cycles in filename order, so the time
+    # axis can be non-monotonic after dedup. Downstream resample() requires
+    # a monotonic index.
+    time_vals = ds[time_name].values
+    if time_vals.size > 1 and not np.all(np.diff(time_vals) > np.timedelta64(0)):
+        logger.info('Sorting non-monotonic time axis before downstream use.')
+        ds = ds.sortby(time_name)
+
     logger.info('Lazy loading complete applying adjustments ...')
 
     if prop.model_source == 'roms':

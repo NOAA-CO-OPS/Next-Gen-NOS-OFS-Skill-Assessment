@@ -182,8 +182,14 @@ def find_time_gaps(prop, model, logger):
     if prop.model_source == 'roms':
         time_name = 'ocean_time'
 
+    time_vals = model[time_name].values
+    if time_vals.size > 1 and not np.all(np.diff(time_vals) > np.timedelta64(0)):
+        # Non-monotonic axis: deltas are meaningless. Treat as "gap" so the
+        # caller resamples onto a regular grid (which we guard with sortby).
+        return True
+
     # Calculate time differences between consecutive time steps in minutes
-    time_deltas = np.diff(model[time_name].values)/np.timedelta64(1, 'm')
+    time_deltas = np.diff(time_vals) / np.timedelta64(1, 'm')
 
     # Define your expected frequency in minutes (e.g. 6 minutes)
     exp_freq = float(get_time_step(prop, logger))
@@ -1037,6 +1043,15 @@ def get_node_ofs(prop, logger, model_dataset=None):
     isgap = find_time_gaps(prop, model, logger)
     if isgap: # Resample if time gap
         logger.info('Preserving model time series gaps as nans...')
+        # xarray.resample requires a monotonic index; sort defensively in
+        # case upstream concat left the time axis out of order (forecast_b).
+        time_name = 'ocean_time' if prop.model_source == 'roms' else 'time'
+        time_vals = model[time_name].values
+        if time_vals.size > 1 and not np.all(
+                np.diff(time_vals) > np.timedelta64(0)):
+            logger.warning(
+                'Time axis was non-monotonic before resample; sorting.')
+            model = model.sortby(time_name)
         # Now resample
         if prop.model_source == 'roms':
             model = model.resample(
