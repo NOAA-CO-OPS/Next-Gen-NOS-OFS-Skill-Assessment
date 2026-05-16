@@ -14,6 +14,7 @@ import logging.config
 import math
 import os
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -36,6 +37,17 @@ from ofs_skill.obs_retrieval import scalar, utils, vector
 from ofs_skill.obs_retrieval.utils import get_parallel_config
 
 logger = logging.getLogger(__name__)
+
+# Serializes dask.compute() inside _batch_extract across the variable
+# threads dispatched from get_node_ofs. NECOFS uses engine='netcdf4'
+# which isn't thread-safe under concurrent reads; in addition, four
+# threads each materializing a different time-varying var concurrently
+# spikes memory to 4× the per-var peak (~4-5 GB observed on real runs,
+# triggering Windows paging at 94% RAM). The lock caps memory at one
+# variable at a time without breaking the rest of the parallelism (the
+# indexing phase, formatting, .prd writing, and plotting still
+# parallelize across variable threads).
+_BATCH_EXTRACT_LOCK = threading.Lock()
 
 
 # Per-variable physical bounds used to catch blended SCHISM dry/wet
@@ -311,6 +323,45 @@ def _preload_static_coords(model, model_source, logger):
     )
 
 
+def _resample_time_vars_only(model, time_name, time_step, logger):
+    """Resample only the data vars that have the time dim; leave static alone.
+
+    ``Dataset.resample(time=...).asfreq()`` aligns *every* variable to the
+    new regular time grid, including static mesh vars (lon, lat, siglay,
+    h, ...) that intake's nested-combine replicated along the time dim
+    during multi-file concat. Materializing those across hundreds of
+    NECOFS files costs ~20 min per whichcast.
+
+    By extracting just the time-varying subset, resampling that, and then
+    re-attaching the static vars from the original dataset, we sidestep
+    the per-file scan of the replicated coords. Output is functionally
+    equivalent to the original resample call for downstream consumers.
+    """
+    time_vars = [name for name in model.data_vars
+                 if time_name in model[name].dims]
+    static_vars = [name for name in model.data_vars
+                   if time_name not in model[name].dims]
+
+    if not time_vars:
+        logger.warning(
+            'No data_vars carry the %s dim; resample is a no-op.', time_name,
+        )
+        return model
+
+    resampled = model[time_vars].resample({time_name: time_step}).asfreq()
+
+    # Re-attach static data vars (not modified by the resample) so
+    # downstream code sees the same dataset shape it expected.
+    for name in static_vars:
+        resampled[name] = model[name]
+
+    logger.info(
+        'Resampled %d time-varying var(s); %d static var(s) re-attached.',
+        len(time_vars), len(static_vars),
+    )
+    return resampled
+
+
 def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False):
     """Extract all stations for a variable via batched dask.compute().
 
@@ -339,9 +390,13 @@ def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False):
     else:
         lazy = [model[var_name][:, dep_list[i], idx_list[i]]
                 for i in range(n)]
-    # Batch compute: Dask fuses shared chunks across all selections
+    # Batch compute: Dask fuses shared chunks across all selections.
+    # Serialized across variable threads via _BATCH_EXTRACT_LOCK so 4
+    # concurrent variable threads don't quadruple peak memory or hammer
+    # the netCDF4 file lock simultaneously.
     if hasattr(lazy[0].data, 'dask'):
-        computed = dask.compute(*[s.data for s in lazy])
+        with _BATCH_EXTRACT_LOCK:
+            computed = dask.compute(*[s.data for s in lazy])
     else:
         computed = [np.array(s) for s in lazy]
     return np.stack(computed, axis=1)
@@ -1111,13 +1166,15 @@ def get_node_ofs(prop, logger, model_dataset=None):
             logger.warning(
                 'Time axis was non-monotonic before resample; sorting.')
             model = model.sortby(time_name)
-        # Now resample
-        if prop.model_source == 'roms':
-            model = model.resample(
-                ocean_time=time_step).asfreq()
-        elif prop.model_source in ('fvcom', 'schism'):
-            model = model.resample(
-                time=time_step).asfreq()
+        # Resample only the time-varying data vars. The default
+        # Dataset.resample(...).asfreq() touches every variable in the
+        # dataset, including static mesh vars (lon, lat, lonc, latc,
+        # siglay, h) that intake's nested-combine replicated along the
+        # time dim during multi-file concat. Materializing those across
+        # 316 NECOFS files costs ~20 min per whichcast. Splitting the
+        # dataset and resampling only data_vars that actually depend on
+        # time avoids that cost; static vars are re-attached unchanged.
+        model = _resample_time_vars_only(model, time_name, time_step, logger)
         logger.info('Resample complete on a %s time axis.',
                     prop.model_source)
 
