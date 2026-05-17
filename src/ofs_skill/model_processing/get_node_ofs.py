@@ -362,8 +362,28 @@ def _resample_time_vars_only(model, time_name, time_step, logger):
     return resampled
 
 
-def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False):
+# Default cap on timesteps materialized per dask.compute call inside
+# _batch_extract. A single all-at-once compute against a 316-file
+# NECOFS dataset (~17,000 timesteps at 6-min cadence) held intermediate
+# Dask chunks for every backing file in memory simultaneously, pushing
+# Windows into paging at 97% RAM and stretching the WL stage to >16 h.
+# Splitting the time axis into ~2000-timestep windows (~7 days of NECOFS
+# at 6 min) keeps only the files intersecting each window's slice
+# active per compute, capping peak memory at ~1/8 of the previous spike
+# while producing bit-for-bit identical output.
+_BATCH_EXTRACT_TIME_CHUNK = 2000
+
+
+def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False,
+                   logger=None, time_chunk=_BATCH_EXTRACT_TIME_CHUNK):
     """Extract all stations for a variable via batched dask.compute().
+
+    The time axis is split into windows of ``time_chunk`` steps. Each
+    window's per-station selections are computed in one ``dask.compute``
+    call; the results are concatenated along time. This bounds peak
+    memory to roughly one window's intermediate-chunk footprint, even on
+    long multi-month runs that would otherwise materialize hundreds of
+    backing files in a single compute graph.
 
     Parameters
     ----------
@@ -378,28 +398,88 @@ def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False):
     idx_first : bool
         If True, indexing is [:, idx, dep] (ROMS order).
         If False, indexing is [:, dep, idx] (FVCOM/SCHISM order).
+    logger : logging.Logger or None
+        Optional logger for per-chunk progress lines. When provided and
+        the time axis is split, each chunk is logged so multi-hour
+        compute windows aren't silent.
+    time_chunk : int
+        Max timesteps per ``dask.compute`` call. Smaller values trade
+        more compute invocations for lower peak memory.
     """
+    import gc
+
     import dask
 
     n = len(idx_list)
-    if dep_list is None:
-        lazy = [model[var_name][:, idx_list[i]] for i in range(n)]
-    elif idx_first:
-        lazy = [model[var_name][:, idx_list[i], dep_list[i]]
-                for i in range(n)]
-    else:
-        lazy = [model[var_name][:, dep_list[i], idx_list[i]]
-                for i in range(n)]
-    # Batch compute: Dask fuses shared chunks across all selections.
-    # Serialized across variable threads via _BATCH_EXTRACT_LOCK so 4
-    # concurrent variable threads don't quadruple peak memory or hammer
-    # the netCDF4 file lock simultaneously.
-    if hasattr(lazy[0].data, 'dask'):
+    if n == 0:
+        return np.empty((0, 0))
+
+    time_dim = model[var_name].dims[0]
+    n_time = int(model[var_name].sizes[time_dim])
+
+    def _select(da, t0, t1):
+        sliced = da.isel({time_dim: slice(t0, t1)})
+        if dep_list is None:
+            return [sliced[:, idx_list[i]] for i in range(n)]
+        if idx_first:
+            return [sliced[:, idx_list[i], dep_list[i]] for i in range(n)]
+        return [sliced[:, dep_list[i], idx_list[i]] for i in range(n)]
+
+    probe_da = model[var_name]
+    has_dask = hasattr(probe_da.data, 'dask')
+
+    # Eager (non-Dask) path: per-station numpy materialization. No need
+    # to chunk; the previous code path also handled this case in one go.
+    if not has_dask:
+        if dep_list is None:
+            lazy = [probe_da[:, idx_list[i]] for i in range(n)]
+        elif idx_first:
+            lazy = [probe_da[:, idx_list[i], dep_list[i]] for i in range(n)]
+        else:
+            lazy = [probe_da[:, dep_list[i], idx_list[i]] for i in range(n)]
+        return np.stack([np.array(s) for s in lazy], axis=1)
+
+    # Dask-backed path: window the time axis.
+    chunk = max(1, int(time_chunk))
+    if n_time <= chunk:
+        # Single-window fast path: behaviour matches the pre-chunking
+        # implementation exactly when the dataset fits in one window.
+        lazy = _select(probe_da, 0, n_time)
         with _BATCH_EXTRACT_LOCK:
             computed = dask.compute(*[s.data for s in lazy])
-    else:
-        computed = [np.array(s) for s in lazy]
-    return np.stack(computed, axis=1)
+        return np.stack(computed, axis=1)
+
+    n_chunks = (n_time + chunk - 1) // chunk
+    if logger is not None:
+        logger.info(
+            'Batch extract %s: time axis %d steps split into %d chunks '
+            'of up to %d steps each',
+            var_name, n_time, n_chunks, chunk,
+        )
+
+    parts = []
+    for ci in range(n_chunks):
+        t0 = ci * chunk
+        t1 = min(n_time, t0 + chunk)
+        lazy = _select(probe_da, t0, t1)
+        # Serialize the dask.compute across variable threads. NetCDF4
+        # isn't thread-safe under concurrent reads and 4 simultaneous
+        # computes would quadruple peak memory.
+        with _BATCH_EXTRACT_LOCK:
+            computed = dask.compute(*[s.data for s in lazy])
+        parts.append(np.stack(computed, axis=1))
+        if logger is not None:
+            logger.info(
+                'Batch extract %s chunk %d/%d done (timesteps %d:%d)',
+                var_name, ci + 1, n_chunks, t0, t1,
+            )
+        # Drop references to this chunk's intermediate state before the
+        # next compute builds its graph, so peak memory tracks one
+        # chunk's worth instead of all of them.
+        del lazy, computed
+        gc.collect()
+
+    return np.concatenate(parts, axis=0)
 
 
 def _precompute_current_data(prop, model, ofs_ctlfile, logger):
@@ -412,18 +492,24 @@ def _precompute_current_data(prop, model, ofs_ctlfile, logger):
     depths = [int(ofs_ctlfile[2][i]) for i in range(n_stations)]
 
     if prop.model_source == 'fvcom':
-        u_data = _batch_extract(model, 'u', indices, depths, idx_first=False)
-        v_data = _batch_extract(model, 'v', indices, depths, idx_first=False)
+        u_data = _batch_extract(model, 'u', indices, depths, idx_first=False,
+                                logger=logger)
+        v_data = _batch_extract(model, 'v', indices, depths, idx_first=False,
+                                logger=logger)
     elif prop.model_source == 'roms':
-        u_data = _batch_extract(model, 'u_east', indices, depths, idx_first=True)
-        v_data = _batch_extract(model, 'v_north', indices, depths, idx_first=True)
+        u_data = _batch_extract(model, 'u_east', indices, depths,
+                                idx_first=True, logger=logger)
+        v_data = _batch_extract(model, 'v_north', indices, depths,
+                                idx_first=True, logger=logger)
     elif prop.model_source == 'schism':
         if 'stofs' not in prop.ofs:
-            u_data = _batch_extract(model, 'u', indices, depths, idx_first=False)
-            v_data = _batch_extract(model, 'v', indices, depths, idx_first=False)
+            u_data = _batch_extract(model, 'u', indices, depths,
+                                    idx_first=False, logger=logger)
+            v_data = _batch_extract(model, 'v', indices, depths,
+                                    idx_first=False, logger=logger)
         else:
-            u_data = _batch_extract(model, 'u', indices, None)
-            v_data = _batch_extract(model, 'v', indices, None)
+            u_data = _batch_extract(model, 'u', indices, None, logger=logger)
+            v_data = _batch_extract(model, 'v', indices, None, logger=logger)
 
     return {'u_data': u_data, 'v_data': v_data}
 
@@ -454,27 +540,32 @@ def _precompute_scalar_data(prop, model, ofs_ctlfile, model_var, logger):
 
     if prop.model_source == 'fvcom':
         if is_2d:
-            scalar_data = _batch_extract(model, actual_var, indices, None)
+            scalar_data = _batch_extract(model, actual_var, indices, None,
+                                         logger=logger)
         else:
             scalar_data = _batch_extract(model, actual_var, indices, depths,
-                                         idx_first=False)
+                                         idx_first=False, logger=logger)
     elif prop.model_source == 'roms':
         if is_2d:
-            scalar_data = _batch_extract(model, actual_var, indices, None)
+            scalar_data = _batch_extract(model, actual_var, indices, None,
+                                         logger=logger)
         else:
             scalar_data = _batch_extract(model, actual_var, indices, depths,
-                                         idx_first=True)
+                                         idx_first=True, logger=logger)
     elif prop.model_source == 'schism':
         if 'stofs' in prop.ofs and model_var in ('temp', 'temperature'):
-            scalar_data = _batch_extract(model, 'temperature', indices, None)
+            scalar_data = _batch_extract(model, 'temperature', indices, None,
+                                         logger=logger)
         elif is_2d:
-            scalar_data = _batch_extract(model, actual_var, indices, None)
+            scalar_data = _batch_extract(model, actual_var, indices, None,
+                                         logger=logger)
         else:
             try:
                 scalar_data = _batch_extract(model, actual_var, indices, depths,
-                                             idx_first=False)
+                                             idx_first=False, logger=logger)
             except IndexError:
-                scalar_data = _batch_extract(model, actual_var, indices, None)
+                scalar_data = _batch_extract(model, actual_var, indices, None,
+                                             logger=logger)
 
     return {'scalar_data': scalar_data}
 
