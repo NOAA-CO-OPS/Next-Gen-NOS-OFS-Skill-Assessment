@@ -15,6 +15,7 @@ import os
 from logging import Logger
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly
 import plotly.express as px
@@ -102,6 +103,21 @@ def make_skill_maps(
     if df.empty:
         logger.error('No stations with valid coordinates; cannot make skill maps!')
         return
+
+    # ========================================================
+    #                     ADD JITTER
+    # ========================================================
+    # Identify stations with the exact same coordinates
+    duplicates = df.duplicated(subset=['X ', 'Y '], keep=False)
+
+    if duplicates.any():
+        logger.info(f'Adding jitter to {duplicates.sum()} overlapping points.')
+        # Roughly 0.0005 degrees is ~50 meters. Adjust this if you need more/less spread.
+        jitter_amount = 0.005
+
+        # Add random uniform noise to both X and Y for just the duplicate rows
+        df.loc[duplicates, 'X '] += np.random.uniform(-jitter_amount, jitter_amount, size=duplicates.sum())
+        df.loc[duplicates, 'Y '] += np.random.uniform(-jitter_amount, jitter_amount, size=duplicates.sum())
 
     # Absolute mean bias for marker sizing
     df['Abs mean bias '] = df['Mean bias '].abs()
@@ -221,9 +237,6 @@ def make_skill_maps(
     actual_max_mb = df['Mean bias '].max()
     actual_min_mb = df['Mean bias '].min()
 
-    # NEW: Full Diverging Scale (Blue -> White -> Red)
-    # Hard jumps at the +/- target threshold to maintain visual boundaries.
-    # The acceptable colors (-Target to +Target) are more saturated/darker to stand out.
     color_scale_mb = [
         [0.0, '#08519c'],           # -3x target (Dark Blue)
         [1/3, '#3182bd'],           # -Target limit (Medium Blue)
@@ -244,7 +257,6 @@ def make_skill_maps(
     #                     BUILD COMBINED FIGURE
     # ========================================================
 
-    # 1. Define custom data arrays to strictly control hover order
     cols_rmse = [
         'RMSE ', 'Target RMSE ', 'Mean bias ', 'Central freq ',
         'CF pass/fail ', 'R ', 'Positive outlier freq ',
@@ -263,17 +275,14 @@ def make_skill_maps(
         'PO freq pass/fail ', 'Negative outlier freq ', 'NO freq pass/fail '
     ]
 
-    # Helper function to build a clean, perfectly ordered hover template
     def build_hovertemplate(cols):
         template = '<b>%{hovertext}</b><br><br>'
         for i, col in enumerate(cols):
-            label = col.strip() # Cleans up the trailing spaces in your column names
+            label = col.strip()
             template += f'{label}: %{{customdata[{i}]}}<br>'
-        template += '<extra></extra>' # Hides the secondary trace name box
+        template += '<extra></extra>'
         return template
 
-    # Build a (colored trace, black outline trace) pair per view.
-    # Returns plotly Scattermapbox traces ready to add to the final figure.
     def build_view(color_col, size_col, custom_cols, coloraxis_id):
         fig_tmp = px.scatter_mapbox(
             df, lat='Y ', lon='X ', color=color_col, hover_name='ID ',
@@ -316,6 +325,9 @@ def make_skill_maps(
     fig.add_trace(mb_outline)
     fig.add_trace(mb_trace)
 
+    # ADD CLUSTERING TO MAPBOX TRACES
+    fig.update_traces(cluster=dict(enabled=False))
+
     # 5. Layout & Dropdown Menus
     fig.update_layout(
         mapbox_style='carto-positron',
@@ -356,7 +368,7 @@ def make_skill_maps(
         # Tertiary Colorbar (Mean Bias) - Hidden by default
         coloraxis3=dict(
             colorscale=color_scale_mb,
-            cmin=-mb_cap, cmax=mb_cap, # Bounded entirely between -3x and +3x target
+            cmin=-mb_cap, cmax=mb_cap,
             showscale=False,
             colorbar=dict(
                 title=dict(text=f'Mean bias ({title_unit})', font=dict(color='black')),
