@@ -1301,7 +1301,8 @@ def _fetch_currents_chunked(
     30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
 
     If the full range isn't retrieved (but some data exists), retries by
-    searching backwards from end_dt_0 day-by-day.
+    searching backwards from end_dt_0 day-by-day. If a backward 24h chunk
+    fails, it falls back to a forward 24h search for that specific day.
 
     Returns ``None`` when no rows fall inside ``[start_dt_0, end_dt_0]``.
     """
@@ -1340,7 +1341,7 @@ def _fetch_currents_chunked(
             speeds.append(speed_m)
             dirs.append(direction)
 
-    # forward chunking
+    # 1. Forward chunking
     while cur <= end_dt_0:
         date_i = cur.strftime('%Y%m%d')
         date_f = (cur + delta).strftime('%Y%m%d')
@@ -1358,11 +1359,11 @@ def _fetch_currents_chunked(
 
         cur += delta
 
-    # bail if there is no data
+    # 2. Bail if there is no data at all
     if not dates:
         return None
 
-    # check if the full date range was retrieved
+    # 3. Check if the full date range was retrieved
     max_dt = pd.to_datetime(max(dates))
 
     # 1-hour tolerance for expected sampling intervals
@@ -1388,13 +1389,37 @@ def _fetch_currents_chunked(
 
             obs = _get_with_retry(url, station_id, context, logger)
 
-            if obs is not None:
+            if obs is not None and obs.get('data'):
                 _process_obs(obs)
+            else:
+                # 24-hour chunk not found backwards. Go to the earlier date of
+                # the 24-hour chunk and search forward.
+                earlier_dt = retry_cur - timedelta(days=1)
+                earlier_date_str = earlier_dt.strftime('%Y%m%d')
 
-            # Step backwards by 24 hours
+                url_fwd = (
+                    f'{api_url}/datagetter?begin_date={earlier_date_str}&range=24'
+                    f'&station={station_id}&product=currents{bin_qs}'
+                    f'&time_zone=gmt&units=metric&format=json'
+                )
+                context_fwd = (f'currents bin={bin_num} (forward retry)' if bin_num is not None
+                               else 'currents (forward retry)')
+
+                logger.info(
+                    'Backward chunk end_date=%s yielded no data. '
+                    'Retrying forward from begin_date=%s...',
+                    date_str, earlier_date_str
+                )
+
+                obs_fwd = _get_with_retry(url_fwd, station_id, context_fwd, logger)
+
+                if obs_fwd is not None:
+                    _process_obs(obs_fwd)
+
+            # Step backwards by 24 hours to resume backward search
             retry_cur -= timedelta(days=1)
 
-    # assemble and filter
+    # 4. Assemble and filter
     df = pd.DataFrame({
         'DateTime': pd.to_datetime(dates),
         'DEP01': pd.to_numeric(0.0),
