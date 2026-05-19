@@ -999,6 +999,7 @@ def _retrieve_currents_all_bins(
             api_url=api_url,
             station_info=station_info,
             bins_payload=bins_payload,
+            deployment_info=deployment_info,  # <-- ADDED
             hfb=hfb,
             orientation_label=orientation_label,
             mounting_type=mounting_type,
@@ -1031,6 +1032,7 @@ def _retrieve_currents_all_bins(
             end_dt_0=end_dt_0,
             api_url=api_url,
             logger=logger,
+            deployment_info=deployment_info,  # <-- ADDED
         )
         if df is None:
             continue
@@ -1166,6 +1168,7 @@ def _retrieve_side_looking_currents(
             end_dt_0=end_dt_0,
             api_url=api_url,
             logger=logger,
+            deployment_info=deployment_info,  # <-- ADDED
         )
         if df is None:
             logger.info(
@@ -1207,6 +1210,7 @@ def _retrieve_currents_legacy_fallback(
     api_url: str,
     station_info: Optional[dict],
     bins_payload: Optional[dict],
+    deployment_info: Optional[dict],  # <-- ADDED
     hfb: Optional[float],
     orientation_label: str,
     mounting_type: str,
@@ -1236,6 +1240,7 @@ def _retrieve_currents_legacy_fallback(
         end_dt_0=end_dt_0,
         api_url=api_url,
         logger=logger,
+        deployment_info=deployment_info,  # <-- ADDED
     )
     if legacy is None:
         return None
@@ -1251,7 +1256,6 @@ def _retrieve_currents_legacy_fallback(
         '(legacy fallback, bin=%s, depth UNKNOWN, mounting=%s).',
         station_id, fallback_bin, mounting_type)
     return {fallback_bin: legacy}
-
 
 def _legacy_fallback_bin(
     station_info: Optional[dict],
@@ -1296,13 +1300,14 @@ def _fetch_currents_chunked(
     end_dt_0: datetime,
     api_url: str,
     logger: Logger,
+    deployment_info: Optional[dict] = None,
 ) -> Optional[pd.DataFrame]:
     """Pull currents data for a station (optionally a specific bin) in
     30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
 
-    If the full range isn't retrieved (but some data exists), retries by
-    searching backwards from end_dt_0 day-by-day. If a backward 24h chunk
-    fails, it falls back to a forward 24h search for that specific day.
+    If the full range isn't retrieved, checks if a deployment change
+    occurred within the requested window. If so, retries by searching
+    backwards using expanding windows.
 
     Returns ``None`` when no rows fall inside ``[start_dt_0, end_dt_0]``.
     """
@@ -1368,58 +1373,75 @@ def _fetch_currents_chunked(
 
     # 1-hour tolerance for expected sampling intervals
     if max_dt < end_dt_0 - timedelta(hours=1):
-        retry_cur = end_dt_0
 
-        # Iterate backward day-by-day until overlapping with previously retrieved data
-        search_chunk = '3'
-        while retry_cur > max_dt and retry_cur >= start_dt_0:
-            date_str = retry_cur.strftime('%Y%m%d')
+        # only backward chunk if a deployment change occurred in the window
+        has_deployment_change = False
+        if deployment_info and deployment_info.get('deployments'):
+            for dep in deployment_info['deployments']:
+                for date_key in ('deployed', 'retrieved'):
+                    val = dep.get(date_key)
+                    if val:
+                        try:
+                            # NOAA returns dates as YYYY-MM-DD.
+                            # Slice first 10 chars to defend against potential time components
+                            dt_val = datetime.strptime(val[:10], '%Y-%m-%d')
+                            if start_dt_0 <= dt_val <= end_dt_0:
+                                has_deployment_change = True
+                                break
+                        except ValueError:
+                            continue
+                if has_deployment_change:
+                    break
+
+        if has_deployment_change:
             logger.info(
-                'Incomplete date range retrieved for station %s, bin %s. '
-                'Searching backwards from %s to bridge gap...', station_id,
-                bin_num, date_str
+                'Incomplete date range and deployment change detected. '
+                'Searching backwards from %s using expanding windows to bridge gap...', end_dt_0
             )
-            bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+            retry_cur = end_dt_0
+            gap_bridged = False
 
-            url = (
-                f'{api_url}/datagetter?end_date={date_str}&range={search_chunk}'
-                f'&station={station_id}&product=currents{bin_qs}'
-                f'&time_zone=gmt&units=metric&format=json'
+            # Use .date() for the loop condition to avoid the midnight cutoff bug,
+            # ensuring we query the API for the day even if max_dt has a PM timestamp.
+            while retry_cur.date() >= max_dt.date() and retry_cur.date() >= start_dt_0.date():
+                date_str = retry_cur.strftime('%Y%m%d')
+                bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+
+                # Search backward using expanding 3-hour windows up to 24 hours
+                for range_hrs in range(3, 27, 3):
+                    url = (
+                        f'{api_url}/datagetter?end_date={date_str}&range={range_hrs}'
+                        f'&station={station_id}&product=currents{bin_qs}'
+                        f'&time_zone=gmt&units=metric&format=json'
+                    )
+                    context = (f'currents bin={bin_num} (retry {range_hrs}h)' if bin_num is not None
+                               else f'currents (retry {range_hrs}h)')
+
+                    obs = _get_with_retry(url, station_id, context, logger)
+
+                    if obs is not None and obs.get('data'):
+                        _process_obs(obs)
+
+                        # Early exit optimization: stop hammering the API if we just bridged the gap
+                        earliest_str = obs['data'][0]['t']
+                        earliest_dt = datetime.strptime(earliest_str, '%Y-%m-%d %H:%M')
+
+                        # We still use full datetime here to know exactly when the chronological gap is bridged
+                        if earliest_dt <= max_dt or earliest_dt <= start_dt_0:
+                            logger.info('Gap bridged at %s. Halting backward search.', earliest_str)
+                            gap_bridged = True
+                            break
+
+                if gap_bridged:
+                    break
+
+                retry_cur -= timedelta(days=1)
+        else:
+            logger.info(
+                'Incomplete date range retrieved, but no deployment change '
+                'detected in the %s to %s window. Skipping backward search.',
+                start_dt_0.strftime('%Y-%m-%d'), end_dt_0.strftime('%Y-%m-%d')
             )
-            context = (f'currents bin={bin_num} (retry)' if bin_num is not None
-                       else 'currents (retry)')
-
-            obs = _get_with_retry(url, station_id, context, logger)
-
-            if obs is not None and obs.get('data'):
-                _process_obs(obs)
-            else:
-                # 24-hour chunk not found backwards. Go to the earlier date of
-                # the 24-hour chunk and search forward.
-                earlier_dt = retry_cur - timedelta(days=1)
-                earlier_date_str = earlier_dt.strftime('%Y%m%d')
-
-                url_fwd = (
-                    f'{api_url}/datagetter?begin_date={earlier_date_str}&range={search_chunk}'
-                    f'&station={station_id}&product=currents{bin_qs}'
-                    f'&time_zone=gmt&units=metric&format=json'
-                )
-                context_fwd = (f'currents bin={bin_num} (forward retry)' if bin_num is not None
-                               else 'currents (forward retry)')
-
-                logger.info(
-                    'Backward chunk end_date=%s yielded no data. '
-                    'Retrying forward from begin_date=%s...',
-                    date_str, earlier_date_str
-                )
-
-                obs_fwd = _get_with_retry(url_fwd, station_id, context_fwd, logger)
-
-                if obs_fwd is not None:
-                    _process_obs(obs_fwd)
-
-            # Step backwards by 24 hours to resume backward search
-            retry_cur -= timedelta(days=1)
 
     # 4. Assemble and filter
     df = pd.DataFrame({
@@ -1435,7 +1457,18 @@ def _fetch_currents_chunked(
     if df.empty:
         return None
 
+    # Handles overlapping duplicates generated by the expanding 3-hour windows
     df = df.sort_values(by='DateTime').drop_duplicates()
+
+    # 5. Final completion check logging
+    final_max_dt = df['DateTime'].max()
+    if final_max_dt < end_dt_0 - timedelta(hours=1):
+        logger.warning(
+            'After all retrievals, data for CO-OPS station %s (bin=%s) is still incomplete. '
+            'Latest timestamp is %s (expected %s). Retaining retrieved data.',
+            station_id, bin_num, final_max_dt, end_dt_0
+        )
+
     return df
 
 
