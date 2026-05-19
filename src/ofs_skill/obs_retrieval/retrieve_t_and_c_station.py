@@ -1368,19 +1368,21 @@ def _fetch_currents_chunked(
 
     # 1-hour tolerance for expected sampling intervals
     if max_dt < end_dt_0 - timedelta(hours=1):
-        logger.info(
-            'Incomplete date range retrieved. '
-            'Searching backwards from %s to bridge gap...', end_dt_0
-        )
         retry_cur = end_dt_0
 
         # Iterate backward day-by-day until overlapping with previously retrieved data
+        search_chunk = '3'
         while retry_cur > max_dt and retry_cur >= start_dt_0:
             date_str = retry_cur.strftime('%Y%m%d')
+            logger.info(
+                'Incomplete date range retrieved for station %s, bin %s. '
+                'Searching backwards from %s to bridge gap...', station_id,
+                bin_num, date_str
+            )
             bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
 
             url = (
-                f'{api_url}/datagetter?end_date={date_str}&range=24'
+                f'{api_url}/datagetter?end_date={date_str}&range={search_chunk}'
                 f'&station={station_id}&product=currents{bin_qs}'
                 f'&time_zone=gmt&units=metric&format=json'
             )
@@ -1398,7 +1400,7 @@ def _fetch_currents_chunked(
                 earlier_date_str = earlier_dt.strftime('%Y%m%d')
 
                 url_fwd = (
-                    f'{api_url}/datagetter?begin_date={earlier_date_str}&range=24'
+                    f'{api_url}/datagetter?begin_date={earlier_date_str}&range={search_chunk}'
                     f'&station={station_id}&product=currents{bin_qs}'
                     f'&time_zone=gmt&units=metric&format=json'
                 )
