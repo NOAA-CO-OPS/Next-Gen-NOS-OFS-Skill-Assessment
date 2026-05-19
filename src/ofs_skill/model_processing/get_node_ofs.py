@@ -1307,6 +1307,54 @@ def get_node_ofs(prop, logger, model_dataset=None):
             else:
                 ofs_ctlfile = ofs_ctlfile_extract(prop_local, name_conventions[0], model, logger)
 
+            # Resume short-circuit: if every per-station .prd file for this
+            # (var, whichcast, ofsfiletype) already exists on disk with
+            # non-zero size, skip the precompute + per-station write loop
+            # entirely. Critical for crash-resume on contested hosts where
+            # a partial run leaves WL/temp/etc. fully extracted but salt or
+            # cu missing — without this, get_node_ofs's inner var loop
+            # re-extracts every variable in prop.var_list on every restart.
+            # We only short-circuit when not in user_input_location mode
+            # (custom xy needs the ctl flag flow) and not in horizon-skill
+            # mode (horizon output is per-cycle, separate accounting).
+            if (not prop_local.user_input_location
+                    and not getattr(prop_local, 'horizonskill', False)):
+                n_stations = len(ofs_ctlfile[1])
+
+                def _prd_path(idx):
+                    if prop_local.whichcast == 'forecast_a':
+                        return (
+                            f'{prop_local.data_model_1d_node_path}/'
+                            f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
+                            f'{name_conventions[0]}_{ofs_ctlfile[1][idx]}_'
+                            f'{prop_local.whichcast}_'
+                            f'{prop_local.forecast_hr}_'
+                            f'{prop_local.ofsfiletype}_model.prd'
+                        )
+                    return (
+                        f'{prop_local.data_model_1d_node_path}/'
+                        f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
+                        f'{name_conventions[0]}_{ofs_ctlfile[1][idx]}_'
+                        f'{prop_local.whichcast}_'
+                        f'{prop_local.ofsfiletype}_model.prd'
+                    )
+
+                if n_stations > 0:
+                    all_present = True
+                    for i in range(n_stations):
+                        path = _prd_path(i)
+                        if (not os.path.isfile(path)
+                                or os.path.getsize(path) == 0):
+                            all_present = False
+                            break
+                    if all_present:
+                        logger.info(
+                            '[%s] all %d .prd file(s) already exist on disk '
+                            '— skipping precompute and per-station writes',
+                            variable, n_stations,
+                        )
+                        return
+
             # Batch-extract all station data if using stations files
             precomputed = None
             if prop_local.ofsfiletype == 'stations':
