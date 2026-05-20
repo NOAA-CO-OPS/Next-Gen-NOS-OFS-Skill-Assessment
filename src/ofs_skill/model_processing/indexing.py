@@ -61,7 +61,15 @@ def _static_coord_1d(model_netcdf: Any, name: str) -> np.ndarray:
         # Replicated along the concat time dim — drop it by taking the
         # first slice. Values are constant across that axis by
         # construction of the multi-file concat.
-        return np.asarray(arr[0])
+        result = np.asarray(arr[0])
+        if result.ndim != arr.ndim - 1 or result.ndim < 1:
+            raise ValueError(
+                f'_static_coord_1d({name!r}): unexpected shape after '
+                f'dropping leading time dim — got {result.ndim}D from '
+                f'{arr.ndim}D input. Refusing to silently mis-index '
+                f'downstream callers.'
+            )
+        return result
     return arr
 
 

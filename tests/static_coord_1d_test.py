@@ -11,6 +11,7 @@ dropped when present.
 """
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from ofs_skill.model_processing.indexing import _static_coord_1d
@@ -196,3 +197,24 @@ def test_3d_static_with_leading_time_drops_only_time():
     siglay = _static_coord_1d(ds, 'siglay')
     assert siglay.shape == (n_siglay, n_station), \
         f'expected (siglay, station), got {siglay.shape}'
+
+
+# ---------------------------------------------------------------------------
+# Shape guard: reject pathological inputs that would mis-index downstream
+# ---------------------------------------------------------------------------
+
+
+def test_shape_guard_rejects_time_only_1d_var():
+    """A 1-D var on the time dim alone (no station dim) yields a 0-D scalar
+    after the time-dim drop — the helper must refuse rather than hand a
+    useless scalar to downstream nearest-node code."""
+    n_time = 6
+    ds = xr.Dataset(
+        data_vars={
+            'bogus': (('time',), np.zeros(n_time)),
+        },
+        coords={'time': np.datetime64('2026-02-16T00')
+                + np.arange(n_time) * np.timedelta64(1, 'h')},
+    )
+    with pytest.raises(ValueError, match='unexpected shape after dropping'):
+        _static_coord_1d(ds, 'bogus')
