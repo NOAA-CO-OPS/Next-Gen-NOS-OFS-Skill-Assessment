@@ -485,8 +485,129 @@ def _batch_extract(model, var_name, idx_list, dep_list, idx_first=False,
     return np.concatenate(parts, axis=0)
 
 
+def _batch_extract_multi(model, var_names, idx_list, dep_list, idx_first=False,
+                         logger=None, time_chunk=_BATCH_EXTRACT_TIME_CHUNK):
+    """Extract multiple variables that share backing files in one fused compute.
+
+    When two variables (e.g. ``u`` and ``v``) come from the same files,
+    issuing one ``dask.compute`` for both lets Dask fuse the per-file
+    reads — each chunk of each backing file is read once for both
+    variables instead of once per variable. On the user's NECOFS run,
+    sequential ``u`` then ``v`` took ~5h 02m for currents; the fused
+    path is expected to drop that by roughly 30-40%.
+
+    Same chunking and locking discipline as :func:`_batch_extract`: split
+    the time axis into ``time_chunk``-step windows, compute each window
+    under ``_BATCH_EXTRACT_LOCK``, ``gc.collect`` between, concatenate.
+
+    Parameters
+    ----------
+    var_names : list of str
+        Model variable names to extract (e.g. ``['u', 'v']``). All must
+        share the same dim layout (same ``idx_first`` value, same
+        ``dep_list`` semantics).
+    Other parameters identical to :func:`_batch_extract`.
+
+    Returns
+    -------
+    list of np.ndarray
+        One ``(time, n_stations)`` array per entry in ``var_names``, in
+        the same order.
+    """
+    import gc
+
+    import dask
+
+    n = len(idx_list)
+    if n == 0 or not var_names:
+        return [np.empty((0, 0)) for _ in var_names]
+
+    # Use the first variable as the probe for the time axis. All vars
+    # must share the same time dim by assumption — checked below.
+    probe_var = var_names[0]
+    time_dim = model[probe_var].dims[0]
+    n_time = int(model[probe_var].sizes[time_dim])
+    for v in var_names[1:]:
+        if model[v].dims[0] != time_dim:
+            raise ValueError(
+                f'_batch_extract_multi requires var_names to share the '
+                f'leading time dim; {probe_var} has {time_dim} but {v} '
+                f'has {model[v].dims[0]}'
+            )
+
+    def _select_one(da, t0, t1):
+        sliced = da.isel({time_dim: slice(t0, t1)})
+        if dep_list is None:
+            return [sliced[:, idx_list[i]] for i in range(n)]
+        if idx_first:
+            return [sliced[:, idx_list[i], dep_list[i]] for i in range(n)]
+        return [sliced[:, dep_list[i], idx_list[i]] for i in range(n)]
+
+    has_dask = hasattr(model[probe_var].data, 'dask')
+
+    if not has_dask:
+        # Eager path — fall back to per-var per-station numpy.
+        results = []
+        for v in var_names:
+            da = model[v]
+            if dep_list is None:
+                lazy = [da[:, idx_list[i]] for i in range(n)]
+            elif idx_first:
+                lazy = [da[:, idx_list[i], dep_list[i]] for i in range(n)]
+            else:
+                lazy = [da[:, dep_list[i], idx_list[i]] for i in range(n)]
+            results.append(np.stack([np.array(s) for s in lazy], axis=1))
+        return results
+
+    chunk = max(1, int(time_chunk))
+    if n_time <= chunk:
+        # Single-window fast path: one fused compute over all vars + stations.
+        per_var_lazy = [_select_one(model[v], 0, n_time) for v in var_names]
+        flat = [s.data for lst in per_var_lazy for s in lst]
+        with _BATCH_EXTRACT_LOCK:
+            computed = dask.compute(*flat)
+        results = []
+        for vi, _ in enumerate(var_names):
+            start = vi * n
+            results.append(np.stack(computed[start:start + n], axis=1))
+        return results
+
+    n_chunks = (n_time + chunk - 1) // chunk
+    if logger is not None:
+        logger.info(
+            'Batch extract %s: time axis %d steps split into %d chunks '
+            'of up to %d steps each (fused %d-var compute)',
+            '+'.join(var_names), n_time, n_chunks, chunk, len(var_names),
+        )
+
+    parts_per_var = [[] for _ in var_names]
+    for ci in range(n_chunks):
+        t0 = ci * chunk
+        t1 = min(n_time, t0 + chunk)
+        per_var_lazy = [_select_one(model[v], t0, t1) for v in var_names]
+        flat = [s.data for lst in per_var_lazy for s in lst]
+        with _BATCH_EXTRACT_LOCK:
+            computed = dask.compute(*flat)
+        for vi in range(len(var_names)):
+            start = vi * n
+            parts_per_var[vi].append(np.stack(computed[start:start + n], axis=1))
+        if logger is not None:
+            logger.info(
+                'Batch extract %s chunk %d/%d done (timesteps %d:%d)',
+                '+'.join(var_names), ci + 1, n_chunks, t0, t1,
+            )
+        del per_var_lazy, flat, computed
+        gc.collect()
+
+    return [np.concatenate(parts, axis=0) for parts in parts_per_var]
+
+
 def _precompute_current_data(prop, model, ofs_ctlfile, logger):
     """Batch-extract current (u/v) station data in a single Dask compute call.
+
+    Both u and v are computed in one fused dask.compute per time-window,
+    so Dask reads each backing file once instead of twice (once for u,
+    once for v) — see :func:`_batch_extract_multi`.
 
     Returns a dict with 'u_data' and 'v_data' numpy arrays.
     """
@@ -495,24 +616,22 @@ def _precompute_current_data(prop, model, ofs_ctlfile, logger):
     depths = [int(ofs_ctlfile[2][i]) for i in range(n_stations)]
 
     if prop.model_source == 'fvcom':
-        u_data = _batch_extract(model, 'u', indices, depths, idx_first=False,
-                                logger=logger)
-        v_data = _batch_extract(model, 'v', indices, depths, idx_first=False,
-                                logger=logger)
+        u_data, v_data = _batch_extract_multi(
+            model, ['u', 'v'], indices, depths,
+            idx_first=False, logger=logger)
     elif prop.model_source == 'roms':
-        u_data = _batch_extract(model, 'u_east', indices, depths,
-                                idx_first=True, logger=logger)
-        v_data = _batch_extract(model, 'v_north', indices, depths,
-                                idx_first=True, logger=logger)
+        u_data, v_data = _batch_extract_multi(
+            model, ['u_east', 'v_north'], indices, depths,
+            idx_first=True, logger=logger)
     elif prop.model_source == 'schism':
         if 'stofs' not in prop.ofs:
-            u_data = _batch_extract(model, 'u', indices, depths,
-                                    idx_first=False, logger=logger)
-            v_data = _batch_extract(model, 'v', indices, depths,
-                                    idx_first=False, logger=logger)
+            u_data, v_data = _batch_extract_multi(
+                model, ['u', 'v'], indices, depths,
+                idx_first=False, logger=logger)
         else:
-            u_data = _batch_extract(model, 'u', indices, None, logger=logger)
-            v_data = _batch_extract(model, 'v', indices, None, logger=logger)
+            # STOFS-3D-Atl 2-D currents (no depth dim).
+            u_data, v_data = _batch_extract_multi(
+                model, ['u', 'v'], indices, None, logger=logger)
 
     return {'u_data': u_data, 'v_data': v_data}
 
@@ -1549,7 +1668,9 @@ def get_node_ofs(prop, logger, model_dataset=None):
                 except FileNotFoundError:
                     timediffhour = 99
                 if (variable == 'water_level' and timediffhour > 1):
-                    logger.error('No datum report found, writing new one.')
+                    # First-write of the datum report on a fresh run is
+                    # part of the happy path, not an error condition.
+                    logger.info('No datum report found, writing new one.')
                     datum_offsets = [model_stations, datum_offsets]
                     report_datums(prop_local, datum_offsets, logger)
 
