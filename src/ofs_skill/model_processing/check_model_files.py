@@ -9,6 +9,7 @@ those missing files from the NODD bucket.
 Functions
 ---------
 check_model_files : Main validation function that checks for required model files
+check_custom_file_list : Verifies files from a provided text file (Local, S3, or HTTP/HTTPS)
 
 Notes
 -----
@@ -25,14 +26,97 @@ Created: Fri Aug 8 08:59:28 2025
 """
 
 import os
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 
 from bin.utils import get_model_data
 from ofs_skill.model_processing.list_of_files import list_of_dir, list_of_files
 from ofs_skill.obs_retrieval import utils
+
+
+def check_custom_file_list(file_list_path: str, logger: Logger) -> None:
+    """
+    Reads a text file containing a list of paths (local, S3 URIs, or HTTPS URLs) and
+    verifies that they exist.
+
+    Parameters
+    ----------
+    file_list_path : str
+        Path to the text file containing a list of model file locations.
+    logger : Logger
+        Logger instance for logging messages.
+    """
+    if not os.path.exists(file_list_path):
+        logger.error(f'Custom file list text file not found: {file_list_path}')
+        raise SystemExit(1)
+
+    with open(file_list_path) as f:
+        files_to_check = [line.strip() for line in f if line.strip()]
+
+    if not files_to_check:
+        logger.error('The custom file list is empty.')
+        raise SystemExit(1)
+
+    s3_client = None
+    missing_files = []
+
+    for filepath in files_to_check:
+        # Check native S3 paths
+        if filepath.startswith('s3://'):
+            if s3_client is None:
+                try:
+                    import boto3
+                    # If dealing with public NODD buckets, you may need to configure
+                    # unsigned requests: boto3.client('s3', config=Config(signature_version=UNSIGNED))
+                    s3_client = boto3.client('s3')
+                except ImportError:
+                    logger.error('boto3 library is required to verify s3:// paths. Please install it.')
+                    raise SystemExit(1)
+
+            parsed = urllib.parse.urlparse(filepath)
+            bucket = parsed.netloc
+            key = parsed.path.lstrip('/')
+
+            try:
+                s3_client.head_object(Bucket=bucket, Key=key)
+            except Exception:
+                # Catching general exception; typically botocore.exceptions.ClientError for 404/403
+                missing_files.append(filepath)
+
+        # Check HTTP/HTTPS paths pointing to S3 (or any web server)
+        elif filepath.startswith(('http://', 'https://')):
+            try:
+                # Use a HEAD request to check for file existence without downloading the payload
+                req = urllib.request.Request(
+                    filepath,
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    method='HEAD'
+                )
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status >= 400:
+                        missing_files.append(filepath)
+            except (HTTPError, URLError):
+                # HTTPError handles 403 Forbidden, 404 Not Found, etc. URLError handles connection failures.
+                missing_files.append(filepath)
+            except Exception:
+                missing_files.append(filepath)
+
+        # Check local paths
+        else:
+            if not os.path.exists(filepath):
+                missing_files.append(filepath)
+
+    if missing_files:
+        logger.error('The following custom files are missing:\n{}'.format('\n'.join(missing_files)))
+        raise SystemExit(1)
+    else:
+        logger.info('All custom files from the provided list were verified successfully.')
+
 
 
 def check_model_files(prop: Any, logger: Logger) -> None:
@@ -69,20 +153,29 @@ def check_model_files(prop: Any, logger: Logger) -> None:
     ------
     SystemExit
         If model files are missing or if there are errors in date formatting
-
-    Notes
-    -----
-    - Handles both ISO format dates (with 'T' and 'Z') and simple format dates
-    - Creates a wish list of files that should exist based on configuration
-    - Creates an actual list of files that do exist in the directories
-    - Cross-checks and reports any discrepancies
-    - Resets date formats to original values before returning
-
-    Examples
-    --------
-    >>> check_model_files(prop, logger)
-    INFO:root:Located all necessary model files for nowcast!
     """
+
+    # Check if custom filename input is enabled
+    _conf = getattr(prop, 'config_file', None)
+    try:
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
+        use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+        # Retrieve the path to the text file list from config (adjust key as needed)
+        custom_file_list_path = conf_settings.get('filename_path', '')
+    except Exception:
+        use_custom_files = False
+        custom_file_list_path = ''
+
+    if use_custom_files:
+        logger.info('Custom model file input is enabled! Checking to see if '
+                    'files are available...')
+        if custom_file_list_path:
+            check_custom_file_list(custom_file_list_path, logger)
+        else:
+            logger.warning('use_custom_filenames is enabled, but no path '
+                           'was found in the configuration!')
+        return
+
     # This first chunk handles the main skill assessment
     for cast in prop.whichcasts:
         prop.whichcast = cast
