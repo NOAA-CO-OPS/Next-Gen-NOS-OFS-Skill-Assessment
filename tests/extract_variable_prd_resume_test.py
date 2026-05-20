@@ -22,8 +22,15 @@ arithmetic directly: build a fake ofs_ctlfile, populate the expected
 match works for nowcast/forecast_b vs forecast_a.
 """
 
+import inspect
 import os
 from pathlib import Path
+from types import SimpleNamespace
+
+from ofs_skill.model_processing.get_node_ofs import (
+    _all_prd_files_complete,
+    get_node_ofs,
+)
 
 
 def _make_ofs_ctlfile(n_stations=3, node_offset=10):
@@ -212,16 +219,187 @@ def test_different_ofs_isolated(tmp_path):
 
 
 def test_extract_variable_source_contains_resume_log():
-    import inspect
-
-    from ofs_skill.model_processing.get_node_ofs import get_node_ofs
-
     src = inspect.getsource(get_node_ofs)
     assert 'Resume short-circuit' in src, (
         'Resume short-circuit comment block must be present in '
         'get_node_ofs to document the .prd-existence check.'
     )
-    assert '.prd file(s) already exist' in src, (
-        'Resume short-circuit log message must be present so a kill-resume '
-        'flow does not silently re-extract all variables.'
+    assert '_all_prd_files_complete' in src, (
+        'Resume short-circuit must call the _all_prd_files_complete '
+        'helper so a kill-resume flow does not silently re-extract '
+        'all variables.'
     )
+
+
+# ---------------------------------------------------------------------------
+# _all_prd_files_complete helper (refactored out of _extract_variable):
+# row-count validation guards against SIGKILL-during-write truncation, which
+# the prior existence-only check silently reused.
+# ---------------------------------------------------------------------------
+
+
+def _make_prop(tmp_path, whichcast='nowcast', ofs='necofs',
+               ofsfiletype='stations', forecast_hr=None):
+    return SimpleNamespace(
+        data_model_1d_node_path=str(tmp_path),
+        ofs=ofs,
+        whichcast=whichcast,
+        ofsfiletype=ofsfiletype,
+        forecast_hr=forecast_hr,
+        model_source='fvcom',
+    )
+
+
+def _write_rows(path, n_rows):
+    """Write n_rows data rows ending in newline (mimics .prd writer)."""
+    with open(path, 'w', encoding='utf-8') as fh:
+        for j in range(n_rows):
+            fh.write(f'2026-01-01 00:00:00 {j} 1.234\n')
+
+
+def test_helper_all_present_full_length_returns_true(tmp_path, caplog):
+    ctl = _make_ofs_ctlfile(n_stations=4)
+    prop = _make_prop(tmp_path)
+    n = 50
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype,
+        )
+        _write_rows(path, n)
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_full')
+    assert _all_prd_files_complete(prop, ctl, 'wl', n, log) is True
+
+
+def test_helper_truncated_file_returns_false(tmp_path):
+    ctl = _make_ofs_ctlfile(n_stations=3)
+    prop = _make_prop(tmp_path)
+    n = 100
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype,
+        )
+        _write_rows(path, n)
+
+    # Truncate one to N-1 rows (mimics SIGKILL mid-write).
+    target = _make_prd_path(
+        str(tmp_path), ctl[4][1], prop.ofs, 'wl', ctl[1][1],
+        prop.whichcast, prop.ofsfiletype,
+    )
+    _write_rows(target, n - 1)
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_truncated')
+    assert _all_prd_files_complete(prop, ctl, 'wl', n, log) is False
+
+
+def test_helper_trailing_newline_tolerated(tmp_path):
+    """A file with N+1 rows (trailing blank line) is still considered
+    complete — tolerance is upward-only to absorb writer quirks."""
+    ctl = _make_ofs_ctlfile(n_stations=2)
+    prop = _make_prop(tmp_path)
+    n = 24
+
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype,
+        )
+        _write_rows(path, n)
+        # Append a blank trailing line to simulate writer quirk.
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write('\n')
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_trailing')
+    assert _all_prd_files_complete(prop, ctl, 'wl', n, log) is True
+
+
+def test_helper_expected_none_falls_back_to_length_only(tmp_path):
+    """When expected_timesteps is None (caller couldn't determine it),
+    helper falls back to the prior existence + non-zero-size check."""
+    ctl = _make_ofs_ctlfile(n_stations=3)
+    prop = _make_prop(tmp_path)
+
+    # Write minimal (1-row) files — would fail row-count check if any
+    # expected_timesteps > 1 were supplied, but None disables it.
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype,
+        )
+        _write_rows(path, 1)
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_none')
+    assert _all_prd_files_complete(prop, ctl, 'wl', None, log) is True
+
+
+def test_helper_zero_stations_returns_false(tmp_path):
+    ctl = _make_ofs_ctlfile(n_stations=0)
+    prop = _make_prop(tmp_path)
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_zero')
+    assert _all_prd_files_complete(prop, ctl, 'wl', 24, log) is False
+
+
+def test_helper_missing_file_returns_false(tmp_path):
+    ctl = _make_ofs_ctlfile(n_stations=3)
+    prop = _make_prop(tmp_path)
+    # Don't write any files.
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_missing')
+    assert _all_prd_files_complete(prop, ctl, 'wl', 24, log) is False
+
+
+def test_helper_empty_file_returns_false(tmp_path):
+    ctl = _make_ofs_ctlfile(n_stations=2)
+    prop = _make_prop(tmp_path)
+    n = 12
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype,
+        )
+        _write_rows(path, n)
+
+    # Truncate one to zero bytes.
+    target = _make_prd_path(
+        str(tmp_path), ctl[4][0], prop.ofs, 'wl', ctl[1][0],
+        prop.whichcast, prop.ofsfiletype,
+    )
+    open(target, 'wb').close()
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_empty')
+    assert _all_prd_files_complete(prop, ctl, 'wl', n, log) is False
+
+
+def test_helper_forecast_a_path_pattern(tmp_path):
+    """forecast_a path includes forecast_hr; helper must build it."""
+    ctl = _make_ofs_ctlfile(n_stations=2)
+    prop = _make_prop(
+        tmp_path, whichcast='forecast_a', ofs='cbofs', forecast_hr='06z')
+    n = 30
+    for i in range(len(ctl[1])):
+        path = _make_prd_path(
+            str(tmp_path), ctl[4][i], prop.ofs, 'wl', ctl[1][i],
+            prop.whichcast, prop.ofsfiletype, forecast_hr='06z',
+        )
+        _write_rows(path, n)
+
+    import logging as _logging
+    log = _logging.getLogger('test_helper_forecast_a')
+    assert _all_prd_files_complete(prop, ctl, 'wl', n, log) is True
+
+    # If we change the cycle hour, helper builds the wrong path and the
+    # files appear missing.
+    prop_other_hr = _make_prop(
+        tmp_path, whichcast='forecast_a', ofs='cbofs', forecast_hr='12z')
+    assert _all_prd_files_complete(
+        prop_other_hr, ctl, 'wl', n, log) is False

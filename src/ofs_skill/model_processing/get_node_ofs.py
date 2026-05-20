@@ -1238,6 +1238,73 @@ def parameter_validation(prop, dir_params, logger):
             # I think we can alter its state here, but maybe there's a reason not to?
 
 
+def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var,
+                            expected_timesteps, logger):
+    """Return ``True`` iff every per-station ``.prd`` file for this
+    (variable, whichcast, ofsfiletype) combo exists on disk with the
+    expected number of data rows.
+
+    A SIGKILL during the per-station write loop can leave one ``.prd``
+    truncated to N-1 rows. Without a row-count check the next run would
+    happily reuse that partial file and downstream skill would read a
+    mis-aligned series. We compare against ``expected_timesteps`` (the
+    resampled model time-axis length) and tolerate ``±1`` row to absorb
+    a trailing blank line.
+
+    When ``expected_timesteps`` is ``None`` (caller couldn't determine
+    it from the dataset), we fall back to the prior length-only check
+    so callers stay backwards-compatible.
+    """
+    n_stations = len(ofs_ctlfile[1])
+    if n_stations == 0:
+        return False
+
+    def _prd_path(idx):
+        if prop_local.whichcast == 'forecast_a':
+            return (
+                f'{prop_local.data_model_1d_node_path}/'
+                f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
+                f'{name_var}_{ofs_ctlfile[1][idx]}_'
+                f'{prop_local.whichcast}_'
+                f'{prop_local.forecast_hr}_'
+                f'{prop_local.ofsfiletype}_model.prd'
+            )
+        return (
+            f'{prop_local.data_model_1d_node_path}/'
+            f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
+            f'{name_var}_{ofs_ctlfile[1][idx]}_'
+            f'{prop_local.whichcast}_'
+            f'{prop_local.ofsfiletype}_model.prd'
+        )
+
+    for i in range(n_stations):
+        path = _prd_path(i)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return False
+        if expected_timesteps is None:
+            # Backwards-compatible fallback: existence + non-zero size only.
+            continue
+        try:
+            with open(path, encoding='utf-8') as fh:
+                row_count = sum(1 for _ in fh)
+        except OSError as ex:
+            logger.warning(
+                'Could not read %s for row-count check (%s); treating '
+                'as incomplete and re-extracting.', path, ex)
+            return False
+        # Tolerance is upward-only: a trailing blank line can produce
+        # ``expected_timesteps + 1`` logical rows, but anything short of
+        # ``expected_timesteps`` means the prior run was killed
+        # mid-write and we must re-extract.
+        if row_count < expected_timesteps:
+            logger.warning(
+                'Resume check: %s has %d rows but expected %d — '
+                'previous run likely killed mid-write. Re-extracting.',
+                path, row_count, expected_timesteps)
+            return False
+    return True
+
+
 def get_node_ofs(prop, logger, model_dataset=None):
     """
     This is the final model 1d extraction function, it opens the path and looks
@@ -1427,52 +1494,47 @@ def get_node_ofs(prop, logger, model_dataset=None):
                 ofs_ctlfile = ofs_ctlfile_extract(prop_local, name_conventions[0], model, logger)
 
             # Resume short-circuit: if every per-station .prd file for this
-            # (var, whichcast, ofsfiletype) already exists on disk with
-            # non-zero size, skip the precompute + per-station write loop
-            # entirely. Critical for crash-resume on contested hosts where
-            # a partial run leaves WL/temp/etc. fully extracted but salt or
-            # cu missing — without this, get_node_ofs's inner var loop
-            # re-extracts every variable in prop.var_list on every restart.
+            # (var, whichcast, ofsfiletype) already exists on disk and the
+            # row count matches the resampled model time axis, skip the
+            # precompute + per-station write loop entirely. Critical for
+            # crash-resume on contested hosts where a partial run leaves
+            # WL/temp/etc. fully extracted but salt or cu missing — without
+            # this, get_node_ofs's inner var loop re-extracts every variable
+            # in prop.var_list on every restart. Row-count validation
+            # additionally guards against a SIGKILL during the per-station
+            # write loop leaving a single .prd truncated, which a naive
+            # existence check would silently reuse.
             # We only short-circuit when not in user_input_location mode
             # (custom xy needs the ctl flag flow) and not in horizon-skill
             # mode (horizon output is per-cycle, separate accounting).
             if (not prop_local.user_input_location
                     and not getattr(prop_local, 'horizonskill', False)):
                 n_stations = len(ofs_ctlfile[1])
+                # Best-effort: derive the expected per-station row count
+                # from the resampled model time axis. Fall back to None
+                # (existence-only check) if anything unexpected pops up so
+                # the resume path never fails hard on a missing time dim.
+                try:
+                    time_var = ('ocean_time'
+                                if prop_local.model_source == 'roms'
+                                else 'time')
+                    expected_ts = int(model.sizes[time_var])
+                except Exception as ex:  # pylint: disable=broad-except
+                    logger.warning(
+                        'Resume check: could not determine expected '
+                        'timestep count (%s); falling back to '
+                        'existence-only check.', ex)
+                    expected_ts = None
 
-                def _prd_path(idx):
-                    if prop_local.whichcast == 'forecast_a':
-                        return (
-                            f'{prop_local.data_model_1d_node_path}/'
-                            f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
-                            f'{name_conventions[0]}_{ofs_ctlfile[1][idx]}_'
-                            f'{prop_local.whichcast}_'
-                            f'{prop_local.forecast_hr}_'
-                            f'{prop_local.ofsfiletype}_model.prd'
-                        )
-                    return (
-                        f'{prop_local.data_model_1d_node_path}/'
-                        f'{ofs_ctlfile[4][idx]}_{prop_local.ofs}_'
-                        f'{name_conventions[0]}_{ofs_ctlfile[1][idx]}_'
-                        f'{prop_local.whichcast}_'
-                        f'{prop_local.ofsfiletype}_model.prd'
+                if n_stations > 0 and _all_prd_files_complete(
+                        prop_local, ofs_ctlfile, name_conventions[0],
+                        expected_ts, logger):
+                    logger.info(
+                        '[%s] all %d .prd file(s) on disk look complete '
+                        '— skipping precompute and per-station writes',
+                        variable, n_stations,
                     )
-
-                if n_stations > 0:
-                    all_present = True
-                    for i in range(n_stations):
-                        path = _prd_path(i)
-                        if (not os.path.isfile(path)
-                                or os.path.getsize(path) == 0):
-                            all_present = False
-                            break
-                    if all_present:
-                        logger.info(
-                            '[%s] all %d .prd file(s) already exist on disk '
-                            '— skipping precompute and per-station writes',
-                            variable, n_stations,
-                        )
-                        return
+                    return
 
             # Batch-extract all station data if using stations files
             precomputed = None
