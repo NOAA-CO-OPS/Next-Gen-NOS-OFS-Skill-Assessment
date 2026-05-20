@@ -771,6 +771,11 @@ def index_nearest_depth(
             s_rho_np = _static_coord_1d(model_netcdf, 's_rho')
             h_np = _static_coord_1d(model_netcdf, 'h')
         elif model_source == 'schism' and prop.ofs == 'loofs2':
+            if name_var == 'wl':
+                for idx in range(length):
+                    index_min_depth.append(0)
+                    depth_value.append(0.0)
+                return index_min_depth, np.abs(depth_value)
             z_np = _static_coord_1d(model_netcdf, 'zcoords')
 
         for idx in range(0, length):
