@@ -19,6 +19,52 @@ def _coords_lookup_key(obs_lat: float, obs_lon: float) -> tuple:
     return (round(float(obs_lat), 6), round(float(obs_lon), 6))
 
 
+# Dimension names that intake's nested-combine may have used as the concat
+# dim. After ``data_vars='all'`` (legacy intake) a static mesh var like
+# ``lon`` becomes ``(time, station)`` instead of ``(station,)``; after
+# ``data_vars='minimal'`` (current intake) it stays ``(station,)``.
+# ``_static_coord_1d`` normalises both shapes so call sites get the
+# native (non-time-replicated) form regardless of how intake was wired.
+_TIME_CONCAT_DIM_CANDIDATES = ('time', 'ocean_time')
+
+
+def _static_coord_1d(model_netcdf: Any, name: str) -> np.ndarray:
+    """Return a static coord as a non-time-replicated numpy array.
+
+    Works under both intake variants:
+    - ``data_vars='minimal'``: coord is its native shape (e.g. ``(node,)``);
+      returned unchanged.
+    - ``data_vars='all'``: coord was replicated to ``(time, ..., node)``;
+      the first time slice is returned (values are constant across the
+      replicated time dim by construction).
+
+    Multi-D static grids (ROMS ``lon_rho``/``lat_rho``/``mask_rho``,
+    FVCOM ``siglay``) are also handled: any leading time dim is dropped,
+    other dims are preserved.
+
+    Parameters
+    ----------
+    model_netcdf
+        Dataset-like mapping that supports ``model_netcdf[name]``.
+    name
+        Variable name (e.g. ``'lon'``, ``'h'``, ``'siglay'``).
+
+    Returns
+    -------
+    np.ndarray
+        Numpy array with the time dim removed if it was the leading dim.
+    """
+    da = model_netcdf[name]
+    dims = getattr(da, 'dims', None)
+    arr = np.asarray(da.values if hasattr(da, 'values') else da)
+    if dims and len(dims) > 0 and dims[0] in _TIME_CONCAT_DIM_CANDIDATES:
+        # Replicated along the concat time dim — drop it by taking the
+        # first slice. Values are constant across that axis by
+        # construction of the multi-file concat.
+        return np.asarray(arr[0])
+    return arr
+
+
 def index_nearest_node(
     ctl_file_extract: list[list[str]],
     model_netcdf: dict[str, Any],
@@ -93,10 +139,10 @@ def index_nearest_node(
     if model_source == 'fvcom':
         index_min_dist: list[Any] = []
         length = len(ctl_file_extract)
-        lonc_np = np.array(model_netcdf['lonc'])
-        latc_np = np.array(model_netcdf['latc'])
-        lon_np = np.array(model_netcdf['lon'])
-        lat_np = np.array(model_netcdf['lat'])
+        lonc_np = _static_coord_1d(model_netcdf, 'lonc')
+        latc_np = _static_coord_1d(model_netcdf, 'latc')
+        lon_np = _static_coord_1d(model_netcdf, 'lon')
+        lat_np = _static_coord_1d(model_netcdf, 'lat')
 
         # Handle longitude wrapping for global models
         if np.min(lonc_np) < 0:
@@ -183,9 +229,9 @@ def index_nearest_node(
 
     elif model_source == 'roms':
         index_min_dist = []  # type: ignore[no-redef]
-        lat_rho_np = np.array(model_netcdf['lat_rho'])
-        lon_rho_np = np.array(model_netcdf['lon_rho'])
-        mask_rho_np = np.array(model_netcdf['mask_rho'])
+        lat_rho_np = _static_coord_1d(model_netcdf, 'lat_rho')
+        lon_rho_np = _static_coord_1d(model_netcdf, 'lon_rho')
+        mask_rho_np = _static_coord_1d(model_netcdf, 'mask_rho')
 
         # Squeeze out any singleton dimensions (e.g., time dimension)
         # Grid arrays should be 2D: (eta_rho, xi_rho)
@@ -454,9 +500,9 @@ def index_nearest_depth(
 
         if model_source == 'fvcom':
             if 'zc' in model_netcdf:
-                zc_np = np.array(model_netcdf['zc'])  # Element center depths
+                zc_np = _static_coord_1d(model_netcdf, 'zc')  # Element center depths
             if 'z' in model_netcdf:
-                z_np = np.array(model_netcdf['z'])    # Node depths
+                z_np = _static_coord_1d(model_netcdf, 'z')    # Node depths
             else:
                 # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z.
                 # The stations branch below has a working fallback, but
@@ -475,11 +521,12 @@ def index_nearest_depth(
                     'Tracked at issue #129.'
                 )
         elif model_source == 'roms':
-            lon_rho_np = np.array(model_netcdf['lon_rho'])
-            s_rho_np = np.array(model_netcdf['s_rho'])
-            h_np = np.array(model_netcdf['h'])
+            lon_rho_np = _static_coord_1d(model_netcdf, 'lon_rho')
+            s_rho_np = _static_coord_1d(model_netcdf, 's_rho')
+            h_np = _static_coord_1d(model_netcdf, 'h')
 
-            # Squeeze out singleton dimensions for grid arrays
+            # Squeeze out singleton dimensions for grid arrays (defensive
+            # — older NODD archives sometimes carry singleton extras).
             lon_rho_np = np.squeeze(lon_rho_np)
             h_np = np.squeeze(h_np)
             s_rho_np = np.squeeze(s_rho_np)
@@ -700,32 +747,38 @@ def index_nearest_depth(
                         depth_value.append(np.nan)
                 return index_min_depth, np.abs(depth_value)
             if 'z' in model_netcdf:
-                z_np = np.array(model_netcdf['z'])
+                z_np = _static_coord_1d(model_netcdf, 'z')
             else:
                 # Some FVCOM outputs (e.g. NECOFS) lack pre-computed z;
-                # compute from sigma coordinates and bathymetry. Do the
-                # multiplication on the xarray DataArrays so broadcasting
-                # aligns by named dim ('node') — after multi-file concat
-                # `h` carries a time dim, so raw numpy broadcasting on
-                # (siglay, node) * (time, node) fails on trailing axes.
-                z_np = np.array(
-                    model_netcdf['siglay'] * model_netcdf['h']
-                )
+                # synthesise from sigma coordinates and bathymetry. With
+                # intake's data_vars='minimal' (current default), both
+                # siglay (siglay, node) and h (node,) come back without a
+                # replicated time dim, so the product broadcasts cleanly
+                # to (siglay, node). With the legacy data_vars='all',
+                # ``_static_coord_1d`` normalises both shapes first.
+                siglay_np = _static_coord_1d(model_netcdf, 'siglay')
+                h_np_fv = _static_coord_1d(model_netcdf, 'h')
+                z_np = np.asarray(siglay_np * h_np_fv)
         elif model_source == 'roms':
-            s_rho_np = np.array(model_netcdf['s_rho'])
-            h_np = np.array(model_netcdf['h'])
+            s_rho_np = _static_coord_1d(model_netcdf, 's_rho')
+            h_np = _static_coord_1d(model_netcdf, 'h')
         elif model_source == 'schism' and prop.ofs == 'loofs2':
-            z_np = np.array(model_netcdf['zcoords'])
+            z_np = _static_coord_1d(model_netcdf, 'zcoords')
 
         for idx in range(0, length):
             if ~np.isnan(index_min_dist[idx]):
                 node = index_min_dist[idx]
                 if model_source=='fvcom':
-                    model_depths = np.asarray(z_np[:,node,0])
+                    # z_np shape (siglay, node) — already time-dim-free
+                    # via _static_coord_1d helper.
+                    model_depths = np.asarray(z_np[:, node])
                 elif model_source=='roms':
-                    model_depths = np.asarray(s_rho_np*h_np[0,node])
+                    # h is 1-D (node,) after normalisation.
+                    model_depths = np.asarray(s_rho_np * h_np[node])
                 elif model_source == 'schism' and prop.ofs == 'loofs2':
-                    model_depths = np.asarray(z_np[0,node,:])
+                    # zcoords for SCHISM has node+depth axes; the helper
+                    # already dropped any leading time-replicated dim.
+                    model_depths = np.asarray(z_np[node, :])
                 elif model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
                         if name_var == 'wl':
@@ -823,7 +876,13 @@ def index_nearest_station(
     if 'stofs' in prop.ofs:
         length = len(ctl_file_extract)
 
-        station_names_str = model_netcdf['station_name'][0].astype(str).values
+        # station_name is a per-station static; under data_vars='all' it
+        # was replicated to (time, station) and the legacy code took
+        # [0] to recover the station vector. Under data_vars='minimal'
+        # it stays (station,) directly. ``_static_coord_1d`` returns the
+        # right shape for both, and we cast to str here regardless.
+        station_names_arr = _static_coord_1d(model_netcdf, 'station_name')
+        station_names_str = station_names_arr.astype(str)
 
         for obs_p in range(length):
             match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
@@ -840,8 +899,12 @@ def index_nearest_station(
 
     elif model_source == 'fvcom' or model_source == 'schism':
         length = len(ctl_file_extract)
-        lon_np = np.array(model_netcdf['lon'])[1]
-        lat_np = np.array(model_netcdf['lat'])[1]
+        # Under data_vars='all' (legacy intake) lon/lat were replicated to
+        # (time, station) and the previous code took [1] to grab one
+        # time-row back. Under data_vars='minimal' they stay (station,).
+        # ``_static_coord_1d`` returns (station,) for both.
+        lon_np = _static_coord_1d(model_netcdf, 'lon')
+        lat_np = _static_coord_1d(model_netcdf, 'lat')
 
         # Handle longitude wrapping
         if np.min(lon_np) < 0:
@@ -888,8 +951,8 @@ def index_nearest_station(
                 )
 
     elif model_source == 'roms':
-        lon_rho_np = np.array(model_netcdf['lon_rho'])
-        lat_rho_np = np.array(model_netcdf['lat_rho'])
+        lon_rho_np = _static_coord_1d(model_netcdf, 'lon_rho')
+        lat_rho_np = _static_coord_1d(model_netcdf, 'lat_rho')
 
         lat_flat = lat_rho_np.ravel()
         lon_flat = lon_rho_np.ravel()

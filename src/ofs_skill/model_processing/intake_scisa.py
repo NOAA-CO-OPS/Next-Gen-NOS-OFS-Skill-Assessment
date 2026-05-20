@@ -190,19 +190,26 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     time_name = None
     if prop.model_source == 'roms':
         time_name = 'ocean_time'
+        # ``dstart`` is the per-file model-initialization timestamp in
+        # days; it differs across forecast cycles. With
+        # ``data_vars='minimal'`` xarray would refuse to merge files
+        # whose non-time scalars conflict, so it gets dropped here.
+        # (Under the legacy ``data_vars='all'`` it was silently
+        # concatenated along time and never read by anything.)
         drop_variables = [
             'Akk_bak', 'Akp_bak', 'Akt_bak', 'Akv_bak', 'Cs_r', 'Cs_w',
-            'dtfast', 'el', 'f', 'Falpha', 'Fbeta', 'Fgamma', 'FSobc_in',
-            'FSobc_out', 'gamma2', 'grid', 'hc', 'lat_psi', 'lon_psi',
-            'Lm2CLM', 'Lm3CLM', 'LnudgeM2CLM', 'LnudgeM3CLM', 'LnudgeTCLM',
-            'LsshCLM', 'LtracerCLM', 'LtracerSrc', 'LuvSrc', 'LwSrc', 'M2nudg',
-            'M2obc_in', 'M2obc_out', 'M3nudg', 'M3obc_in', 'M3obc_out',
-            'mask_psi', 'mask_u', 'mask_v', 'ndefHIS', 'ndtfast', 'nHIS',
-            'nRST', 'nSTA', 'ntimes', 'Pair', 'pm', 'pn', 'rdrg', 'rdrg2',
-            'rho0', 's_w', 'spherical', 'Tcline', 'theta_b', 'theta_s',
-            'Tnudg', 'Tobc_in', 'Tobc_out', 'Uwind', 'Vwind', 'Vstretching',
-            'Vtransform', 'w', 'wetdry_mask_psi', 'wetdry_mask_rho',
-            'wetdry_mask_u', 'wetdry_mask_v', 'xl', 'Znudg', 'Zob', 'Zos',
+            'dstart', 'dtfast', 'el', 'f', 'Falpha', 'Fbeta', 'Fgamma',
+            'FSobc_in', 'FSobc_out', 'gamma2', 'grid', 'hc', 'lat_psi',
+            'lon_psi', 'Lm2CLM', 'Lm3CLM', 'LnudgeM2CLM', 'LnudgeM3CLM',
+            'LnudgeTCLM', 'LsshCLM', 'LtracerCLM', 'LtracerSrc', 'LuvSrc',
+            'LwSrc', 'M2nudg', 'M2obc_in', 'M2obc_out', 'M3nudg',
+            'M3obc_in', 'M3obc_out', 'mask_psi', 'mask_u', 'mask_v',
+            'ndefHIS', 'ndtfast', 'nHIS', 'nRST', 'nSTA', 'ntimes',
+            'Pair', 'pm', 'pn', 'rdrg', 'rdrg2', 'rho0', 's_w', 'spherical',
+            'Tcline', 'theta_b', 'theta_s', 'Tnudg', 'Tobc_in', 'Tobc_out',
+            'Uwind', 'Vwind', 'Vstretching', 'Vtransform', 'w',
+            'wetdry_mask_psi', 'wetdry_mask_rho', 'wetdry_mask_u',
+            'wetdry_mask_v', 'xl', 'Znudg', 'Zob', 'Zos',
         ]
     elif prop.model_source == 'fvcom':
         time_name = 'time'
@@ -390,6 +397,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'engine': engine,
                         'preprocess': preprocess_fn,
                         'concat_dim': time_name,
+                        'data_vars': 'minimal',
                         'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
@@ -405,12 +413,17 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 chunk_spec = {time_name: 1}
             else:
                 chunk_spec = 'auto'
-            # Note it might be possible to add
-            #     'data_vars': 'minimal'
-            # to the xarray_kwargs to avoid expanding spatial/mesh variables
-            # in the time dimension, which can result in very large arrays.
-            # But this messes up the indexing.py process, so we will leave
-            # it out for now.
+            # ``data_vars='minimal'`` stops xarray from replicating static
+            # mesh vars (lon, lat, lonc, latc, h, siglay, ...) along the
+            # concat time dim during multi-file open. On long windows
+            # this saves the per-whichcast cost of materializing static
+            # coords across hundreds of backing files and frees the
+            # downstream resample helper from having to walk those vars.
+            # ``indexing.py`` was previously coupled to the legacy
+            # ``(time, station)`` replicated shape via ad-hoc ``[0]`` /
+            # ``[1]`` time slicing; the ``_static_coord_1d`` helper in
+            # indexing.py now normalises both shapes so the call sites
+            # are happy under either mode.
             source = intake.open_netcdf(
                 urlpath=urlpaths,
                 xarray_kwargs={
@@ -418,6 +431,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'engine': engine,
                     'preprocess': preprocess_fn,
                     'concat_dim': time_name,
+                    'data_vars': 'minimal',
                     'decode_times': True,
                     'drop_variables': drop_variables,
                     'chunks': chunk_spec,
@@ -1042,6 +1056,7 @@ def remove_extra_stations(engine: str,
                 ds = xr.combine_nested(
                     [ds, tempds],
                     concat_dim=time_name,
+                    data_vars='minimal',
                 )
             except ValueError as e_x:
                 logger.error(f'Station dims are inconsistent! {e_x}')
