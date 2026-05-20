@@ -19,6 +19,7 @@ These tests pin the invariants:
 """
 
 import logging
+import logging.handlers
 
 import numpy as np
 import xarray as xr
@@ -243,16 +244,15 @@ def test_chunk_log_uses_combined_var_name(caplog):
 
 def test_summary_log_says_fused_n_var():
     """Header line should report the number of variables being fused."""
-    import logging as _logging
-    logger = _logging.getLogger('batch_extract_multi_test_summary')
+    logger = logging.getLogger('batch_extract_multi_test_summary')
 
     ds = _make_fvcom_dataset(n_time=30)
     indices = [0]
     depths = [0]
 
-    handler = _logging.handlers.MemoryHandler(capacity=100)
+    handler = logging.handlers.MemoryHandler(capacity=100)
     logger.addHandler(handler)
-    logger.setLevel(_logging.INFO)
+    logger.setLevel(logging.INFO)
     try:
         _batch_extract_multi(ds, ['u', 'v'], indices, depths,
                               idx_first=False, logger=logger, time_chunk=10)

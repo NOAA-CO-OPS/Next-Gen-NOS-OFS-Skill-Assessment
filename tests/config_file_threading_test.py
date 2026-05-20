@@ -16,6 +16,7 @@ into the relevant ``utils.Utils(config_file=...)`` constructors. These
 tests build a tiny custom conf and verify both code paths pick it up.
 """
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +78,7 @@ def test_read_vdatum_uses_prop_config_file(custom_conf, caplog):
     # S3 will fail (no creds / wrong key) and we'll hit the local-fallback
     # branch. The fake file we point at doesn't exist, so we expect the
     # path from our custom conf to appear in the failure log.
-    result = read_vdatum_from_bucket(prop, caplog.handler.stream and __import__('logging').getLogger())
+    result = read_vdatum_from_bucket(prop, caplog.handler.stream and logging.getLogger(__name__))
 
     # Sentinel indicates failure path was taken (either S3 404 -> local
     # fallback -> open failed, or both). What matters: the code didn't
@@ -92,7 +93,6 @@ def test_read_vdatum_without_config_file_attr_still_warns():
     Avoids AttributeError regressions in callers that build prop from
     scratch (tests, GUI) without going through the CLI argparse plumbing.
     """
-    import logging
     prop = SimpleNamespace(ofs='necofs')  # no config_file attribute
     log = logging.getLogger('test_read_vdatum_no_config_attr')
 
