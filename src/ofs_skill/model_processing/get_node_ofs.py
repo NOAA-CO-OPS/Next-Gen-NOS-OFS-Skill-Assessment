@@ -1730,9 +1730,22 @@ def get_node_ofs(prop, logger, model_dataset=None):
                 except FileNotFoundError:
                     timediffhour = 99
                 if (variable == 'water_level' and timediffhour > 1):
-                    # First-write of the datum report on a fresh run is
-                    # part of the happy path, not an error condition.
-                    logger.info('No datum report found, writing new one.')
+                    # Two code paths land here:
+                    #   * First write on a fresh run — happy path. The
+                    #     FileNotFoundError above sets timediffhour=99
+                    #     as a sentinel; we log at INFO.
+                    #   * Stale report (>1h but not the sentinel) — a
+                    #     prior vdatum.convert run likely failed silently
+                    #     and left the report behind. Warrants attention,
+                    #     so log at WARNING.
+                    if timediffhour >= 99:
+                        logger.info(
+                            'No datum report found, writing new one.')
+                    else:
+                        logger.warning(
+                            'Stale datum report (%.1fh old, >1h), '
+                            'rewriting — a prior vdatum run may have '
+                            'failed silently.', timediffhour)
                     datum_offsets = [model_stations, datum_offsets]
                     report_datums(prop_local, datum_offsets, logger)
 
