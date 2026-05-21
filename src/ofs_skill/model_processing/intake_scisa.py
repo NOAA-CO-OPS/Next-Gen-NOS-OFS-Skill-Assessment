@@ -525,14 +525,19 @@ def fix_roms_uv(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
     logger.info('Applying adjustments for ROMS currents ...')
 
     if prop.ofsfiletype == 'fields':
-        mask_rho = None
-        if len(data_set['ocean_time']) > 1:
-            mask_rho = np.array(data_set.variables['mask_rho'][:][0])
+        # mask_rho is a static ROMS grid var. Under the legacy
+        # ``data_vars='all'`` intake it was replicated to
+        # (ocean_time, eta_rho, xi_rho); under 'minimal' it stays
+        # (eta_rho, xi_rho). Strip any leading time dim defensively.
+        mask_rho_var = data_set.variables['mask_rho']
+        mask_rho_arr = np.array(mask_rho_var)
+        dims = getattr(mask_rho_var, 'dims', ())
+        if dims and dims[0] == 'ocean_time':
+            mask_rho_arr = mask_rho_arr[0]
+        mask_rho = mask_rho_arr
+        del mask_rho_arr
 
-        elif len(data_set['ocean_time']) == 1:
-            mask_rho = np.array(data_set.variables['mask_rho'][:])
-
-        assert mask_rho is not None  # narrowed by the branches above
+        assert mask_rho is not None  # narrowed by the assignment above
         # Compute slices for interior (exclude boundaries)
         eta_slice = slice(1, mask_rho.shape[-2] - 1)
         xi_slice = slice(1, mask_rho.shape[-1] - 1)
@@ -660,9 +665,28 @@ def fix_fvcom(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
     INFO:root:Applying adjustments for FVCOM ...
     """
     logger.info('Applying adjustments for FVCOM ...')
+
+    def _drop_leading_time(da_or_arr):
+        """Return the first time-slice if a leading time dim is present.
+
+        Under the legacy ``data_vars='all'`` intake, static mesh vars
+        like ``h`` and ``nv`` were replicated to ``(time, ...)`` during
+        nested concat and the old code stripped the time dim with
+        ``[0, ...]``. Under the current ``data_vars='minimal'`` intake
+        they stay at their native rank. This helper accepts either
+        shape and returns the non-time-replicated form.
+        """
+        arr = np.asarray(da_or_arr.values if hasattr(da_or_arr, 'values')
+                         else da_or_arr)
+        dims = getattr(da_or_arr, 'dims', ())
+        if dims and dims[0] in ('time', 'ocean_time'):
+            return arr[0]
+        return arr
+
     if prop.ofsfiletype == 'stations':
 
-        [_, _, deplay, _] = calc_sigma(data_set.h[0, :], data_set.siglev)
+        h_1d = _drop_leading_time(data_set.h)
+        [_, _, deplay, _] = calc_sigma(h_1d, data_set.siglev)
 
         # We now can assign the z coordinate for the data.
         z_cdt = data_set.siglay * data_set.h
@@ -671,14 +695,17 @@ def fix_fvcom(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
 
     elif prop.ofsfiletype == 'fields':
 
-        [_, _, deplay, _] = calc_sigma(data_set.h[0, :], data_set.siglev)
+        h_1d = _drop_leading_time(data_set.h)
+        [_, _, deplay, _] = calc_sigma(h_1d, data_set.siglev)
 
         # We now can assign the z coordinate for the data.
         data_set['z'] = (['node', 'depth'], deplay)
         data_set['z'].attrs = {
             'long_name': 'nodal z-coordinate', 'units': 'meters'}
-        # We now can assign the zc coordinate for the data.
-        nvs = np.array(data_set.nv)[0, :, :].T - 1
+        # We now can assign the zc coordinate for the data. ``nv`` is the
+        # element-connectivity mesh — static, so it's been replicated
+        # along time under ``data_vars='all'`` and not under 'minimal'.
+        nvs = _drop_leading_time(data_set.nv).T - 1
         zc_list: list[Any] = []
         for tri in nvs:
             zc_list.append(np.mean(deplay.T[:, tri], axis=1))
