@@ -30,6 +30,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+import requests
 
 from ofs_skill.obs_retrieval import retrieve_properties, utils, vdatum_resilient
 from ofs_skill.obs_retrieval.currents_bins_override import (
@@ -57,6 +58,20 @@ _CHS_MAX_WORKERS = 1
 _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
 
+
+def _get_chs_code(identifier: str, logger) -> str:
+    """Helper to extract the CHS code if given a UUID."""
+    if len(identifier) != 36:
+        return identifier # Already looks like a code
+
+    url = f'https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/{identifier}'
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json().get('code', identifier)
+    except Exception as e:
+        logger.error('Failed to map CHS UUID %s to code: %s', identifier, e)
+    return identifier
 
 def _normalize_vdatum_name(name: str) -> str:
     """Canonicalize short datum aliases to the full names expected downstream.
@@ -602,47 +617,43 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
 def _process_chs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
-    """Process a single CHS station.
+    """Process a single CHS station."""
 
-    Returns a list of CTL entry strings (at most one). Empty list on
-    failure, preserving a uniform return shape with
-    ``_process_coops_station``.
-    """
+    # Resolve code for the .ctl file
+    station_code = _get_chs_code(str(id_number), logger)
+
     try:
         data_station = retrieve_chs_station(
             start_date,
             end_date,
-            id_number,
+            str(id_number),
             variable,
             logger
             )
 
-        if data_station is None:
+        # Ensure data is valid before proceeding
+        if data_station is None or data_station.empty:
             return []
 
         logger.info(
-            'CHS %s data found for '
-            'station %s.', variable, str(id_number)
-            )
+            'CHS %s data found for station %s (Code: %s).',
+            variable, str(id_number), station_code
+        )
 
         if variable == 'water_level':
-            # CHS IWLS API returns water levels relative to chart datum.
-            # For Great Lakes, chart datum IS the Low Water Datum (LWD).
-            # The Datum column is labeled 'IGLD' for consistency with the
-            # pipeline, but the GL offsets below convert from LWD to IGLD
-            # when the user requests IGLD.
+            # Safely get the datum from the first row to prevent KeyErrors
+            station_datum = str(data_station['Datum'].iloc[0])
+
             if ofs not in [
                     'leofs', 'lmhofs', 'loofs',
                     'loofs2', 'lsofs']:
-                if (str(
-                        data_station['Datum'][1]
-                        ).upper() == datum):
+                if (station_datum.upper() == datum):
                     zdiff = 0
                 else:
                     ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
                     _,_,z = vdatum_resilient.convert(
-                        data_station['Datum'][1].lower(),
+                        station_datum.lower(),
                         ldatum,
                         y_value,
                         x_value,
@@ -662,47 +673,48 @@ def _process_chs_station(id_number, name, x_value, y_value,
                         zdiff = 176.0
                     elif ofs == 'lsofs':
                         zdiff = 183.2
-                    elif ofs == 'loofs' or ofs == 'loofs2':
+                    elif ofs in ['loofs', 'loofs2']:
                         zdiff = 74.2
                 elif datum == 'LWD':
                     zdiff = 0 # No correction needed
                 else:
                     zdiff = 'UNKNOWN'
+
             return [(
-                f'{str( id_number )} '
-                f'{str( id_number )}_{name_var}_'
+                f'{station_code} '
+                f'{station_code}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} '
-                f'{zdiff}  0.0  {data_station["Datum"][1]}\n'
+                f'{zdiff}  0.0  {station_datum}\n'
                 )]
 
         else:
-            data_station['DEP01'] = data_station[
-                'DEP01'].astype(float)
-            # Currents carry an extra 6th field (height_from_bottom) for
-            # uniformity with the CO-OPS ADCP per-bin CTL lines. Other
-            # variables use the legacy 5-field layout.
+            data_station['DEP01'] = data_station['DEP01'].astype(float)
+
             if variable == 'currents':
                 return [(
-                    f'{str( id_number )} {str( id_number )}_{name_var}_'
+                    f'{station_code} {station_code}_{name_var}_'
                     f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                     f'{x_value:.3f} 0.0  '
                     f'{data_station["DEP01"].mean():.2f}  '
                     f'0.0  0.00\n'
                     )]
             return [(
-                f'{str( id_number )} {str( id_number )}_{name_var}_'
+                f'{station_code} {station_code}_{name_var}_'
                 f'{ofs}_CHS "{name}"\n  {y_value:.3f} '
                 f'{x_value:.3f} 0.0  '
                 f'{data_station["DEP01"].mean():.2f}  '
                 f'0.0\n'
                 )]
+
     except Exception as ex:
-        logger.info(
-            'CHS %s data not found for '
+        # Changed to logger.error so you can easily see what broke if it fails again
+        logger.error(
+            'CHS %s data not processed for '
             'station %s. Exception: %s', variable,
             str(id_number), ex
-            )
+        )
+
     return []
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,

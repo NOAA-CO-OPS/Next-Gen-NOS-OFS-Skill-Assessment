@@ -192,9 +192,6 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
             chs_future = executor.submit(
                 inventory_chs_station, lat1, lat2, lon1, lon2, logger
             )
-            # chs = inventory_chs_station(
-            #     lat1, lat2, lon1, lon2, logger
-            # )
 
     # Collect results (blocks until each future completes)
     t_c = t_c_future.result() if t_c_future else None

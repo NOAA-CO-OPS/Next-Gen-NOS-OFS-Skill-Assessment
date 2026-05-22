@@ -19,6 +19,8 @@ from logging import Logger
 from typing import Optional
 
 import pandas as pd
+import requests
+from searvey import _chs_api
 from searvey._chs_api import fetch_chs_station
 
 # CHS time series codes per variable, in priority order (try first, fallback)
@@ -43,6 +45,22 @@ _CURRENT_SENSOR_PAIRS = [('wcs1', 'wcd1'), ('wcs2', 'wcd2')]
 # Accept codes 1 and 2; reject 3 (suspect) and 4 (erroneous).
 _ACCEPTED_QC_CODES = {'1', '2'}
 
+def _get_chs_uuid(identifier: str, logger: Logger) -> Optional[str]:
+    """Helper to resolve a CHS station code to its UUID."""
+    # If it already looks like a UUID (36 chars, contains hyphens), return it
+    if len(identifier) == 36 and '-' in identifier:
+        return identifier
+
+    url = f'{_chs_api.CHS_BASE_URL}/stations?code={identifier}'
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data and isinstance(data, list):
+            return data[0].get('id')
+    except Exception as e:
+        logger.error('Failed to map CHS code %s to UUID: %s', identifier, e)
+    return None
 
 def _make_date_chunks(start_date, end_date, interval_hours):
     """
@@ -225,6 +243,12 @@ def retrieve_chs_station(
             - Datum: Vertical datum (for water_level only, 'IGLD')
         Returns None if no data available.
     """
+
+    chs_uuid = _get_chs_uuid(id_number, logger)
+    if not chs_uuid:
+        logger.error('Could not resolve CHS UUID for station %s', str(id_number))
+        return None
+
     start_date_str = (start_date[:4] + '-' + start_date[4:6]
                       + '-' + start_date[6:])
     end_date_str = (end_date[:4] + '-' + end_date[4:6]
@@ -236,6 +260,18 @@ def retrieve_chs_station(
         date_list = _make_date_chunks(start_date_dt, end_date_dt, 7 * 24)
     else:
         date_list = [start_date_dt, end_date_dt]
+
+    if variable == 'currents':
+        data_all = _retrieve_chs_currents(date_list, chs_uuid, logger)
+    else:
+        data_all = _retrieve_chs_scalar(
+            date_list, chs_uuid, variable, logger)
+
+    if data_all is None:
+        logger.error(
+            'Retrieve CHS station %s failed for %s -- station contacted, '
+            'but no data available.', str(id_number), variable)
+    return data_all
 
     if variable == 'currents':
         data_all = _retrieve_chs_currents(date_list, id_number, logger)
