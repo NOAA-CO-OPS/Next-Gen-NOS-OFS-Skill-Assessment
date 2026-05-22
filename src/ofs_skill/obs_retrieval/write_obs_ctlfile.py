@@ -74,7 +74,6 @@ def _get_chs_code(identifier: str, logger) -> str:
         logger.error('Failed to map CHS UUID %s to code: %s', identifier, e)
     return identifier
 
-
 def _get_chs_uuid(identifier: str, logger) -> str:
     """Helper to resolve a CHS station code to its UUID."""
     if len(identifier) == 36 and '-' in identifier:
@@ -122,7 +121,6 @@ def _extract_chs_metadata(station_id: str, logger) -> dict:
         logger.debug('Failed to retrieve metadata for CHS station %s: %s', station_id, e)
 
     return extracted_data
-
 
 def _normalize_vdatum_name(name: str) -> str:
     """Canonicalize short datum aliases to the full names expected downstream.
@@ -694,7 +692,6 @@ def _process_chs_station(id_number, name, x_value, y_value,
         )
 
         if variable == 'water_level':
-
             # Retrieve metadata to isolate specific datum and offset
             station_uuid = _get_chs_uuid(str(id_number), logger)
             metadata = _extract_chs_metadata(station_uuid, logger)
