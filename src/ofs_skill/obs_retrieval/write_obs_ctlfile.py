@@ -29,6 +29,7 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -72,6 +73,56 @@ def _get_chs_code(identifier: str, logger) -> str:
     except Exception as e:
         logger.error('Failed to map CHS UUID %s to code: %s', identifier, e)
     return identifier
+
+
+def _get_chs_uuid(identifier: str, logger) -> str:
+    """Helper to resolve a CHS station code to its UUID."""
+    if len(identifier) == 36 and '-' in identifier:
+        return identifier
+
+    url = f'https://api-iwls.dfo-mpo.gc.ca/api/v1/stations?code={identifier}'
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, list):
+                return data[0].get('id', identifier)
+    except Exception as e:
+        logger.error('Failed to map CHS code %s to UUID: %s', identifier, e)
+    return identifier
+
+
+def _extract_chs_metadata(station_id: str, logger) -> dict:
+    """
+    Retrieves and parses CHS station metadata to isolate 'datum' and 'offset'.
+    """
+    url = f'https://api-sine.dfo-mpo.gc.ca/api/v1/stations/{station_id}/metadata'
+    extracted_data = {'datum': None, 'offset': None}
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        metadata = response.json()
+
+        def _find_keys(data):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if key.lower() == 'datum':
+                        extracted_data['datum'] = value
+                    elif key.lower() == 'offset':
+                        extracted_data['offset'] = value
+                    elif isinstance(value, (dict, list)):
+                        _find_keys(value)
+            elif isinstance(data, list):
+                for item in data:
+                    _find_keys(item)
+
+        _find_keys(metadata)
+    except Exception as e:
+        logger.debug('Failed to retrieve metadata for CHS station %s: %s', station_id, e)
+
+    return extracted_data
+
 
 def _normalize_vdatum_name(name: str) -> str:
     """Canonicalize short datum aliases to the full names expected downstream.
@@ -614,6 +665,7 @@ def _process_ndbc_station(id_number, name, x_value, y_value,
             )
     return []
 
+
 def _process_chs_station(id_number, name, x_value, y_value,
                           start_date, end_date, variable, name_var,
                           datum, ofs, logger):
@@ -641,8 +693,15 @@ def _process_chs_station(id_number, name, x_value, y_value,
         )
 
         if variable == 'water_level':
-            # Safely get the datum from the first row to prevent KeyErrors
+
+            # Retrieve metadata to isolate specific datum and offset
+            station_uuid = _get_chs_uuid(str(id_number), logger)
+            metadata = _extract_chs_metadata(station_uuid, logger)
+            meta_offset = metadata.get('offset')
             station_datum = str(data_station['Datum'].iloc[0])
+
+            if meta_offset is not None:
+                logger.info('Isolated CHS metadata offset for station %s: %s', str(id_number), meta_offset)
 
             if ofs not in [
                     'leofs', 'lmhofs', 'loofs',
@@ -666,17 +725,17 @@ def _process_chs_station(id_number, name, x_value, y_value,
                     else:
                         zdiff = round(z-dummyval,2) # datum offset
             else:
-                if datum == 'IGLD':
-                    if ofs == 'leofs':
-                        zdiff = 173.5
-                    elif ofs == 'lmhofs':
-                        zdiff = 176.0
-                    elif ofs == 'lsofs':
-                        zdiff = 183.2
-                    elif ofs in ['loofs', 'loofs2']:
-                        zdiff = 74.2
+                glofs_datums = {'leofs': 173.5,
+                               'lmhofs': 176.0,
+                               'lsofs': 183.2,
+                               'loofs': 74.2,
+                               'loofs2': 74.2}
+                if 'IGLD' in datum and not meta_offset:
+                    zdiff = glofs_datums.get(ofs)
+                if 'IGLD' in datum and meta_offset:
+                    zdiff = meta_offset
                 elif datum == 'LWD':
-                    zdiff = 0 # No correction needed
+                    zdiff = np.abs(meta_offset - glofs_datums.get(ofs))
                 else:
                     zdiff = 'UNKNOWN'
 
@@ -716,6 +775,7 @@ def _process_chs_station(id_number, name, x_value, y_value,
         )
 
     return []
+
 
 def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                       datum, datum_list, ofs, usgs_max_workers,
