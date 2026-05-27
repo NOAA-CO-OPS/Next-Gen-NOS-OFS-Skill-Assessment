@@ -12,12 +12,7 @@ from logging import Logger
 from typing import Optional
 
 import pandas as pd
-from searvey import _chs_api
 from searvey._chs_api import get_chs_stations
-
-# TEMP: CHS retired the old IWLS host (returns 301 to the line below); searvey
-# still hard-codes the old URL. Remove this override once upstream ships the fix.
-_chs_api.CHS_BASE_URL = 'https://api-iwls.dfo-mpo.gc.ca/api/v1'
 
 
 def inventory_chs_station(
