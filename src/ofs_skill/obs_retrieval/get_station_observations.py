@@ -210,7 +210,7 @@ def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
-    datum_shift, retrieve_input, logger, config_file=None,
+    datum_shift, retrieve_input, logger, control_files_path, config_file=None,
 ):
     """Apply datum shift to water_level timeseries, with CO-OPS multi-datum fallback.
 
@@ -264,7 +264,7 @@ def _apply_datum_shift(
                     retrieve_input.variable = variable
                     retrieve_input.datum = all_datums[dat]
                     timeseries = retrieve_t_and_c_station(
-                        retrieve_input, logger,
+                        retrieve_input, logger, control_files_path,
                         config_file=config_file,
                     )
                     if (timeseries is not None and
@@ -345,7 +345,7 @@ def _format_timeseries(timeseries, variable, start_date_full, end_date_full):
 def _fetch_and_format_station(
     station_info, station_metadata, variable, name_var, datum, datum_list,
     start_date, end_date, start_date_full, end_date_full, ofs,
-    data_observations_1d_station_path, logger, config_file=None,
+    data_observations_1d_station_path, logger, control_files_path, config_file=None,
 ):
     """Fetch observation data for a single station, format it, and write .obs file.
 
@@ -410,7 +410,9 @@ def _fetch_and_format_station(
 
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger,
-                    config_file=config_file)
+                    control_files_path,
+                    config_file=config_file,
+                    )
 
                 if variable == 'currents' and isinstance(timeseries, dict):
                     # Pick out the requested bin. When no bin suffix was
@@ -445,7 +447,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -474,7 +476,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -503,7 +505,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -532,7 +534,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -802,6 +804,7 @@ def _process_variable_obs(
                             ofs,
                             data_observations_1d_station_path,
                             logger,
+                            control_files_path,
                             config_file,
                         )
                         futures[future] = station_info[0]

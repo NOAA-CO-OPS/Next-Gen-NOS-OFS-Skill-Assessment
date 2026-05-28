@@ -21,6 +21,7 @@ number — see :func:`_retrieve_currents_all_bins` and the wiki page
 
 import json
 import math
+import os
 import random
 import threading
 import time
@@ -74,6 +75,8 @@ _COOPS_CONCURRENCY_LIMIT = 2
 _COOPS_MIN_REQUEST_GAP_SEC = 0.5
 _coops_request_semaphore = threading.Semaphore(_COOPS_CONCURRENCY_LIMIT)
 _coops_pacing_lock = threading.Lock()
+# Lock to prevent concurrent threads from corrupting the deployment summary CSV
+_csv_export_lock = threading.Lock()
 _coops_last_request_time = 0.0  # pylint: disable=invalid-name
 
 
@@ -489,6 +492,221 @@ def get_station_deployment(
     _station_deployment_cache[station_id] = payload
     return payload
 
+def check_bin_depth_changes(
+    station_id: str,
+    mdapi_url: str,
+    logger: Logger,
+) -> bool:
+    """
+    Check if an ADCP station's bin depths have shifted across different deployments.
+
+    Queries the MDAPI with expand=deployments,bins to get the full historical
+    bin profiles, groups them by deployment ID, and compares the configurations.
+    """
+    url = f'{mdapi_url}/webapi/stations/{station_id}.json?expand=deployments,bins&units=metric'
+
+    payload = _get_with_retry(url, station_id, 'bin-depth-audit', logger)
+
+    # Safely validate top-level structure
+    if not payload or not isinstance(payload, dict):
+        return False
+
+    stations = payload.get('stations')
+    if not stations or not isinstance(stations, list) or not isinstance(stations[0], dict):
+        logger.warning('CO-OPS bin depth audit failed: No station data returned for %s', station_id)
+        return False
+
+    station_data = stations[0]
+    bins_node = station_data.get('bins')
+
+    # Safely extract the list depending on how the MDAPI nested it
+    bins_list = []
+    if isinstance(bins_node, dict):
+        bins_list = bins_node.get('bins', [])
+    elif isinstance(bins_node, list):
+        bins_list = bins_node
+
+    if not bins_list:
+        return False
+
+    # Group bins by their specific deployment ID
+    deployment_profiles = {}
+    for b in bins_list:
+        # Protect against anomalous non-dict items in the list
+        if not isinstance(b, dict):
+            continue
+
+        dep_id = b.get('deploymentId')
+        bin_num = _coerce_int(b.get('num') or b.get('bin'))
+        distance = b.get('distance')
+
+        if dep_id is None or bin_num is None or distance is None:
+            continue
+
+        if dep_id not in deployment_profiles:
+            deployment_profiles[dep_id] = {}
+
+        try:
+            deployment_profiles[dep_id][bin_num] = float(distance)
+        except (TypeError, ValueError):
+            continue
+
+    if len(deployment_profiles) <= 1:
+        return False
+
+    profiles = list(deployment_profiles.values())
+    baseline_profile = profiles[0]
+
+    for i, profile in enumerate(profiles[1:], start=1):
+        if profile != baseline_profile:
+            logger.warning(
+                'CO-OPS station %s has shifting bin depths across deployments! '
+                'Mismatch detected between deployment profiles.',
+                station_id
+            )
+            return True
+
+    logger.info('CO-OPS station %s bin depths are consistent across all deployments.', station_id)
+    return False
+
+def log_and_export_deployment_info(
+    station_id: str,
+    mdapi_url: str,
+    control_files_path: str,
+    logger: Logger,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> None:
+    """
+    Retrieves deployment info for a station, logs the configuration,
+    and appends a summary to a CSV in the control files directory.
+
+    Thread-safe implementation allowing multiple concurrent station
+    workers to append to the same file safely.
+    """
+    # 1. Fetch relevant metadata
+    deployment_info = get_station_deployment(station_id, mdapi_url, logger)
+    has_depth_shifts = check_bin_depth_changes(station_id, mdapi_url, logger)
+    mounting_type = resolve_mounting_type(deployment_info)
+
+    deployments = deployment_info.get('deployments', []) if deployment_info else []
+    num_deployments = len(deployments)
+
+    # 2. Check if a physical deployment change or gap occurred within the requested date window
+    window_change = False
+    gaps_str = 'N/A'
+    total_gap_days = 0
+
+    if start_date and end_date:
+        try:
+            s_dt = datetime.strptime(start_date, '%Y%m%d')
+            e_dt = datetime.strptime(end_date, '%Y%m%d')
+
+            # --- WINDOW CHANGE CHECK ---
+            for dep in deployments:
+                if not isinstance(dep, dict):
+                    continue
+                for d_key in ('deployed', 'retrieved'):
+                    val = dep.get(d_key)
+                    if val:
+                        dt_val = datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
+                        if s_dt <= dt_val <= e_dt:
+                            window_change = True
+                            break
+                if window_change:
+                    break
+
+            # --- TRUE DEPLOYMENT GAP CALCULATION ---
+            if num_deployments > 0:
+                dep_intervals = []
+                for dep in deployments:
+                    if not isinstance(dep, dict):
+                        continue
+                    d_val = dep.get('deployed')
+                    r_val = dep.get('retrieved')
+                    if d_val:
+                        d_dt = datetime.strptime(d_val, '%Y-%m-%d %H:%M:%S')
+                        # Active deployments lack a retrieved date; cap at current time
+                        r_dt = datetime.strptime(r_val, '%Y-%m-%d %H:%M:%S') if r_val else datetime.utcnow()
+                        dep_intervals.append((d_dt, r_dt))
+
+                # Sort intervals chronologically by start date
+                dep_intervals.sort(key=lambda x: x[0])
+
+                # Merge overlapping deployments to define solid coverage blocks
+                merged_coverage = []
+                for current in dep_intervals:
+                    if not merged_coverage:
+                        merged_coverage.append(current)
+                    else:
+                        last_start, last_end = merged_coverage[-1]
+                        curr_start, curr_end = current
+
+                        if curr_start <= last_end:
+                            # Deployments overlap; extend the coverage end date if needed
+                            merged_coverage[-1] = (last_start, max(last_end, curr_end))
+                        else:
+                            # No overlap; this is a new distinct coverage block
+                            merged_coverage.append(current)
+
+                gap_details = []
+
+                # Find gaps specifically between the merged coverage blocks
+                for i in range(len(merged_coverage) - 1):
+                    # Gap starts precisely when the previous coverage block ends
+                    gap_start = merged_coverage[i][1]
+                    # Gap ends precisely when the subsequent coverage block begins
+                    gap_end = merged_coverage[i+1][0]
+
+                    # Assess how much of this gap falls within the requested [s_dt, e_dt] window
+                    overlap_start = max(gap_start, s_dt)
+                    overlap_end = min(gap_end, e_dt)
+
+                    if overlap_start < overlap_end:
+                        window_gap_days = (overlap_end - overlap_start).seconds/60/24
+                        total_gap_days += window_gap_days
+                        gap_details.append(
+                            f"{overlap_start.strftime('%Y-%m-%d')} to {overlap_end.strftime('%Y-%m-%d')} ({window_gap_days}d)"
+                        )
+
+                gaps_str = '; '.join(gap_details) if gap_details else 'None'
+
+        except Exception as ex:
+            logger.debug('Failed to parse dates for window checks on %s: %s', station_id, ex)
+
+    # 3. Emit the Log
+    logger.info(
+        'Station %s deployment summary: %d total deployments, '
+        'has_historical_shifts=%s, change_in_requested_window=%s, '
+        'gap_days_in_window=%d, mounting=%s',
+        station_id, num_deployments, has_depth_shifts,
+        window_change, total_gap_days, mounting_type
+    )
+
+    # 4. Append to CSV safely
+    if not control_files_path:
+        return
+
+    csv_path = os.path.join(control_files_path, f'coops_deployment_summary_{start_date}_{end_date}.csv')
+
+    row_dict = {
+        'Station ID': station_id,
+        'Total Deployments': num_deployments,
+        'Multiple Deployments in Window': window_change if (start_date and end_date) else 'N/A',
+        'Gap Details': gaps_str,
+        'Has Bin Depth Shifts': has_depth_shifts,
+        'Current Mounting Type': mounting_type,
+    }
+
+    df = pd.DataFrame([row_dict])
+
+    with _csv_export_lock:
+        try:
+            write_header = not os.path.exists(csv_path)
+            df.to_csv(csv_path, mode='a', index=False, header=write_header)
+        except Exception as e:
+            logger.error('Failed to write deployment summary to CSV for station %s: %s', station_id, e)
+
 
 def resolve_mounting_type(
     deployment_info: Optional[dict],
@@ -616,6 +834,7 @@ _get_station_deployment = get_station_deployment
 def retrieve_t_and_c_station(
     retrieve_input: Any,
     logger: Logger,
+    control_files_path: Any,
     only_bins: Optional[set[int]] = None,
     config_file=None,
 ) -> Optional[Union[pd.DataFrame, dict[int, pd.DataFrame]]]:
@@ -682,6 +901,7 @@ def retrieve_t_and_c_station(
             mdapi_url=t_c.mdapi_url,
             logger=logger,
             only_bins=only_bins,
+            control_files_path=control_files_path,
         )
 
     t_c.start_dt = datetime.strptime(retrieve_input.start_date, '%Y%m%d')
@@ -891,6 +1111,7 @@ def _retrieve_currents_all_bins(
     mdapi_url: str,
     logger: Logger,
     only_bins: Optional[set[int]] = None,
+    control_files_path: Optional[str] = None,
 ) -> Optional[dict[int, pd.DataFrame]]:
     """Retrieve CO-OPS currents data for every bin of an ADCP station.
 
@@ -927,6 +1148,28 @@ def _retrieve_currents_all_bins(
     """
     start_dt_0 = datetime.strptime(start_date, '%Y%m%d')
     end_dt_0 = datetime.strptime(end_date, '%Y%m%d')
+
+    # ---> NEW: Run our bin depth audit <---
+    has_depth_shifts = check_bin_depth_changes(station_id, mdapi_url, logger)
+    if has_depth_shifts:
+        logger.warning(
+            'CO-OPS station %s has historical deployment depth shifts. '
+            'If your requested date range (%s to %s) crosses a deployment '
+            'boundary, you may be mixing different physical depths within '
+            'the same bin number.',
+            station_id, start_date, end_date
+        )
+    # --------------------------------------
+
+    # ---> Trigger the CSV export <---
+    log_and_export_deployment_info(
+        station_id=station_id,
+        mdapi_url=mdapi_url,
+        control_files_path=control_files_path,
+        logger=logger,
+        start_date=start_date,
+        end_date=end_date
+    )
 
     bins_payload = get_station_depth(station_id, mdapi_url, logger)
     bin_records = _extract_bin_records(bins_payload)
@@ -984,6 +1227,7 @@ def _retrieve_currents_all_bins(
             hfb=hfb,
             orientation_label=orientation_label,
             only_bins=only_bins,
+            has_depth_shifts=has_depth_shifts,
             logger=logger,
         )
 
@@ -1003,6 +1247,7 @@ def _retrieve_currents_all_bins(
             hfb=hfb,
             orientation_label=orientation_label,
             mounting_type=mounting_type,
+            has_depth_shifts=has_depth_shifts,
             logger=logger,
         )
 
@@ -1043,6 +1288,7 @@ def _retrieve_currents_all_bins(
         df.attrs['orientation'] = orientation_label
         df.attrs['mounting_type'] = mounting_type
         df.attrs['height_from_bottom'] = hfb
+        df.attrs['has_historical_depth_shifts'] = has_depth_shifts
         result[bin_num] = df
 
     if missing_depth:
@@ -1105,6 +1351,7 @@ def _retrieve_side_looking_currents(
     hfb: Optional[float],
     orientation_label: str,
     only_bins: Optional[set[int]],
+    has_depth_shifts: bool,
     logger: Logger,
 ) -> Optional[dict[int, pd.DataFrame]]:
     """Side-looking ADCP currents retrieval (issue #140).
@@ -1182,6 +1429,7 @@ def _retrieve_side_looking_currents(
         df.attrs['orientation'] = orientation_label or 'side'
         df.attrs['mounting_type'] = 'side'
         df.attrs['height_from_bottom'] = hfb
+        df.attrs['has_historical_depth_shifts'] = has_depth_shifts
         result[chosen_bin] = df
 
     if not result:
@@ -1214,6 +1462,7 @@ def _retrieve_currents_legacy_fallback(
     hfb: Optional[float],
     orientation_label: str,
     mounting_type: str,
+    has_depth_shifts: bool,
     logger: Logger,
 ) -> Optional[dict[int, pd.DataFrame]]:
     """No bin records on MDAPI: fall back to one unfiltered datagetter call.
@@ -1250,6 +1499,7 @@ def _retrieve_currents_legacy_fallback(
     legacy.attrs['orientation'] = orientation_label
     legacy.attrs['mounting_type'] = mounting_type
     legacy.attrs['height_from_bottom'] = hfb
+    legacy.attrs['has_historical_depth_shifts'] = has_depth_shifts
     _record_mounting(mounting_type)
     logger.warning(
         'CO-OPS currents retrieval for station %s returned 1 bin '
@@ -1368,79 +1618,164 @@ def _fetch_currents_chunked(
     if not dates:
         return None
 
-    # 3. Check if the full date range was retrieved
-    max_dt = pd.to_datetime(max(dates))
+    # 3. Assess data completeness and patch gaps using deployment metadata
+    max_dt = pd.to_datetime(max(dates)) if dates else start_dt_0 - timedelta(days=1)
 
-    # 1-hour tolerance for expected sampling intervals
-    if max_dt < end_dt_0 - timedelta(hours=1):
+    if deployment_info and deployment_info.get('deployments'):
+        # Compile a list of active deployment periods within the requested window
+        active_periods = []
+        for dep in deployment_info['deployments']:
+            dep_str = dep.get('deployed')
+            ret_str = dep.get('retrieved')
 
-        # only backward chunk if a deployment change occurred in the window
-        has_deployment_change = False
-        if deployment_info and deployment_info.get('deployments'):
-            for dep in deployment_info['deployments']:
-                for date_key in ('deployed', 'retrieved'):
-                    val = dep.get(date_key)
-                    if val:
-                        try:
-                            # NOAA returns dates as YYYY-MM-DD.
-                            # Slice first 10 chars to defend against potential time components
-                            dt_val = datetime.strptime(val[:10], '%Y-%m-%d')
-                            if start_dt_0 <= dt_val <= end_dt_0:
-                                has_deployment_change = True
-                                break
-                        except ValueError:
-                            continue
-                if has_deployment_change:
-                    break
+            if not dep_str:
+                continue
 
-        if has_deployment_change:
+            try:
+                dep_dt = datetime.strptime(dep_str, '%Y-%m-%d %H:%M:%S')
+                if ret_str:
+                    ret_dt = datetime.strptime(ret_str, '%Y-%m-%d %H:%M:%S')
+                else:
+                    ret_dt = datetime.max
+
+                # Intersect this deployment with the requested date window
+                if dep_dt <= end_dt_0 and ret_dt >= start_dt_0:
+                    p_start = max(start_dt_0, dep_dt)
+                    p_end = min(end_dt_0, ret_dt)
+                    if p_start <= p_end:
+                        active_periods.append((p_start, p_end))
+            except ValueError as e:
+                logger.debug('Failed to parse deployment dates for %s: %s', station_id, e)
+                continue
+
+        active_periods.sort()
+
+        if not active_periods:
             logger.info(
-                'Incomplete date range and deployment change detected. '
-                'Searching backwards from %s using expanding windows to bridge gap...', end_dt_0
+                'No active deployments found for %s in the requested window. '
+                'Skipping patching logic.', station_id
             )
-            retry_cur = end_dt_0
-            gap_bridged = False
+            absolute_expected_end = end_dt_0
+        else:
+            # Determine the maximum expected date based ONLY on physical retrievals
+            absolute_expected_end = max([p[1] for p in active_periods])
 
-            # Use .date() for the loop condition to avoid the midnight cutoff bug,
-            # ensuring we query the API for the day even if max_dt has a PM timestamp.
-            while retry_cur.date() >= max_dt.date() and retry_cur.date() >= start_dt_0.date():
-                date_str = retry_cur.strftime('%Y%m%d')
-                bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+            logger.info(
+                'Detected %d active deployment period(s) for %s. Validating data coverage...',
+                len(active_periods), station_id
+            )
 
-                # Search backward using expanding 3-hour windows up to 24 hours
-                for range_hrs in range(3, 27, 3):
-                    url = (
-                        f'{api_url}/datagetter?end_date={date_str}&range={range_hrs}'
-                        f'&station={station_id}&product=currents{bin_qs}'
-                        f'&time_zone=gmt&units=metric&format=json'
+            for p_start, p_end in active_periods:
+                period_dates = [d for d in dates if p_start <= pd.to_datetime(d) <= p_end]
+                period_max_dt = pd.to_datetime(max(period_dates)) if period_dates else p_start - timedelta(days=1)
+
+                # Only check for gaps up to the end of THIS specific physical deployment
+                if period_max_dt < p_end - timedelta(hours=1):
+                    logger.info(
+                        'Gap detected in deployment period (%s to %s). '
+                        'Searching backwards from calendar day after deployment...',
+                        p_start.strftime('%Y-%m-%d'), p_end.strftime('%Y-%m-%d')
                     )
-                    context = (f'currents bin={bin_num} (retry {range_hrs}h)' if bin_num is not None
-                               else f'currents (retry {range_hrs}h)')
 
-                    obs = _get_with_retry(url, station_id, context, logger)
+                    # Set retry_cur to max 1 calendar day after the deployment
+                    day_after_dep = p_start + timedelta(days=1)
+                    retry_cur = min(day_after_dep, p_end)
+                    gap_bridged = False
+                    bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
 
-                    if obs is not None and obs.get('data'):
-                        _process_obs(obs)
+                    # 1. Backward expanding search (ONLY down to the deployment start)
+                    while retry_cur.date() >= p_start.date() and not gap_bridged:
+                        date_str = retry_cur.strftime('%Y%m%d')
 
-                        # Early exit optimization: stop hammering the API if we just bridged the gap
-                        earliest_str = obs['data'][0]['t']
-                        earliest_dt = datetime.strptime(earliest_str, '%Y-%m-%d %H:%M')
+                        for range_hrs in range(3, 27, 3):
+                            url = (
+                                f'{api_url}/datagetter?end_date={date_str}&range={range_hrs}'
+                                f'&station={station_id}&product=currents{bin_qs}'
+                                f'&time_zone=gmt&units=metric&format=json'
+                            )
+                            context = (f'currents bin={bin_num} (backward {range_hrs}h)' if bin_num is not None
+                                       else f'currents (backward {range_hrs}h)')
 
-                        # We still use full datetime here to know exactly when the chronological gap is bridged
-                        if earliest_dt <= max_dt or earliest_dt <= start_dt_0:
-                            logger.info('Gap bridged at %s. Halting backward search.', earliest_str)
-                            gap_bridged = True
+                            obs = _get_with_retry(url, station_id, context, logger)
+
+                            if obs is not None and obs.get('data'):
+                                _process_obs(obs)
+
+                                earliest_str = obs['data'][0]['t']
+                                earliest_dt = datetime.strptime(earliest_str, '%Y-%m-%d %H:%M')
+
+                                # Halt if we found the deployment start
+                                if earliest_dt <= p_start + timedelta(hours=1):
+                                    logger.info('Deployment start found at %s.', earliest_str)
+                                    gap_bridged = True
+                                    break
+
+                        if gap_bridged:
                             break
 
-                if gap_bridged:
-                    break
+                        retry_cur -= timedelta(days=1)
 
-                retry_cur -= timedelta(days=1)
-        else:
+                    # 2. Re-evaluate data coverage for this period after boundary patching
+                    period_dates = [d for d in dates if p_start <= pd.to_datetime(d) <= p_end]
+                    new_max_dt = pd.to_datetime(max(period_dates)) if period_dates else p_start
+
+                    # 3. Resume standard forward search to bulk-fill the remainder of THIS period
+                    if new_max_dt < p_end - timedelta(hours=1):
+                        logger.info(
+                            'Resuming standard forward search from %s to %s...',
+                            new_max_dt.strftime('%Y-%m-%d %H:%M'), p_end.strftime('%Y-%m-%d %H:%M')
+                        )
+
+                        forward_cur = new_max_dt
+                        delta = timedelta(days=30)
+
+                        while forward_cur <= p_end:
+                            f_date_i = forward_cur.strftime('%Y%m%d')
+                            f_date_f = min(forward_cur + delta, p_end).strftime('%Y%m%d')
+
+                            url = (
+                                f'{api_url}/datagetter?begin_date={f_date_i}&end_date={f_date_f}'
+                                f'&station={station_id}&product=currents{bin_qs}'
+                                f'&time_zone=gmt&units=metric&format=json'
+                            )
+                            context = (f'currents bin={bin_num} (forward patch)' if bin_num is not None
+                                       else 'currents (forward patch)')
+
+                            obs = _get_with_retry(url, station_id, context, logger)
+                            if obs is not None and obs.get('data'):
+                                _process_obs(obs)
+
+                            forward_cur += delta
+                else:
+                    logger.info('Data complete for period %s to %s.',
+                                p_start.strftime('%Y-%m-%d'), p_end.strftime('%Y-%m-%d'))
+
+        # Final check against the absolute expected end (the final physical retrieval date)
+        final_max_dt = pd.to_datetime(max(dates)) if dates else start_dt_0 - timedelta(days=1)
+        if final_max_dt < absolute_expected_end - timedelta(hours=1):
+            logger.warning(
+                'After all retrievals, data for CO-OPS station %s (bin=%s) is still incomplete. '
+                'Latest timestamp is %s (expected %s). Retaining retrieved data.',
+                station_id, bin_num, final_max_dt, absolute_expected_end
+            )
+
+    else:
+        # Fallback when no deployment info is available
+        absolute_expected_end = end_dt_0
+        if max_dt < end_dt_0 - timedelta(hours=1):
             logger.info(
-                'Incomplete date range retrieved, but no deployment change '
-                'detected in the %s to %s window. Skipping backward search.',
-                start_dt_0.strftime('%Y-%m-%d'), end_dt_0.strftime('%Y-%m-%d')
+                'Incomplete date range retrieved (latest: %s, expected: %s), '
+                'but no deployment info is available for %s to determine gaps. '
+                'Skipping patching logic.',
+                max_dt, end_dt_0, station_id
+            )
+
+        final_max_dt = max_dt
+        if final_max_dt < end_dt_0 - timedelta(hours=1):
+            logger.warning(
+                'After all retrievals, data for CO-OPS station %s (bin=%s) is still incomplete. '
+                'Latest timestamp is %s (expected %s). Retaining retrieved data.',
+                station_id, bin_num, final_max_dt, end_dt_0
             )
 
     # 4. Assemble and filter

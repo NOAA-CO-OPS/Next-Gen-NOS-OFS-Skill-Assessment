@@ -442,7 +442,13 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ds = fix_adcirc_dataset(prop, ds, urlpaths, logger)
 
     # Round all times to nearest minute
-    ds[time_name] = ds[time_name].dt.round('1min')
+    try:
+        ds[time_name] = ds[time_name].dt.round('1min')
+    except AttributeError:
+        logger.error('Incompatible netcdf engine selected! Please make sure '
+                     'use_custom_filenames is set correctly in ofs_dps.conf, '
+                     'or confirm which engine your custom filenames require.')
+        raise SystemExit
     if prop.ofsfiletype == 'stations' and prop.whichcast != 'forecast_a':
         ds = ds.drop_duplicates(dim=time_name, keep='last')
     elif prop.ofsfiletype == 'stations' and prop.whichcast == 'forecast_a':

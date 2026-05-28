@@ -181,7 +181,8 @@ def _emit_coops_currents_entries(
 def _process_coops_station(id_number, name, x_value, y_value,
                            start_date, end_date, variable, name_var,
                            datum, datum_list, ofs, logger,
-                           bin_overrides=None, config_file=None):
+                           bin_overrides=None, config_file=None,
+                           control_files_path=None):
     """Process a single CO-OPS station.
 
     Returns a list of CTL entry strings. For most variables the list
@@ -211,7 +212,7 @@ def _process_coops_station(id_number, name, x_value, y_value,
         )
         timeseries = retrieve_t_and_c_station(
             retrieve_input, logger, only_bins=only_bins,
-            config_file=config_file)
+            config_file=config_file, control_files_path=control_files_path)
         if variable == 'water_level':
             datum_found = None
             if (isinstance(timeseries, pd.DataFrame)
@@ -374,7 +375,7 @@ def _process_coops_station(id_number, name, x_value, y_value,
             return _emit_coops_currents_entries(
                 id_number, name, x_value, y_value, ofs, name_var,
                 timeseries, bin_overrides, logger,
-            )
+                )
     except Exception as ex:
         logger.info(
             'CO-OPS %s data not found for '
@@ -761,6 +762,7 @@ def _process_variable(variable, inventory, var_to_col, start_date, end_date,
                     datum, datum_list, ofs, logger,
                     station_overrides,
                     config_file=config_file,
+                    control_files_path=control_files_path
                 ))
             for future in futures:
                 result = future.result()
