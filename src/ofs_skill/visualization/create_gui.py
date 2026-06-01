@@ -3,21 +3,32 @@ Created on Wed Nov 12 08:39:35 2025
 
 @author: PWL
 """
+from __future__ import annotations
+
 import logging
 import os
 import sys
 import tkinter as tk
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 from tkinter.font import Font
 from types import SimpleNamespace
-
-from tkcalendar import DateEntry as _TkDateEntry
 
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
 
 # Import from ofs_skill package
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.visualization.gui_helpers import (
+    DateEntry,
+    build_utc_datetime,
+    compute_recent_cycle,
+    format_date,
+    quick_run_datum,
+    read_datum_list,
+    validate_date_order,
+    validate_horizon_requires_stations,
+    validate_start_not_future,
+)
 
 # UI sentinel strings — used in multiple places, must match exactly.
 _OFS_PLACEHOLDER = 'Select an OFS...'
@@ -25,141 +36,6 @@ _OFS_FIRST_PLACEHOLDER = 'Select an OFS first...'
 _DATUM_PLACEHOLDER = 'Select a datum...'
 _MOST_RECENT_LABEL = 'Most recent cycle available'
 _WINDOW_GEOMETRY = '850x500'
-
-# Datum fallback if conf cannot be read.
-_DEFAULT_DATUMS = (
-    'MHHW', 'MHW', 'MLLW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B'
-)
-
-# Per-OFS Quick Run datum defaults. Great Lakes use IGLD85; STOFS systems
-# don't have a uniform tidal datum so fall back to NAVD88; tidal coastal
-# OFSes use MLLW.
-_GREAT_LAKES_OFS = ('leofs', 'lmhofs', 'loofs', 'loofs2', 'lsofs')
-_STOFS_OFS = ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac')
-
-
-class DateEntry(_TkDateEntry):
-    """Drop-in replacement for ``tkcalendar.DateEntry`` with cross-platform
-    calendar-popup fixes."""
-
-    _CAL_COLOR_DEFAULTS = {
-        'normalbackground':     'white',
-        'normalforeground':     'black',
-        'selectbackground':     '#1a73e8',
-        'selectforeground':     'white',
-        'weekendbackground':    '#f0f0f0',
-        'weekendforeground':    'black',
-        'headersbackground':    '#e0e0e0',
-        'headersforeground':    'black',
-        'othermonthbackground': '#fafafa',
-        'othermonthforeground': 'gray50',
-        'bordercolor':          'gray60',
-    }
-
-    # Grace period (ms) after opening during which a transient FocusOut on
-    # the calendar is ignored. Prevents the popup from immediately closing
-    # when the platform briefly redirects focus while mapping the window.
-    _FOCUS_GRACE_MS = 200
-
-    def __init__(self, master=None, **kw):
-        for key, value in self._CAL_COLOR_DEFAULTS.items():
-            kw.setdefault(key, value)
-        super().__init__(master, **kw)
-        self._drop_down_time = 0
-        if sys.platform == 'darwin':
-            try:
-                self._top_cal.overrideredirect(False)
-            except (tk.TclError, AttributeError):
-                pass
-
-    def drop_down(self):
-        self._drop_down_time = self.winfo_toplevel().tk.call('clock', 'milliseconds')
-        super().drop_down()
-        try:
-            top = self._top_cal
-            if not top.winfo_ismapped():
-                return
-            top.update_idletasks()
-            top.update()
-            top.lift()
-            if sys.platform != 'darwin':
-                top.attributes('-topmost', True)
-        except (tk.TclError, AttributeError):
-            pass
-
-    def _on_focus_out_cal(self, event):
-        """Ignore transient FocusOut events fired right after the popup
-        opens, before the user has had a chance to interact with it."""
-        now = self.winfo_toplevel().tk.call('clock', 'milliseconds')
-        elapsed = now - self._drop_down_time
-        if elapsed < self._FOCUS_GRACE_MS:
-            self._calendar.focus_set()
-            return
-        super()._on_focus_out_cal(event)
-
-
-def _quick_run_datum(ofs):
-    """Return a sensible default datum for the given OFS in Quick Run mode."""
-    if ofs in _GREAT_LAKES_OFS:
-        return 'IGLD85'
-    if ofs in _STOFS_OFS:
-        return 'NAVD88'
-    return 'MLLW'
-
-
-def _compute_recent_cycle(ofs):
-    """Compute the most recent forecast cycle that should be available.
-
-    Returns
-    -------
-    (start_iso, forecast_hr) : tuple of str
-        ``start_iso`` is YYYY-MM-DDTHH:MM:SSZ at the chosen cycle, and
-        ``forecast_hr`` is the cycle as ``'06z'`` etc. Allows a 2h delay
-        for file arrival on NODD before considering a cycle "available".
-    """
-    _, fcstcycles = get_fcst_hours(ofs)
-    cycles = sorted(int(c) for c in fcstcycles)
-    now_utc = datetime.now(timezone.utc).replace(
-        minute=0, second=0, microsecond=0
-    )
-    cutoff = now_utc - timedelta(hours=2)
-    today = now_utc.replace(hour=0)
-    chosen = None
-    for offset_days in (0, 1):
-        day = today - timedelta(days=offset_days)
-        for hr in reversed(cycles):
-            cyc_dt = day.replace(hour=hr)
-            if cyc_dt <= cutoff:
-                chosen = cyc_dt
-                break
-        if chosen is not None:
-            break
-    if chosen is None:
-        chosen = today.replace(hour=cycles[-1]) - timedelta(days=1)
-    return (
-        chosen.strftime('%Y-%m-%dT%H:%M:%SZ'),
-        f'{chosen.hour:02d}z',
-    )
-
-
-def _read_datum_list():
-    """Read [datums] datum_list from conf, falling back to a hardcoded list.
-
-    The shared ``read_config_section`` helper logs via the logger argument
-    on failure; we pass a real logger so a missing section doesn't crash
-    the GUI on launch.
-    """
-    log = logging.getLogger(__name__)
-    try:
-        section = utils.Utils(None).read_config_section('datums', log)
-        raw = section.get('datum_list')
-        if raw:
-            return tuple(raw.split())
-    except (KeyError, AttributeError, OSError):
-        log.warning(
-            'Could not read [datums] from conf; falling back to defaults.'
-        )
-    return _DEFAULT_DATUMS
 
 
 def create_gui(parser):
@@ -187,7 +63,7 @@ def create_gui(parser):
             return
 
         ofs = ofs_entry.get()
-        start_iso, forecast_hr = _compute_recent_cycle(ofs)
+        start_iso, forecast_hr = compute_recent_cycle(ofs)
         end_iso = (
             datetime.strptime(start_iso, '%Y-%m-%dT%H:%M:%SZ')
             + timedelta(hours=24)
@@ -199,7 +75,7 @@ def create_gui(parser):
         args_values.Forecast_Hr = forecast_hr
         args_values.StartDate_full = start_iso
         args_values.EndDate_full = end_iso
-        args_values.Datum = _quick_run_datum(ofs)
+        args_values.Datum = quick_run_datum(ofs)
         args_values.FileType = 'stations'
         args_values.Station_Owner = ['co-ops', 'ndbc', 'usgs']
         args_values.Var_Selection = [
@@ -217,21 +93,23 @@ def create_gui(parser):
         # First check for required arguments and display error if not present
         error = None
 
-        # Build UTC-aware datetimes once for the date-ordering / future
-        # checks so comparisons are unambiguous.
-        start_date = start_entry.get_date()
-        end_date = end_entry.get_date()
-        try:
-            start_dt = datetime(
-                start_date.year, start_date.month, start_date.day,
-                int(s_hour_scale.get()), tzinfo=timezone.utc,
-            ) if start_date else None
-            end_dt = datetime(
-                end_date.year, end_date.month, end_date.day,
-                int(e_hour_scale.get()), tzinfo=timezone.utc,
-            ) if end_date else None
-        except (TypeError, ValueError):
-            start_dt = end_dt = None
+        # Normalised UTC-aware datetimes for ordering / future checks.
+        start_dt = build_utc_datetime(
+            start_entry.get_date(), s_hour_scale.get()
+        )
+        end_dt = build_utc_datetime(
+            end_entry.get_date(), e_hour_scale.get()
+        )
+
+        # Validators that are pure-logic predicates live in gui_helpers;
+        # they return an error string (or None) which the caller surfaces.
+        pure_validator_msg = (
+            validate_date_order(start_dt, end_dt)
+            or validate_start_not_future(start_dt)
+            or validate_horizon_requires_stations(
+                horizon_var.get(), filetype_var.get()
+            )
+        )
 
         if directory_path_var.get() is None:
             messagebox.showerror('Error', 'Please select your home directory.')
@@ -250,18 +128,6 @@ def create_gui(parser):
             error = 1
         elif not end_entry.get_date():
             messagebox.showerror('Error', 'Please enter an end date.')
-            error = 1
-        elif start_dt is not None and end_dt is not None and start_dt >= end_dt:
-            messagebox.showerror(
-                'Error', 'Start date/hour must be before end date/hour.'
-            )
-            error = 1
-        elif (start_dt is not None
-              and start_dt > datetime.now(timezone.utc)):
-            messagebox.showerror(
-                'Error',
-                'Start date/hour cannot be in the future (UTC).'
-            )
             error = 1
         elif (var_now.get() == '0' and var_fore.get() == '0'
               and var_forea.get() == '0' and var_hind.get() == '0'):
@@ -283,14 +149,8 @@ def create_gui(parser):
                 'Error', 'Please select at least one variable to assess.'
             )
             error = 1
-        elif horizon_var.get() and filetype_var.get() != 'stations':
-            messagebox.showerror(
-                'Error',
-                '"Assess all forecast horizons?" is only supported with '
-                'the "Station" model output file type. Either change the '
-                'file type to Station, or set "Assess all forecast '
-                'horizons?" to No.'
-            )
+        elif pure_validator_msg is not None:
+            messagebox.showerror('Error', pure_validator_msg)
             error = 1
 
         args_values.Path = directory_path_var.get()
@@ -338,13 +198,6 @@ def create_gui(parser):
 
         if error is None:
             root.destroy() # Close the GUI window
-
-    def format_date(date, hour):
-        # DateEntry.get_date() returns a datetime.date object
-        from datetime import date as date_type
-        if isinstance(date, date_type):
-            return f"{date.strftime('%Y-%m-%d')}T{int(hour):02d}:00:00Z"
-        raise TypeError(f'Expected date object, got {type(date)}: {date}')
 
     def browse_directory():
         '''
@@ -475,7 +328,7 @@ def create_gui(parser):
     except (KeyError, tk.TclError, OSError):
         log.info('GUI logo not found; defaulting to tkinter logo.')
 
-    datum_list = _read_datum_list()
+    datum_list = read_datum_list()
 
     # Window-wide colors, text, and stuff
     anchor='e'
