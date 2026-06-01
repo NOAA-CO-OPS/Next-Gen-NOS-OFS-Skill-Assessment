@@ -56,10 +56,16 @@ class DateEntry(_TkDateEntry):
         'bordercolor':          'gray60',
     }
 
+    # Grace period (ms) after opening during which a transient FocusOut on
+    # the calendar is ignored. Prevents the popup from immediately closing
+    # when the platform briefly redirects focus while mapping the window.
+    _FOCUS_GRACE_MS = 200
+
     def __init__(self, master=None, **kw):
         for key, value in self._CAL_COLOR_DEFAULTS.items():
             kw.setdefault(key, value)
         super().__init__(master, **kw)
+        self._drop_down_time = 0
         if sys.platform == 'darwin':
             try:
                 self._top_cal.overrideredirect(False)
@@ -67,6 +73,7 @@ class DateEntry(_TkDateEntry):
                 pass
 
     def drop_down(self):
+        self._drop_down_time = self.winfo_toplevel().tk.call('clock', 'milliseconds')
         super().drop_down()
         try:
             top = self._top_cal
@@ -77,9 +84,18 @@ class DateEntry(_TkDateEntry):
             top.lift()
             if sys.platform != 'darwin':
                 top.attributes('-topmost', True)
-                top.focus_force()
         except (tk.TclError, AttributeError):
             pass
+
+    def _on_focus_out_cal(self, event):
+        """Ignore transient FocusOut events fired right after the popup
+        opens, before the user has had a chance to interact with it."""
+        now = self.winfo_toplevel().tk.call('clock', 'milliseconds')
+        elapsed = now - self._drop_down_time
+        if elapsed < self._FOCUS_GRACE_MS:
+            self._calendar.focus_set()
+            return
+        super()._on_focus_out_cal(event)
 
 
 def _quick_run_datum(ofs):
