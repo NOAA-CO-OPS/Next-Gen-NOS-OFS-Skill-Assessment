@@ -419,7 +419,13 @@ def create_1dplot_2nd_part(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for i in range(num_stations):
-                prop_copy = copy.copy(prop)
+                # Deepcopy in the main thread before submit so each worker
+                # receives a fully isolated snapshot. A previous shallow
+                # copy here left the inner deepcopy at _process_station_plot
+                # racing on shared attribute references — on NECOFS-shaped
+                # runs that produced torn start_date_full/end_date_full and
+                # collapsed plots to one data point (issue #104).
+                prop_copy = copy.deepcopy(prop)
                 futures[executor.submit(
                     _process_station_plot, i, read_ofs_ctl_file,
                     read_station_ctl_file, prop_copy, var_info, logger
