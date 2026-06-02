@@ -70,6 +70,7 @@ import logging
 import logging.config
 import os
 import sys
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -576,7 +577,13 @@ def create_1dplot(prop, logger):
                        ['datum_list']).split(' ')
     conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
-
+    use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+    if use_custom_files:
+        logger.warning('HEADS UP: You are using custom model input file names! '
+                       'If you want to disable this option, update your conf '
+                       'file and restart. Pausing 5 seconds...')
+        time.sleep(5)
+        logger.info('Continuing with custom file names...')
 
     # Parse incoming arguments stored in prop from string to a list
     prop.whichcasts = parse_arguments_to_list(prop.whichcasts, logger)

@@ -694,6 +694,11 @@ def log_and_export_deployment_info(
 
     csv_path = os.path.join(control_files_path, f'coops_deployment_summary_{start_date}_{end_date}.csv')
 
+    # --- DOUBLE-CHECK SAFETY ---
+    # Guarantee no gap is reported if Multiple Deployments is False
+    if not window_change:
+        actual_gap_str = 'N/A'
+
     row_dict = {
         'Station ID': station_id,
         'Total Deployments': num_deployments,
@@ -1838,6 +1843,7 @@ def _fetch_currents_chunked(
 
     # 1. Safely resolve active physical deployment periods from metadata
     _active_periods = []
+    _has_boundary_in_window = False
     if deployment_info and deployment_info.get('deployments'):
         for dep in deployment_info['deployments']:
             dep_str = dep.get('deployed')
@@ -1847,6 +1853,10 @@ def _fetch_currents_chunked(
             try:
                 dep_dt = datetime.strptime(dep_str, '%Y-%m-%d %H:%M:%S')
                 ret_dt = datetime.strptime(ret_str, '%Y-%m-%d %H:%M:%S') if ret_str else datetime.max
+
+                # Check if a physical deploy/retrieve event strictly happened in this window
+                if (start_dt_0 <= dep_dt <= end_dt_0) or (start_dt_0 <= ret_dt <= end_dt_0):
+                    _has_boundary_in_window = True
 
                 # Intersect this deployment with the requested date window
                 if dep_dt <= end_dt_0 and ret_dt >= start_dt_0:
@@ -1860,8 +1870,8 @@ def _fetch_currents_chunked(
         # Sort chronologically
         _active_periods.sort()
 
-    # 2. Sum ONLY the observed data gaps between adjacent physical deployments
-    if len(_active_periods) > 1:
+    # 2. Sum ONLY the observed data gaps if a boundary actually occurred during this fetch window
+    if _has_boundary_in_window and len(_active_periods) > 1:
         for i in range(len(_active_periods) - 1):
             dep1_end = _active_periods[i][1]
             dep2_start = _active_periods[i+1][0]
