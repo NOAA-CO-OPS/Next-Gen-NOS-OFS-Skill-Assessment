@@ -1,3 +1,49 @@
+"""OFS Data Processing Pipeline Tracking and Visualization Utility.
+
+This script audits and tracks the progression of physical oceanographic and
+meteorological station data through a linear $7$-stage processing pipeline
+within an Operational Forecast System (OFS). It validates baseline inventory
+existence against configured control files and directory assets, outputs a
+structured summary matrix in CSV format, and generates highly optimized,
+dual-axis heatmap charts.
+
+Pipeline Developmental Stages:
+    1. **In Inventory**: Station is registered in the baseline inventory and
+       configured to monitor the given parameter.
+    2. **In OBS CTL**: Station is successfully declared in the observation
+       control file (`.ctl`).
+    3. **OBS Generated**: The raw observation file (`.obs`) has been pulled
+       and written to disk.
+    4. **In Model CTL**: Station is declared in the numerical model's
+       control file.
+    5. **PRD Generated**: The model prediction file (`.prd`) has been successfully
+       simulated and written.
+    6. **INT Generated**: The interpolated paired file (`.int`) mapping observation
+       to model grids has been successfully built.
+    7. **HTML Generated**: The final localized web-visualization product (`.html`)
+       is complete.
+
+Visual Chunking & Provider Grouping Rules:
+    - **Combined Mode**: If the cumulative unique stations for a variable is $\le 40$,
+      all observation data sources are consolidated into one unified master chart
+      (`_combined.png`).
+    - **Provider Split Mode**: If total stations exceed $40$, the script groups
+      stations strictly by data provider (e.g., `CO-OPS`, `NDBC`, `USGS`),
+      generating separate layout charts per supplier.
+    - **Deep Sub-Chunking**: If a single provider's underlying station list itself
+      exceeds $40$ rows, it is sub-divided into cleanly numbered multi-part files
+      (e.g., `_usgs_pt_1.png`, `_usgs_pt_2.png`).
+
+Dependencies:
+    - Standard Library: `os`, `csv`, `argparse`, `pathlib`
+    - Data Processing: `pandas`, `numpy`
+    - Visualization: `matplotlib`, `seaborn`
+    - Internal Domain: `ofs_skill.obs_retrieval.utils`
+
+Author: PWL
+Date: June 2026
+"""
+
 import argparse
 import csv
 import os
@@ -23,15 +69,52 @@ ALLOWED_WHICHCASTS = ['nowcast', 'forecast_b', 'forecast_a', 'hindcast']
 # ==========================================
 
 def generate_visualizations(csv_file_path, home_dir, ofs):
-    """
-    Reads the pipeline summary CSV and generates combined heatmaps.
-    Each box is annotated with a symbol representing its data provider.
+    """Reads the pipeline summary CSV and generates ultra-tight, side-by-side heatmaps.
 
-    Grouping Rule:
-    - If total stations <= MAX_STATIONS_PER_PLOT, all providers are kept together in 1 file.
-    - If total stations > MAX_STATIONS_PER_PLOT, stations are grouped by provider.
-    - If an individual provider itself has > MAX_STATIONS_PER_PLOT stations, it is
-      sub-chunked into numbered parts (e.g., _usgs_pt_1, _usgs_pt_2).
+    This function processes pipeline completion statuses across $7$ linear tracking
+    stages for every monitored variable and forecast type (whichcast). Each grid
+    cell represents a stage's completion status (Green/True for completed, Red/False
+    for missing) and is explicitly annotated with a bold, single-character indicator
+    denoting its original data provider (e.g., 'C' for CO-OPS, 'U' for USGS, 'N' for NDBC).
+
+    To preserve high visual fidelity and text readability:
+    1. **Adaptive Chunking Strategy**: If the total station count for a variable is
+       $\le 40$, all providers are bundled together into a single master plot file
+       (`_combined.png`). If the station count exceeds $40$, the function pivots to
+       group stations strictly by their data provider, outputting one file per source.
+    2. **Deep Sub-chunking**: If a single data provider's internal station count
+       exceeds $40$, it is sub-divided into numbered chronological files (e.g.,
+       `_usgs_pt_1.png`, `_usgs_pt_2.png`).
+    3. **Anti-Squishing Layout**: The vertical dimensions are automatically scaled
+       with a floor constraint of $6.5$ inches. This prevents sparse station selections
+       from flattening when squeezed by the top and bottom text margins.
+    4. **Dual X-Axis Layout**: Structural tick marks and stage names are mirrored
+       identically across both the top and bottom of the heatmap frame. Top labels are
+       automatically offset and aligned up-and-away from the grid to maintain space.
+    5. **Ultra-Tight Compression**: Spacing parameters (`pad=4` and `y=0.99`) are
+       tightened to squeeze out blank white space between titles, labels, and figures.
+
+    Args:
+        csv_file_path (str or pathlib.Path): Path to the generated CSV matrix output
+            containing the $7$-stage pipeline boolean data for all stations.
+        home_dir (str or pathlib.Path): Root or target destination directory where
+            the finalized visualization image assets will be compiled and written.
+        ofs (str): Name of the operational forecast system being audited
+            (e.g., 'cbofs', 'dbofs', 'necofs').
+
+    Returns:
+        None: Saves generated high-resolution ($150$ DPI) PNG visualization charts
+        directly into the target `home_dir`.
+
+    Raises:
+        ImportError: Raised and caught internally if any dependency (`pandas`,
+            `matplotlib`, `seaborn`, or `numpy`) is missing from the environment,
+            safely skipping visual generation without killing execution flow.
+
+    File Output Naming Conventions:
+        - Small Network:   `pipeline_viz_{ofs}_{variable}_combined.png`
+        - Segmented Group: `pipeline_viz_{ofs}_{variable}_{provider_name}.png`
+        - Split Part:      `pipeline_viz_{ofs}_{variable}_{provider_name}_pt_{part_number}.png`
     """
     try:
         import matplotlib.pyplot as plt
