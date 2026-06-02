@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
@@ -208,11 +209,13 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                 result = get_node_ofs(prop, logger,
                                       model_dataset=cached)
                 _set_cached_model(prop, result)
-
-            ofs_df = pd.read_csv(prd_path,
-                sep=r'\s+',
-                header=None,
-                )
+            try:
+                ofs_df = pd.read_csv(prd_path,
+                    sep=r'\s+',
+                    header=None,
+                    )
+            except EmptyDataError:
+                return None
 
         if (
             ofs_df is not None

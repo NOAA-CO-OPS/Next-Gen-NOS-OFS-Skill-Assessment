@@ -492,6 +492,11 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
 
     formatted_series = \
         scalar(data_model, start_date, end_date)
+
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_temp_salt! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
     return formatted_series
 
 
@@ -673,6 +678,11 @@ def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
     formatted_series = \
         vector(mfp.data_model, start_date, end_date)
 
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_currents! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
+
     return formatted_series
 
 
@@ -779,6 +789,11 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
 
     formatted_series = \
         scalar(data_model, start_date, end_date)
+
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_waterlevel! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
 
     return formatted_series, datum_offset
 
@@ -1318,7 +1333,8 @@ def get_node_ofs(prop, logger, model_dataset=None):
             for variable in prop.var_list:
                 prop_local = copy.deepcopy(prop)
                 prop_local.var_list = [variable]
-                futures.append(executor.submit(_extract_variable, variable, prop_local))
+                futures.append(executor.submit(
+                    _extract_variable, variable, prop_local))
             for f in futures:
                 f.result()  # Raise any exceptions
     else:
