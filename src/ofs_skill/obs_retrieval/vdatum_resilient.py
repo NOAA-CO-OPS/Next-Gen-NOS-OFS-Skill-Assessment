@@ -54,6 +54,20 @@ _RETRY_ATTEMPTS = 4
 _RETRY_BASE_SECONDS = 1.5
 _RETRY_CAP_SECONDS = 12.0
 
+# Vertical datums ``coastalmodeling_vdatum`` knows how to build pipelines
+# for.  We validate against this set up front because the underlying
+# ``vdatum.convert`` has an operator-precedence bug in its own guard
+# (``if vd_from and vd_to not in [...]``) that only validates ``vd_to`` --
+# an invalid ``vd_from`` slips through and later raises a cryptic
+# ``UnboundLocalError`` ('h_g') from an unguarded if/elif chain instead of
+# a clean error.  Membership here does not guarantee a *pair* is
+# convertible (there is no overlap between Great-Lakes and tidal datums,
+# e.g. ``igld85`` <-> ``mllw``); that case is caught at call time.
+SUPPORTED_DATUMS = frozenset({
+    'xgeoid20b', 'navd88', 'mllw', 'mlw', 'mhhw', 'mhw', 'lmsl',
+    'igld85', 'lwd',
+})
+
 # Per-(vd_from, vd_to) prime state.  ``_PRIME_LOCK`` guards
 # ``_PRIMED_PAIRS``; on first use of a pair, the holding thread runs a
 # single throwaway ``vdatum.convert`` to populate PROJ's grid cache so
@@ -107,6 +121,13 @@ def _prime_pair(vd_from: str, vd_to: str,
                 'PROJ grid prime failed for %s->%s; subsequent calls '
                 'will retry on their own. Underlying error: %s',
                 vd_from, vd_to, exc)
+        except UnboundLocalError:
+            # The datum pair is in-vocabulary but has no conversion
+            # pipeline (e.g. a Great-Lakes datum to a tidal datum). The
+            # underlying vdatum.convert leaves its grid variables unbound
+            # and raises UnboundLocalError. Mark primed and let the real
+            # call surface a clean error to the caller.
+            _PRIMED_PAIRS.add(pair)
 
 
 def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
@@ -116,10 +137,24 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
 
     Returns ``(lat, lon, z)`` on success.  Raises the last ``ProjError``
     if every retry fails so the caller can decide what to do (log and
-    skip the station, fall back to a default offset, etc.).
+    skip the station, fall back to a default offset, etc.).  Raises
+    ``ValueError`` for an unsupported datum or an in-vocabulary pair that
+    has no conversion pipeline (e.g. a Great-Lakes datum to a tidal
+    datum), so callers get a clean error instead of the dependency's
+    cryptic ``UnboundLocalError``.
     """
     log = logger or _logger
     last_exc: BaseException | None = None
+
+    # Validate the datum vocabulary up front.  ``vdatum.convert``'s own
+    # guard fails to validate ``vd_from`` (operator-precedence bug), so an
+    # unknown source datum would otherwise reach an unguarded if/elif
+    # chain and raise a confusing ``UnboundLocalError`` ('h_g').  Raise a
+    # clear ValueError instead so callers can skip the station cleanly.
+    if vd_from not in SUPPORTED_DATUMS or vd_to not in SUPPORTED_DATUMS:
+        raise ValueError(
+            f'Unsupported vertical datum conversion {vd_from!r}->{vd_to!r}. '
+            f'Supported datums: {sorted(SUPPORTED_DATUMS)}')
 
     # PROJ contexts are per-thread.  ``pyproj.network.set_network_enabled``
     # only flips the *calling thread's* context.  Setting it explicitly
@@ -138,6 +173,13 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
         try:
             return vdatum.convert(vd_from, vd_to, lat, lon, z,
                                   online=True, epoch=epoch)
+        except UnboundLocalError as exc:
+            # In-vocabulary pair with no conversion pipeline (e.g. a
+            # Great-Lakes datum to a tidal datum). This is deterministic,
+            # so don't retry -- raise a clear error for the caller.
+            raise ValueError(
+                f'No vertical datum conversion path from {vd_from!r} to '
+                f'{vd_to!r}.') from exc
         except pyproj.exceptions.ProjError as exc:
             last_exc = exc
             log.warning(

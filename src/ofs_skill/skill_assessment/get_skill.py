@@ -995,9 +995,16 @@ def get_skill(prop, logger):
                         variable,
                     )
         else:
-            logger.error(
-                'Fail to create summary skill table for OFS: %s and '
-                'variable: %s',
+            # No model control file means none of the observation stations
+            # matched a model output location -- e.g. STOFS currents, where
+            # the stations/points product carries water-level (tide-gauge)
+            # stations but no ADCP velocity stations to match the CO-OPS
+            # current meters against. This is a data-coverage outcome, not
+            # a processing failure, so report it as a warning rather than
+            # an error.
+            logger.warning(
+                'No summary skill table for OFS %s variable %s: no model '
+                'output stations matched the observation stations.',
                 p.ofs,
                 variable,
             )
