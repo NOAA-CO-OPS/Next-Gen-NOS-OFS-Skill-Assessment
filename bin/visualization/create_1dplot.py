@@ -485,7 +485,7 @@ def create_1dplot_2nd_part(
         sys.exit(-1)
 
     # Take a second and combine all skill tables!
-    filename = f'{prop.ofs}_skill_all.csv'
+    filename = f'skill_{prop.ofs}_all_stations.csv'
     combine_files_by_pattern(prop.data_skill_stats_path, filename, search_string=prop.ofs)
 
     # Ensure all paired data files exist before parallel dispatch.
