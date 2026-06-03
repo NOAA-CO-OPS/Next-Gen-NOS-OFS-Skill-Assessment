@@ -197,7 +197,7 @@ def get_fcst_hours(ofs):
     if ofs in (
         'cbofs', 'dbofs', 'gomofs', 'ciofs', 'leofs',
         'lmhofs', 'loofs', 'loofs2', 'lsofs', 'tbofs',
-        'necofs','stofs_2d_glo'
+        'necofs', 'secofs', 'stofs_2d_glo'
     ):
         fcstcycles = np.array([0, 6, 12, 18])
     elif ofs in ('creofs', 'ngofs2', 'sfbofs', 'sscofs'):

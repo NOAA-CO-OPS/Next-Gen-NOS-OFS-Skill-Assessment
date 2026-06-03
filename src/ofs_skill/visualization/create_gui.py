@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.font import Font
 from types import SimpleNamespace
 
-from tkcalendar import DateEntry
+from tkcalendar import DateEntry as _TkDateEntry
 
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
 
@@ -36,6 +36,66 @@ _DEFAULT_DATUMS = (
 # OFSes use MLLW.
 _GREAT_LAKES_OFS = ('leofs', 'lmhofs', 'loofs', 'loofs2', 'lsofs')
 _STOFS_OFS = ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac')
+
+
+class DateEntry(_TkDateEntry):
+    """Drop-in replacement for ``tkcalendar.DateEntry`` with cross-platform
+    calendar-popup fixes."""
+
+    _CAL_COLOR_DEFAULTS = {
+        'normalbackground':     'white',
+        'normalforeground':     'black',
+        'selectbackground':     '#1a73e8',
+        'selectforeground':     'white',
+        'weekendbackground':    '#f0f0f0',
+        'weekendforeground':    'black',
+        'headersbackground':    '#e0e0e0',
+        'headersforeground':    'black',
+        'othermonthbackground': '#fafafa',
+        'othermonthforeground': 'gray50',
+        'bordercolor':          'gray60',
+    }
+
+    # Grace period (ms) after opening during which a transient FocusOut on
+    # the calendar is ignored. Prevents the popup from immediately closing
+    # when the platform briefly redirects focus while mapping the window.
+    _FOCUS_GRACE_MS = 200
+
+    def __init__(self, master=None, **kw):
+        for key, value in self._CAL_COLOR_DEFAULTS.items():
+            kw.setdefault(key, value)
+        super().__init__(master, **kw)
+        self._drop_down_time = 0
+        if sys.platform == 'darwin':
+            try:
+                self._top_cal.overrideredirect(False)
+            except (tk.TclError, AttributeError):
+                pass
+
+    def drop_down(self):
+        self._drop_down_time = self.winfo_toplevel().tk.call('clock', 'milliseconds')
+        super().drop_down()
+        try:
+            top = self._top_cal
+            if not top.winfo_ismapped():
+                return
+            top.update_idletasks()
+            top.update()
+            top.lift()
+            if sys.platform != 'darwin':
+                top.attributes('-topmost', True)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _on_focus_out_cal(self, event):
+        """Ignore transient FocusOut events fired right after the popup
+        opens, before the user has had a chance to interact with it."""
+        now = self.winfo_toplevel().tk.call('clock', 'milliseconds')
+        elapsed = now - self._drop_down_time
+        if elapsed < self._FOCUS_GRACE_MS:
+            self._calendar.focus_set()
+            return
+        super()._on_focus_out_cal(event)
 
 
 def _quick_run_datum(ofs):
@@ -149,12 +209,30 @@ def create_gui(parser):
         args_values.Currents_Bins_Csv = None
         # Mirrors argparse: True means the model-file pre-check is performed.
         args_values.Disable_Model_File_Check = True
+        args_values.config = config_path_var.get().strip() or None
 
         root.destroy()
 
     def submit_and_close():
         # First check for required arguments and display error if not present
         error = None
+
+        # Build UTC-aware datetimes once for the date-ordering / future
+        # checks so comparisons are unambiguous.
+        start_date = start_entry.get_date()
+        end_date = end_entry.get_date()
+        try:
+            start_dt = datetime(
+                start_date.year, start_date.month, start_date.day,
+                int(s_hour_scale.get()), tzinfo=timezone.utc,
+            ) if start_date else None
+            end_dt = datetime(
+                end_date.year, end_date.month, end_date.day,
+                int(e_hour_scale.get()), tzinfo=timezone.utc,
+            ) if end_date else None
+        except (TypeError, ValueError):
+            start_dt = end_dt = None
+
         if directory_path_var.get() is None:
             messagebox.showerror('Error', 'Please select your home directory.')
             error = 1
@@ -173,7 +251,20 @@ def create_gui(parser):
         elif not end_entry.get_date():
             messagebox.showerror('Error', 'Please enter an end date.')
             error = 1
-        elif var_now.get() == '0' and var_fore.get() == '0':
+        elif start_dt is not None and end_dt is not None and start_dt >= end_dt:
+            messagebox.showerror(
+                'Error', 'Start date/hour must be before end date/hour.'
+            )
+            error = 1
+        elif (start_dt is not None
+              and start_dt > datetime.now(timezone.utc)):
+            messagebox.showerror(
+                'Error',
+                'Start date/hour cannot be in the future (UTC).'
+            )
+            error = 1
+        elif (var_now.get() == '0' and var_fore.get() == '0'
+              and var_forea.get() == '0' and var_hind.get() == '0'):
             messagebox.showerror(
                 'Error', 'Please select at least one whichcast.'
             )
@@ -190,6 +281,15 @@ def create_gui(parser):
               and var_temp.get() == '0' and var_wl.get() == '0'):
             messagebox.showerror(
                 'Error', 'Please select at least one variable to assess.'
+            )
+            error = 1
+        elif horizon_var.get() and filetype_var.get() != 'stations':
+            messagebox.showerror(
+                'Error',
+                '"Assess all forecast horizons?" is only supported with '
+                'the "Station" model output file type. Either change the '
+                'file type to Station, or set "Assess all forecast '
+                'horizons?" to No.'
             )
             error = 1
 
@@ -230,6 +330,7 @@ def create_gui(parser):
             args_values.Forecast_Hr = selected_cycle
 
         args_values.Currents_Bins_Csv = cb_var.get() or None
+        args_values.config = config_path_var.get().strip() or None
 
         # GUI variable is named for clarity; the namespace attribute keeps
         # the argparse name. True means the model-file pre-check runs.
@@ -253,6 +354,17 @@ def create_gui(parser):
         chosen_directory = filedialog.askdirectory()
         if chosen_directory:  # Only update if a directory was selected
             directory_path_var.set(chosen_directory)
+
+    def browse_config_file():
+        '''
+        Opens a file selection dialog for the .conf configuration file.
+        '''
+        chosen_file = filedialog.askopenfilename(
+            title='Select configuration file',
+            filetypes=(('Config files', '*.conf'), ('All files', '*.*')),
+        )
+        if chosen_file:
+            config_path_var.set(chosen_file)
 
     def browse_csv_file():
         '''
@@ -289,6 +401,56 @@ def create_gui(parser):
             cycle_chosen.config(state='readonly')
         else:
             cycle_chosen.config(state='disabled')
+
+    # Track the previously selected OFS so we can restore the default
+    # whichcast set when the user switches AWAY from LOOFS2 (where we
+    # forced hindcast-only). Closure-captured list lets the nested
+    # handler mutate the value without `nonlocal` gymnastics.
+    _last_ofs = ['']
+
+    def update_whichcast_state(_event=None):
+        '''Restrict whichcast checkboxes based on the selected OFS.
+
+        LOOFS2 currently only supports the hindcast whichcast — nowcast,
+        forecast_a and forecast_b are not yet implemented. When LOOFS2
+        is selected we force-uncheck the three unsupported whichcasts
+        and disable their checkboxes so the user can't pick them. When
+        switching away from LOOFS2, we restore the original defaults
+        (nowcast + forecast_b on, forecast_a + hindcast off).
+        '''
+        current = ofs_entry.get()
+        is_loofs2 = current == 'loofs2'
+        was_loofs2 = _last_ofs[0] == 'loofs2'
+
+        if is_loofs2:
+            var_now.set('0')
+            var_fore.set('0')
+            var_forea.set('0')
+            var_hind.set('hindcast')
+            now_chk.config(state='disabled')
+            fore_chk.config(state='disabled')
+            forea_chk.config(state='disabled')
+            hind_chk.config(state='normal')
+            toggle_cycle_state()
+        else:
+            now_chk.config(state='normal')
+            fore_chk.config(state='normal')
+            forea_chk.config(state='normal')
+            hind_chk.config(state='normal')
+            if was_loofs2:
+                var_now.set('nowcast')
+                var_fore.set('forecast_b')
+                var_forea.set('0')
+                var_hind.set('0')
+                toggle_cycle_state()
+
+        _last_ofs[0] = current
+
+    def on_ofs_changed(_event=None):
+        '''Single handler for the OFS combobox: refreshes both the cycle
+        dropdown and the whichcast checkbox enable/disable state.'''
+        update_cycles(_event)
+        update_whichcast_state(_event)
 
     root = tk.Tk()
     root.title('Skill assessment inputs')
@@ -416,6 +578,24 @@ def create_gui(parser):
                                                           sticky='w',
                                                           padx=padx, pady=pady)
 
+    # Config file, -c. Empty/default value means "use the default
+    # conf/ofs_dps.conf"; submit_and_close() converts blanks to None
+    # so create_1dplot.py's argparse default kicks in.
+    row += 1
+    config_path_var = tk.StringVar(value='conf/ofs_dps.conf')
+    tk.Label(scrollable_frame,
+             text='Config file',
+             bg=themecolor,
+             fg=textcolor,
+             font=(fontfamily, labelfontsize),
+             anchor=anchor).grid(row=row, column=0, sticky='w',
+                                 padx=padx, pady=pady)
+    ttk.Button(scrollable_frame, text='Browse...', command=browse_config_file,
+               style='TButton').grid(row=row, column=1, sticky='w',
+                                     padx=padx, pady=pady)
+    ttk.Entry(scrollable_frame, textvariable=config_path_var).grid(
+        row=row, column=2, sticky='w', padx=padx, pady=pady)
+
     # OFS input, -o
     row += 1
     ofs_entry = tk.StringVar()
@@ -432,6 +612,7 @@ def create_gui(parser):
         'lsofs',
         'necofs',
         'ngofs2',
+        'secofs',
         'sfbofs',
         'sscofs',
         'stofs_2d_glo',
@@ -455,7 +636,7 @@ def create_gui(parser):
     )
     ofs_chosen['values'] = choices
     ofs_chosen.grid(row=row, column=1, sticky='w', padx=padx, pady=pady)
-    ofs_chosen.bind('<<ComboboxSelected>>', update_cycles)
+    ofs_chosen.bind('<<ComboboxSelected>>', on_ofs_changed)
 
     row += 1
     tk.Label(scrollable_frame,
@@ -483,9 +664,11 @@ def create_gui(parser):
              font=(fontfamily, labelfontsize),
              anchor=anchor).grid(row=row, column=0, sticky='w',
                                  padx=padx, pady=pady)
-    start_entry = DateEntry(scrollable_frame, width=16, background='darkblue',
-                    foreground='white', bd=2, date_pattern='yyyy-mm-dd',
-                    font=('Helvetica', 12))
+    start_entry = DateEntry(
+        scrollable_frame, width=16, background='darkblue',
+        foreground='white', bd=2, date_pattern='yyyy-mm-dd',
+        font=('Helvetica', 12),
+    )
     start_entry.grid(row=row, column=1,  sticky='w', padx=padx, pady=pady)
     # Create scale widget for hour selection
     s_hour_scale = tk.Scale(scrollable_frame, from_=0, to=23, orient=tk.HORIZONTAL,
@@ -501,9 +684,11 @@ def create_gui(parser):
              font=(fontfamily, labelfontsize),
              anchor=anchor).grid(row=row, column=0,  sticky='w',
                                  padx=padx, pady=pady)
-    end_entry = DateEntry(scrollable_frame, width=16, background='darkblue',
-                    foreground='white', bd=2, date_pattern='yyyy-mm-dd',
-                    font=('Helvetica', 12))
+    end_entry = DateEntry(
+        scrollable_frame, width=16, background='darkblue',
+        foreground='white', bd=2, date_pattern='yyyy-mm-dd',
+        font=('Helvetica', 12),
+    )
     end_entry.grid(row=row, column=1,  sticky='w', padx=padx, pady=pady)
     # Create scale widget for hour selection
     e_hour_scale = tk.Scale(scrollable_frame, from_=0, to=23, orient=tk.HORIZONTAL,
@@ -530,23 +715,27 @@ def create_gui(parser):
              font=(fontfamily, labelfontsize),
              anchor=anchor).grid(row=row, column=0, sticky='w',
                                  padx=padx, pady=pady)
-    ttk.Checkbutton(scrollable_frame, text='Nowcast', variable=var_now, onvalue='nowcast',
-                   offvalue=0).grid(row=row, column=1, sticky='w',
-                                    padx=padx, pady=pady)
-    ttk.Checkbutton(scrollable_frame, text='Forecast_b', variable=var_fore, onvalue=
-                   'forecast_b', offvalue=0).grid(row=row, column=2,
-                                                  sticky='w', padx=padx,
-                                                  pady=pady)
+    now_chk = ttk.Checkbutton(
+        scrollable_frame, text='Nowcast', variable=var_now,
+        onvalue='nowcast', offvalue=0,
+    )
+    now_chk.grid(row=row, column=1, sticky='w', padx=padx, pady=pady)
+    fore_chk = ttk.Checkbutton(
+        scrollable_frame, text='Forecast_b', variable=var_fore,
+        onvalue='forecast_b', offvalue=0,
+    )
+    fore_chk.grid(row=row, column=2, sticky='w', padx=padx, pady=pady)
     row += 1
-    ttk.Checkbutton(scrollable_frame, text='Forecast_a', variable=var_forea, onvalue=
-                   'forecast_a', offvalue=0, command=toggle_cycle_state).grid(
-                                                  row=row, column=1,
-                                                  sticky='w', padx=padx,
-                                                  pady=pady)
-    ttk.Checkbutton(scrollable_frame, text='Hindcast (LOOFS2 only)', variable=var_hind, onvalue=
-                   'hindcast', offvalue=0).grid(row=row, column=2,
-                                                  sticky='w', padx=padx,
-                                                  pady=pady)
+    forea_chk = ttk.Checkbutton(
+        scrollable_frame, text='Forecast_a', variable=var_forea,
+        onvalue='forecast_a', offvalue=0, command=toggle_cycle_state,
+    )
+    forea_chk.grid(row=row, column=1, sticky='w', padx=padx, pady=pady)
+    hind_chk = ttk.Checkbutton(
+        scrollable_frame, text='Hindcast (LOOFS2 only)', variable=var_hind,
+        onvalue='hindcast', offvalue=0,
+    )
+    hind_chk.grid(row=row, column=2, sticky='w', padx=padx, pady=pady)
 
     # Model Cycle input, -f
     row += 1
