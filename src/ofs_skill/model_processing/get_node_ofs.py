@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from ofs_skill.model_processing import do_horizon_skill_utils
 
@@ -797,6 +798,53 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
 
     return formatted_series, datum_offset
 
+def find_time_variable_name(ds: xr.Dataset) -> str:
+    """Scans an xarray Dataset to find the coordinate name representing time
+
+    based on its datetime64 data type.
+    """
+    # First, check the coordinates (most common place for the time dimension)
+    for coord_name in ds.coords:
+        if np.issubdtype(ds[coord_name].dtype, np.datetime64):
+            return str(coord_name)
+
+    # Fallback: check data variables if it wasn't explicitly marked as a coordinate
+    for var_name in ds.data_vars:
+        if np.issubdtype(ds[var_name].dtype, np.datetime64):
+            return str(var_name)
+
+    raise ValueError(
+        'Could not automatically detect a datetime variable in this dataset.'
+    )
+
+
+def has_date_overlap(
+    start_date: datetime,
+    end_date: datetime,
+    ds: xr.Dataset,
+    ) -> bool:
+    """Checks for a date overlap by auto-detecting the time variable in an
+
+    xarray Dataset.
+    """
+    # 1. Auto-detect the time coordinate name
+    time_var_name = find_time_variable_name(ds)
+
+    # 2. Extract the lazy-loaded time array using the detected name
+    time_array = ds[time_var_name]
+
+    # 3. Convert input Python datetimes to numpy.datetime64
+    np_start = np.datetime64(start_date)
+    np_end = np.datetime64(end_date)
+
+    # 4. Extract min and max boundaries lazily
+    xr_min = time_array.min().values
+    xr_max = time_array.max().values
+
+    # 5. Check for overlap
+    overlap = (np_start <= xr_max) and (xr_min <= np_end)
+
+    return bool(overlap)
 
 def parameter_validation(prop, dir_params, logger):
     """Parameter validation"""
@@ -1044,6 +1092,28 @@ def get_node_ofs(prop, logger, model_dataset=None):
         logging.info('About to start intake_scisa from get_node ...')
         model = intake_model(list_files, prop, logger)
         logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
+
+        if use_custom_files:
+            # Check if dates of loaded model data overlap with user-input dates
+            try:
+                date_overlap = has_date_overlap(datetime.strptime(
+                    start_date_internal.split('-')[0], '%Y%m%d'),
+                    datetime.strptime(end_date_internal.split('-')[0], '%Y%m%d'),
+                    model)
+                if not date_overlap:
+                    logger.error('The date range of the loaded model files '
+                                 'does not overlap with the start and end '
+                                 'dates of the skill assessment run. Please '
+                                 'either disable custom file name loading '
+                                 'in the conf file, or check that the provided '
+                                 'filenames are correct. Exiting...')
+                    raise SystemExit(1)
+            except Exception as e:
+                logger.error('Cannot verify if the dates in user-supplied '
+                             'custom model files overlap with the start and '
+                             'end dates of the skill assessment run. Program '
+                             'may crash further down the pipeline! Error: %s',
+                             e)
 
     if not model:
         logger.error('No model files or URLs to load in intake! Exiting...')
