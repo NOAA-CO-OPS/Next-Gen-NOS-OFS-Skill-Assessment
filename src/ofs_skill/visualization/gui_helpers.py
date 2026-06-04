@@ -6,7 +6,7 @@ widget used by create_gui.py. Keeping them here lets the GUI module focus on
 layout and wiring, and lets the helpers be unit tested without spinning up Tk.
 
 Key Features:
-    - Cross-platform tkcalendar DateEntry wrapper with macOS Sonoma fixes
+    - Cross-platform tkcalendar DateEntry wrapper with calendar-popup fixes
     - Per-OFS default datum and most-recent-cycle computation for Quick Run
     - Conf-driven datum list lookup with hardcoded fallback
     - Pure-logic validators that return error message strings (or None) so
@@ -50,8 +50,7 @@ DEFAULT_DATUMS = (
 
 class DateEntry(_TkDateEntry):
     """Drop-in replacement for ``tkcalendar.DateEntry`` with cross-platform
-    calendar-popup fixes (macOS Sonoma+ rendering, focus, and color
-    inheritance)."""
+    calendar-popup fixes."""
 
     _CAL_COLOR_DEFAULTS = {
         'normalbackground':     'white',
@@ -67,10 +66,16 @@ class DateEntry(_TkDateEntry):
         'bordercolor':          'gray60',
     }
 
+    # Grace period (ms) after opening during which a transient FocusOut on
+    # the calendar is ignored. Prevents the popup from immediately closing
+    # when the platform briefly redirects focus while mapping the window.
+    _FOCUS_GRACE_MS = 200
+
     def __init__(self, master=None, **kw):
         for key, value in self._CAL_COLOR_DEFAULTS.items():
             kw.setdefault(key, value)
         super().__init__(master, **kw)
+        self._drop_down_time = 0
         if sys.platform == 'darwin':
             try:
                 self._top_cal.overrideredirect(False)
@@ -78,6 +83,7 @@ class DateEntry(_TkDateEntry):
                 pass
 
     def drop_down(self):
+        self._drop_down_time = self.winfo_toplevel().tk.call('clock', 'milliseconds')
         super().drop_down()
         try:
             top = self._top_cal
@@ -88,9 +94,18 @@ class DateEntry(_TkDateEntry):
             top.lift()
             if sys.platform != 'darwin':
                 top.attributes('-topmost', True)
-                top.focus_force()
         except (tk.TclError, AttributeError):
             pass
+
+    def _on_focus_out_cal(self, event):
+        """Ignore transient FocusOut events fired right after the popup
+        opens, before the user has had a chance to interact with it."""
+        now = self.winfo_toplevel().tk.call('clock', 'milliseconds')
+        elapsed = now - self._drop_down_time
+        if elapsed < self._FOCUS_GRACE_MS:
+            self._calendar.focus_set()
+            return
+        super()._on_focus_out_cal(event)
 
 
 def quick_run_datum(ofs: str) -> str:
