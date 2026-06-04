@@ -488,7 +488,8 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                         'leofs',
                         'lmhofs',
                         'loofs',
-                        'lsofs'
+                        'lsofs',
+                        'loofs2',
                         ]:
                     if (str(
                             timeseries['Datum'][1]
@@ -525,10 +526,10 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                             zdiff = -176.0
                         elif ofs == 'lsofs':
                             zdiff = -183.2
-                        elif ofs == 'loofs':
+                        elif ofs in ['loofs','loofs2']:
                             zdiff = -74.2
                     elif datum == 'IGLD':
-                        zdiff = 0 # No correction needed
+                        zdiff = 0.0 # No correction needed
                     else:
                         zdiff = 'UNKNOWN'
                 logger.info(
