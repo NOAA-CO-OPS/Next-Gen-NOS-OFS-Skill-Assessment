@@ -470,5 +470,59 @@ class TestDateEntryClassAttributes:
         assert d['weekendbackground'] != d['weekendforeground']
 
 
+class TestGuiParams:
+    """Tests for the GuiParams dataclass."""
+
+    def test_default_instantiation(self):
+        """GuiParams() should create an instance with all argparse defaults."""
+        p = gui_helpers.GuiParams()
+        assert p.OFS is None
+        assert p.Path is None
+        assert p.StartDate_full is None
+        assert p.EndDate_full is None
+        assert p.Whichcasts == ['nowcast', 'forecast_b']
+        assert p.Datum == 'MLLW'
+        assert p.FileType == 'stations'
+        assert p.Forecast_Hr == 'now'
+        assert p.Station_Owner == ['co-ops', 'ndbc', 'usgs', 'chs']
+        assert p.Horizon_Skill is False
+        assert p.Var_Selection == [
+            'water_level', 'water_temperature', 'salinity', 'currents'
+        ]
+        assert p.Currents_Bins_Csv is None
+        assert p.Disable_Model_File_Check is True
+        assert p.config is None
+
+    def test_custom_instantiation(self):
+        """Fields can be overridden at construction time."""
+        p = gui_helpers.GuiParams(
+            OFS='cbofs',
+            Path='/tmp/out',
+            Datum='NAVD88',
+            Horizon_Skill=True,
+        )
+        assert p.OFS == 'cbofs'
+        assert p.Path == '/tmp/out'
+        assert p.Datum == 'NAVD88'
+        assert p.Horizon_Skill is True
+        # Unspecified fields keep defaults
+        assert p.FileType == 'stations'
+
+    def test_mutable_defaults_are_independent(self):
+        """Each instance gets its own list for mutable defaults."""
+        p1 = gui_helpers.GuiParams()
+        p2 = gui_helpers.GuiParams()
+        p1.Station_Owner.append('extra')
+        assert 'extra' not in p2.Station_Owner
+
+    def test_attribute_assignment(self):
+        """Fields can be mutated after construction (GUI submit pattern)."""
+        p = gui_helpers.GuiParams()
+        p.OFS = 'leofs'
+        p.Whichcasts = ['nowcast', 'forecast_a']
+        assert p.OFS == 'leofs'
+        assert p.Whichcasts == ['nowcast', 'forecast_a']
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

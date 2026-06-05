@@ -2,7 +2,7 @@
 Reusable helpers for the skill-assessment Tkinter GUI.
 
 This module contains the pure-logic helpers and the cross-platform DateEntry
-widget used by create_gui.py. Keeping them here lets the GUI module focus on
+widget used by create_gui.py. This separation lets the GUI module focus on
 layout and wiring, and lets the helpers be unit tested without spinning up Tk.
 
 Key Features:
@@ -11,6 +11,10 @@ Key Features:
     - Conf-driven datum list lookup with hardcoded fallback
     - Pure-logic validators that return error message strings (or None) so
       callers decide how to surface them (messagebox, assertion, log, etc.)
+
+Classes:
+    DateEntry: Cross-platform tkcalendar DateEntry subclass
+    GuiParams: Typed dataclass mirroring the argparse namespace
 
 Functions:
     quick_run_datum: Pick a sensible default vertical datum per OFS family
@@ -30,6 +34,7 @@ from __future__ import annotations
 import logging
 import sys
 import tkinter as tk
+from dataclasses import dataclass, field
 from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 
@@ -98,8 +103,7 @@ class DateEntry(_TkDateEntry):
             pass
 
     def _on_focus_out_cal(self, event):
-        """Ignore transient FocusOut events fired right after the popup
-        opens, before the user has had a chance to interact with it."""
+        """Ignore transient FocusOut events fired right after popup opens."""
         now = self.winfo_toplevel().tk.call('clock', 'milliseconds')
         elapsed = now - self._drop_down_time
         if elapsed < self._FOCUS_GRACE_MS:
@@ -109,12 +113,8 @@ class DateEntry(_TkDateEntry):
 
 
 def quick_run_datum(ofs: str) -> str:
-    """Return a sensible default vertical datum for Quick Run mode.
-
-    Great Lakes OFSes use IGLD85, the global/regional STOFS systems
-    don't have a uniform tidal datum so fall back to NAVD88, and tidal
-    coastal OFSes use MLLW.
-    """
+    """Default vertical datum per OFS family: IGLD85 (Great Lakes),
+    NAVD88 (STOFS), else MLLW (tidal coastal)."""
     if ofs in GREAT_LAKES_OFS:
         return 'IGLD85'
     if ofs in STOFS_OFS:
@@ -123,23 +123,9 @@ def quick_run_datum(ofs: str) -> str:
 
 
 def compute_recent_cycle(ofs: str, now: datetime | None = None):
-    """Compute the most recent forecast cycle that should be available.
-
-    Parameters
-    ----------
-    ofs : str
-        OFS identifier (e.g. ``'cbofs'``).
-    now : datetime, optional
-        UTC-aware "current" time. Defaults to ``datetime.now(timezone.utc)``.
-        Exposed for deterministic unit testing.
-
-    Returns
-    -------
-    (start_iso, forecast_hr) : tuple of str
-        ``start_iso`` is YYYY-MM-DDTHH:MM:SSZ at the chosen cycle, and
-        ``forecast_hr`` is the cycle as ``'06z'`` etc. Allows a 2h delay
-        for file arrival on NODD before considering a cycle "available".
-    """
+    """Return ``(start_iso, forecast_hr)`` for the most recent cycle
+    available (assumes a 2h NODD delivery delay). ``now`` is overridable
+    for deterministic testing; defaults to ``datetime.now(timezone.utc)``."""
     _, fcstcycles = get_fcst_hours(ofs)
     cycles = sorted(int(c) for c in fcstcycles)
     if now is None:
@@ -182,23 +168,16 @@ def read_datum_list():
 
 
 def format_date(date_obj, hour) -> str:
-    """Format a date object and integer-ish hour into the ISO string the
-    downstream CLI expects, e.g. ``'2025-11-12T06:00:00Z'``.
-
-    Raises ``TypeError`` if ``date_obj`` is not a ``datetime.date``.
-    """
+    """Format date + hour into the CLI ISO string ``'YYYY-MM-DDTHH:00:00Z'``;
+    raises ``TypeError`` if ``date_obj`` is not a ``datetime.date``."""
     if isinstance(date_obj, date_type):
         return f"{date_obj.strftime('%Y-%m-%d')}T{int(hour):02d}:00:00Z"
     raise TypeError(f'Expected date object, got {type(date_obj)}: {date_obj}')
 
 
 def build_utc_datetime(date_obj, hour) -> datetime | None:
-    """Build a UTC-aware ``datetime`` from a ``date`` and integer-ish hour.
-
-    Returns ``None`` if ``date_obj`` is falsy or if ``hour`` cannot be
-    coerced to an integer. Used to normalise the two ``DateEntry`` +
-    ``Scale`` widget pairs in the GUI before comparison.
-    """
+    """Build a UTC-aware ``datetime`` from date + hour, or ``None`` if
+    ``date_obj`` is falsy or ``hour`` is not int-coercible."""
     if not date_obj:
         return None
     try:
@@ -221,11 +200,8 @@ def validate_date_order(start_dt: datetime | None,
 def validate_start_not_future(start_dt: datetime | None,
                               now: datetime | None = None
                               ) -> str | None:
-    """Return an error message if ``start_dt`` is in the future (UTC).
-
-    ``now`` defaults to ``datetime.now(timezone.utc)``; overridable for
-    deterministic testing.
-    """
+    """Error message if ``start_dt`` is in the future (UTC); ``now`` is
+    overridable for deterministic testing."""
     if start_dt is None:
         return None
     if now is None:
@@ -237,9 +213,8 @@ def validate_start_not_future(start_dt: datetime | None,
 
 def validate_horizon_requires_stations(horizon_skill: bool,
                                        filetype: str) -> str | None:
-    """Return an error message if Horizon_Skill=True is combined with a
-    non-stations file type. Horizon skill is only implemented for the
-    station model output files."""
+    """Error message if ``Horizon_Skill=True`` is paired with a non-stations
+    file type (horizon skill is only implemented for station outputs)."""
     if horizon_skill and filetype != 'stations':
         return (
             '"Assess all forecast horizons?" is only supported with '
@@ -248,3 +223,32 @@ def validate_horizon_requires_stations(horizon_skill: bool,
             'horizons?" to No.'
         )
     return None
+
+
+@dataclass
+class GuiParams:
+    """Typed GUI-to-CLI param schema; fields mirror argparse ``dest`` names
+    in ``create_1dplot.py`` as a drop-in for ``argparse.Namespace``."""
+
+    OFS: str | None = None
+    Path: str | None = None
+    StartDate_full: str | None = None
+    EndDate_full: str | None = None
+    Whichcasts: list[str] = field(
+        default_factory=lambda: ['nowcast', 'forecast_b']
+    )
+    Datum: str = 'MLLW'
+    FileType: str = 'stations'
+    Forecast_Hr: str = 'now'
+    Station_Owner: list[str] = field(
+        default_factory=lambda: ['co-ops', 'ndbc', 'usgs', 'chs']
+    )
+    Horizon_Skill: bool = False
+    Var_Selection: list[str] = field(
+        default_factory=lambda: [
+            'water_level', 'water_temperature', 'salinity', 'currents'
+        ]
+    )
+    Currents_Bins_Csv: str | None = None
+    Disable_Model_File_Check: bool = True
+    config: str | None = None
