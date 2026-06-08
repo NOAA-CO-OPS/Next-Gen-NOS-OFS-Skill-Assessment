@@ -95,7 +95,10 @@ def parameter_validation(prop, logger):
         SystemExit: If date format is invalid or required directories/files
             are missing.
     """
-    dir_params = utils.Utils().read_config_section('directories', logger)
+    _conf = getattr(prop, 'config_file', None)
+    dir_params = utils.Utils(
+        config_file=_conf
+    ).read_config_section('directories', logger)
 
     # Model source validation
     if 'roms' in prop.model_source:

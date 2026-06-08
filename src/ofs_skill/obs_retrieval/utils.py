@@ -312,7 +312,7 @@ def _auto_workers(key):
     return max(1, io_defaults.get(key, min(cpus, 4)))
 
 
-def get_parallel_config(logger=None):
+def get_parallel_config(logger=None, config_file=None):
     """
     Read parallelization settings from the [parallelization] config section.
 
@@ -324,14 +324,11 @@ def get_parallel_config(logger=None):
     ----------
     logger : logging.Logger or None
         Logger instance. If None, a module-level logger is used.
-
-    Returns
-    -------
-    dict
-        Keys: parallel_enabled (bool), obs_coops_workers, obs_usgs_workers,
-        obs_ndbc_workers, obs_chs_workers, model_download_workers,
-        skill_workers, ha_workers, plot_workers (all int),
-        parallel_variables (bool).
+    config_file : str or Path or None
+        Optional path to an ofs_dps.conf-style file. Pass
+        ``getattr(prop, 'config_file', None)`` from CLI entry points so the
+        ``-c <conf>`` flag actually selects which parallelization knobs
+        are read. When None, falls back to the repo default.
     """
     defaults = {
         'parallel_enabled': True,
@@ -355,7 +352,8 @@ def get_parallel_config(logger=None):
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    raw = Utils().read_config_section('parallelization', logger)
+    raw = Utils(config_file=config_file).read_config_section(
+        'parallelization', logger)
     if not raw:
         return defaults
 

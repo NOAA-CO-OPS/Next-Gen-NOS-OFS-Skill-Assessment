@@ -721,7 +721,7 @@ def _process_variable_obs(
             )
 
         # Read parallel config for worker counts
-        parallel_cfg = get_parallel_config(logger)
+        parallel_cfg = get_parallel_config(logger, config_file=config_file)
 
         # Currents retrieval now issues one HTTP call per ADCP bin per
         # station, so it is orders of magnitude more request-dense than
@@ -925,7 +925,10 @@ def get_station_observations(prop,logger):
     # USGS, and NDBC based on the station data source
 
     # Read parallel config once to decide variable-level dispatch strategy
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     use_parallel_variables = parallel_cfg.get('parallel_variables', False)
 
     if use_parallel_variables:
