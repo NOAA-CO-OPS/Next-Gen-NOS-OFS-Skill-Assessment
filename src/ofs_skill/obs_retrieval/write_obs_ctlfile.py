@@ -523,7 +523,7 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                         dummyval, epoch=None, station_id=str(id_number), logger=logger
                     )
                     zdiff = 'RANGE' if math.isinf(z) else round((z - dummyval), 2)
-                    if 'igld' in datum.lower():
+                    if 'igld' in datum.lower() and zdiff != 'RANGE':
                         zdiff += ofs_base_offsets.get(ofs)
 
                 # 5. Fallback for unhandled datums
