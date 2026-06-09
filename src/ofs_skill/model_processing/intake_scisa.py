@@ -403,11 +403,8 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     xarray_kwargs={
                         'combine': 'nested',
                         'engine': engine,
-                        'compat': 'override',
-                        'coords': 'minimal',
                         'preprocess': preprocess_fn,
                         'concat_dim': time_name,
-                        'data_vars': 'minimal',
                         'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
