@@ -125,7 +125,8 @@ def _extract_chs_metadata(station_id: str, logger) -> dict:
 def _normalize_vdatum_name(name: str) -> str:
     """Canonicalize short datum aliases to the full names expected downstream.
 
-    The CO-OPS API accepts ``'NAVD'`` as shorthand for NAVD88, but downstream
+    The CO-OPS API accepts ``'NAVD'`` as shorthand for NAVD88, and ``'IGLD'`` as
+    shorthand for IGLD85. But downstream
     readers (``plotting_scalar.py``, ``write_ofs_ctlfile.py``) key off the
     canonical ``'NAVD88'`` label. Returns the input unchanged unless it is a
     known short alias.
@@ -134,6 +135,8 @@ def _normalize_vdatum_name(name: str) -> str:
         return name
     if str(name).upper() == 'NAVD':
         return 'NAVD88'
+    if str(name).upper() == 'IGLD':
+        return 'IGLD85'
     return name
 
 
@@ -482,60 +485,57 @@ def _process_usgs_station(id_number, name, x_value, y_value,
                 )
 
             if variable == 'water_level':
-                if ofs not in [
-                        'leofs',
-                        'lmhofs',
-                        'loofs',
-                        'lsofs',
-                        'loofs2',
-                        ]:
-                    if (str(
-                            timeseries['Datum'][1]
-                            ).upper() == datum):
-                        zdiff = 0
-                    elif (str(
-                            timeseries ['Datum'][1]
-                            ) == 'NAVD88' and
-                            datum != 'NAVD88'):
-                        ldatum = _normalize_vdatum_name(datum).lower()
-                        dummyval = 10
-                        _,_,z = vdatum_resilient.convert(
-                            timeseries['Datum'][1].lower(),
-                            ldatum,
-                            y_value,
-                            x_value,
-                            dummyval, #use dummy value
-                            epoch=None,
-                            station_id=str(id_number),
-                            logger=logger)
-                        if math.isinf(z):
-                            zdiff = 'RANGE'
-                        else:
-                            zdiff = round(z-dummyval,2) # datum offset
-                    elif (str(
-                            timeseries['Datum'][1]
-                            ) != 'NAVD88'):
-                        zdiff = 'UNKNOWN'
+                # Extract once to avoid repeated dictionary lookups and string casting
+                ts_datum = str(timeseries['Datum'][1])
+                ts_datum_upper = ts_datum.upper()
+
+                # Base offsets for Great Lakes stations
+                ofs_base_offsets = {
+                    'leofs': 173.5,
+                    'lmhofs': 176.0,
+                    'lsofs': 183.2,
+                    'loofs': 74.2,
+                    'loofs2': 74.2
+                }
+
+                # 1. Exact matches or identical datum types require zero offset
+                if ts_datum_upper == datum or \
+                   (datum == 'IGLD' and 'IGLD' in ts_datum_upper) or \
+                   (datum == 'LWD' and 'LWD' in ts_datum_upper):
+                    zdiff = 0
+
+                # 2. Great Lakes datum conversions (IGLD -> LWD is negative)
+                elif datum == 'LWD' and 'IGLD' in ts_datum_upper:
+                    offset = ofs_base_offsets.get(ofs)
+                    zdiff = -offset if offset is not None else 'UNKNOWN'
+
+                # 3. Great Lakes datum conversions (LWD -> IGLD is positive)
+                elif datum == 'IGLD' and 'LWD' in ts_datum_upper:
+                    zdiff = ofs_base_offsets.get(ofs, 'UNKNOWN')
+
+                # 4. NAVD88 conversions via vdatum_resilient
+                elif ts_datum == 'NAVD88' and datum != 'NAVD88':
+                    ldatum = _normalize_vdatum_name(datum).lower()
+                    dummyval = 10
+
+                    _, _, z = vdatum_resilient.convert(
+                        ts_datum.lower(), ldatum, y_value, x_value,
+                        dummyval, epoch=None, station_id=str(id_number), logger=logger
+                    )
+                    zdiff = 'RANGE' if math.isinf(z) else round((z - dummyval), 2)
+                    if 'igld' in datum.lower():
+                        zdiff += ofs_base_offsets.get(ofs)
+
+                # 5. Fallback for unhandled datums
                 else:
-                    if datum == 'LWD':
-                        if ofs == 'leofs':
-                            zdiff = -173.5
-                        elif ofs == 'lmhofs':
-                            zdiff = -176.0
-                        elif ofs == 'lsofs':
-                            zdiff = -183.2
-                        elif ofs in ['loofs','loofs2']:
-                            zdiff = -74.2
-                    elif datum == 'IGLD':
-                        zdiff = 0.0 # No correction needed
-                    else:
-                        zdiff = 'UNKNOWN'
-                logger.info(
-                    'There is a datum mismatch between this '
-                    'water Level USGS station (%s) and the '
-                    'user-specified datum (%s), '
-                    'please check control file',timeseries['Datum'][1],
-                    datum
+                    zdiff = 'UNKNOWN'
+
+                # Centralized logger for anytime the datum difference cannot be resolved
+                if isinstance(zdiff,str):
+                    logger.info(
+                        'There is a datum mismatch between this water level USGS station (%s) '
+                        'and the user-specified datum (%s), please check control file',
+                        ts_datum, datum
                     )
                 return [(
                     f'{str( id_number )} '
