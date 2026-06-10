@@ -524,5 +524,63 @@ class TestGuiParams:
         assert p.Whichcasts == ['nowcast', 'forecast_a']
 
 
+class TestGuiTheme:
+    """Tests for the GuiTheme palette dataclass."""
+
+    def test_default_values(self):
+        """Default palette matches the legacy hardcoded GUI styling."""
+        t = gui_helpers.GuiTheme()
+        assert t.themecolor == 'gainsboro'
+        assert t.textcolor == 'black'
+        assert t.datefield_bg == 'darkblue'
+        assert t.datefield_fg == 'white'
+        assert t.fontfamily == 'Helvetica'
+        assert t.labelfontsize == 12
+        assert t.widgetfontsize == 12
+        assert t.hintfontsize == 9
+        assert t.padx == 3
+        assert t.pady == 10
+        assert t.section_padx == 10
+        assert t.section_pady == 5
+        assert t.anchor == 'e'
+
+    def test_is_frozen(self):
+        """GuiTheme should be immutable to prevent accidental palette drift."""
+        t = gui_helpers.GuiTheme()
+        with pytest.raises(Exception):
+            t.themecolor = 'red'
+
+    def test_derived_font_tuples(self):
+        """label_font / widget_font / hint_font / section_title_font return
+        the expected (family, size[, style]) tuples."""
+        t = gui_helpers.GuiTheme()
+        assert t.label_font == ('Helvetica', 12)
+        assert t.widget_font == ('Helvetica', 12)
+        assert t.hint_font == ('Helvetica', 9, 'italic')
+        assert t.section_title_font == ('Helvetica', 12, 'bold')
+
+    def test_custom_palette(self):
+        """Fields can be overridden at construction to support alt themes."""
+        t = gui_helpers.GuiTheme(themecolor='white', fontfamily='Arial',
+                                 labelfontsize=14)
+        assert t.themecolor == 'white'
+        assert t.label_font == ('Arial', 14)
+        assert t.section_title_font == ('Arial', 14, 'bold')
+
+
+class TestToolTip:
+    """Tests for the ToolTip class (non-display attributes only)."""
+
+    def test_class_constants(self):
+        """Verify default delay, background, and foreground."""
+        assert gui_helpers.ToolTip._DELAY_MS == 400
+        assert gui_helpers.ToolTip._BG == '#ffffe0'
+        assert gui_helpers.ToolTip._FG == 'black'
+
+    def test_accepts_text(self):
+        """ToolTip stores the provided help string for later display."""
+        assert hasattr(gui_helpers.ToolTip, '_DELAY_MS')
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -20,6 +20,8 @@ from ofs_skill.obs_retrieval import utils
 from ofs_skill.visualization.gui_helpers import (
     DateEntry,
     GuiParams,
+    GuiTheme,
+    ToolTip,
     build_utc_datetime,
     compute_recent_cycle,
     format_date,
@@ -47,6 +49,36 @@ def create_gui(parser):
             print('Skill assessment run terminated by user.')
             sys.exit()
 
+    # Widgets currently flagged by _mark_invalid(); cleared on next submit.
+    _invalid_widgets: list[tk.Widget] = []
+
+    _ERROR_TTK_CLASSES = ('TCombobox', 'TSpinbox', 'TEntry', 'TLabel')
+
+    def _mark_invalid(*widgets):
+        """Highlight the given widget(s) to indicate failed validation.
+        All ttk widgets switch to their Error.* style variant."""
+        for w in widgets:
+            if w is None or w in _invalid_widgets:
+                continue
+            try:
+                cls = w.winfo_class()
+                if cls in _ERROR_TTK_CLASSES:
+                    w.configure(style=f'Error.{cls}')
+                    _invalid_widgets.append(w)
+            except tk.TclError:
+                pass
+
+    def _clear_invalid():
+        """Restore the default styling on any previously-flagged widgets."""
+        while _invalid_widgets:
+            w = _invalid_widgets.pop()
+            try:
+                cls = w.winfo_class()
+                if cls in _ERROR_TTK_CLASSES:
+                    w.configure(style=cls)
+            except tk.TclError:
+                pass
+
     def quick_run_submit():
         '''Bypasses standard validation and executes a pre-configured quick run.
 
@@ -55,10 +87,13 @@ def create_gui(parser):
         forecast cycle is computed from current UTC time so the run does not
         depend on the optional S3 fallback setting.
         '''
+        _clear_invalid()
         if not directory_path_var.get():
+            _mark_invalid(directory_entry)
             messagebox.showerror('Error', 'Please select your home directory for Quick Run.')
             return
         if ofs_entry.get() == choices[0] or not ofs_entry.get():
+            _mark_invalid(ofs_chosen)
             messagebox.showerror('Error', 'Please select an OFS for Quick Run.')
             return
 
@@ -90,53 +125,60 @@ def create_gui(parser):
         root.destroy()
 
     def submit_and_close():
-        # First check for required arguments and display error if not present
+        # Reset any field highlights from the previous submission attempt.
+        _clear_invalid()
         error = None
 
         # Normalised UTC-aware datetimes for ordering / future checks.
         start_dt = build_utc_datetime(
-            start_entry.get_date(), s_hour_scale.get()
+            start_entry.get_date(), s_hour_var.get()
         )
         end_dt = build_utc_datetime(
-            end_entry.get_date(), e_hour_scale.get()
+            end_entry.get_date(), e_hour_var.get()
         )
 
-        # Validators that are pure-logic predicates live in gui_helpers;
-        # they return an error string (or None) which the caller surfaces.
-        pure_validator_msg = (
-            validate_date_order(start_dt, end_dt)
-            or validate_start_not_future(start_dt)
-            or validate_horizon_requires_stations(
-                horizon_var.get(), filetype_var.get()
-            )
+        # Run the pure-logic validators independently so each can flag
+        # its own offending widget(s).
+        date_order_msg = validate_date_order(start_dt, end_dt)
+        future_msg = validate_start_not_future(start_dt)
+        horizon_msg = validate_horizon_requires_stations(
+            horizon_var.get(), filetype_var.get()
         )
 
-        if directory_path_var.get() is None:
+        if not directory_path_var.get():
+            _mark_invalid(directory_entry)
             messagebox.showerror('Error', 'Please select your home directory.')
             error = 1
         elif ofs_entry.get() == choices[0]:
+            _mark_invalid(ofs_chosen)
             messagebox.showerror('Error', 'Please select the OFS.')
             error = 1
         elif cycle_var.get() in (_OFS_FIRST_PLACEHOLDER, ''):
+            _mark_invalid(cycle_chosen)
             messagebox.showerror('Error', 'Please select a model cycle.')
             error = 1
         elif datum_var.get() == dchoices[0]:
+            _mark_invalid(datum_chosen)
             messagebox.showerror('Error', 'Please choose a datum.')
             error = 1
         elif not start_entry.get_date():
+            _mark_invalid(start_entry)
             messagebox.showerror('Error', 'Please enter a start date.')
             error = 1
         elif not end_entry.get_date():
+            _mark_invalid(end_entry)
             messagebox.showerror('Error', 'Please enter an end date.')
             error = 1
         elif (var_now.get() == '0' and var_fore.get() == '0'
               and var_forea.get() == '0' and var_hind.get() == '0'):
+            _mark_invalid(whichcast_lbl)
             messagebox.showerror(
                 'Error', 'Please select at least one whichcast.'
             )
             error = 1
         elif (var_coops.get() == '0' and var_ndbc.get() == '0'
               and var_usgs.get() == '0' and var_list.get() == '0'):
+            _mark_invalid(providers_lbl)
             messagebox.showerror(
                 'Error',
                 'Please select at least one station provider, or provide '
@@ -145,21 +187,31 @@ def create_gui(parser):
             error = 1
         elif (var_salt.get() == '0' and var_cu.get() == '0'
               and var_temp.get() == '0' and var_wl.get() == '0'):
+            _mark_invalid(variables_lbl)
             messagebox.showerror(
                 'Error', 'Please select at least one variable to assess.'
             )
             error = 1
-        elif pure_validator_msg is not None:
-            messagebox.showerror('Error', pure_validator_msg)
+        elif date_order_msg is not None:
+            _mark_invalid(start_entry, end_entry, s_hour_spin, e_hour_spin)
+            messagebox.showerror('Error', date_order_msg)
+            error = 1
+        elif future_msg is not None:
+            _mark_invalid(start_entry, s_hour_spin)
+            messagebox.showerror('Error', future_msg)
+            error = 1
+        elif horizon_msg is not None:
+            _mark_invalid(horizon_lbl)
+            messagebox.showerror('Error', horizon_msg)
             error = 1
 
         args_values.Path = directory_path_var.get()
         args_values.OFS = ofs_entry.get()
         args_values.StartDate_full = format_date(
-            start_entry.get_date(), s_hour_scale.get()
+            start_entry.get_date(), s_hour_var.get()
         )
         args_values.EndDate_full = format_date(
-            end_entry.get_date(), e_hour_scale.get()
+            end_entry.get_date(), e_hour_var.get()
         )
         args_values.Whichcasts = [
             item for item in (
@@ -330,20 +382,21 @@ def create_gui(parser):
 
     datum_list = read_datum_list()
 
-    # Window-wide colors, text, and stuff
-    anchor='e'
-    themecolor = 'gainsboro'
-    textcolor = 'black'
-    labelfontsize = 12
-    widgetfontsize = 12
-    fontfamily = 'Helvetica'
-    padx = 3
-    pady = 10
+    # Shared theme palette (colors, fonts, spacing) — see gui_helpers.GuiTheme.
+    theme = GuiTheme()
+    themecolor = theme.themecolor
+    textcolor = theme.textcolor
+    fontfamily = theme.fontfamily
+    labelfontsize = theme.labelfontsize
+    widgetfontsize = theme.widgetfontsize
+    padx = theme.padx
+    pady = theme.pady
+    anchor = theme.anchor
     root.config(bg=themecolor)
 
     # --- SCROLLBAR AND CANVAS SETUP ---
     # Create a main container frame
-    container = tk.Frame(root, bg=themecolor)
+    container = ttk.Frame(root)
     container.pack(fill='both', expand=True)
 
     # Create a canvas inside the container
@@ -353,7 +406,7 @@ def create_gui(parser):
     scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
 
     # Create the scrollable frame that will hold all widgets
-    scrollable_frame = tk.Frame(canvas, bg=themecolor)
+    scrollable_frame = ttk.Frame(canvas)
 
     # Bind the frame size changes to update the canvas scroll region
     scrollable_frame.bind(
@@ -371,10 +424,36 @@ def create_gui(parser):
     canvas.pack(side='left', fill='both', expand=True)
     scrollbar.pack(side='right', fill='y')
 
-    # Bind mousewheel scrolling to the canvas
+    # Cross-platform mouse-wheel scrolling.
+    # - Linux X11: wheel events arrive as <Button-4> (up) / <Button-5>
+    #   (down); event.delta is unset.
+    # - Windows: <MouseWheel> with event.delta in multiples of 120.
+    # - macOS: <MouseWheel> with small integer deltas (often +/-1) per
+    #   smooth-scroll tick — the old `delta / 120` logic truncated these
+    #   to 0 so scrolling silently did nothing.
     def _on_mousewheel(event):
-        canvas.yview_scroll(int(-1*(event.delta/120)), 'units')
+        # Ignore wheel events from widgets outside the form canvas
+        # (e.g. the calendar popup) so they don't scroll the form.
+        widget = event.widget
+        while widget is not None and widget is not canvas:
+            widget = getattr(widget, 'master', None)
+        if widget is None:
+            return
+
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        elif sys.platform == 'darwin':
+            delta = -int(event.delta)
+        else:
+            delta = -int(event.delta / 120)
+        if delta:
+            canvas.yview_scroll(delta, 'units')
+
     root.bind_all('<MouseWheel>', _on_mousewheel)
+    root.bind_all('<Button-4>', _on_mousewheel)
+    root.bind_all('<Button-5>', _on_mousewheel)
 
     # Style for each widget type
     style = ttk.Style()
@@ -392,48 +471,77 @@ def create_gui(parser):
                     font=(fontfamily, widgetfontsize))
     # Set font for drop-downs
     root.option_add('*TCombobox*Listbox*Font',
-                    Font(family='Helvetica', size=12))
+                    Font(family=fontfamily, size=widgetfontsize))
+
+    # Error-state styles used by _mark_invalid() to highlight fields
+    # whose values fail validation in submit_and_close().
+    _ERROR_BG = '#fff3f3'
+    _ERROR_BORDER = '#d93025'
+    _ERROR_LABEL_BG = '#ffd6d6'
+    style.configure('Error.TCombobox',
+                    fieldbackground=_ERROR_BG, bordercolor=_ERROR_BORDER)
+    style.map('Error.TCombobox',
+              fieldbackground=[('readonly', _ERROR_BG)])
+    style.configure('Error.TSpinbox',
+                    fieldbackground=_ERROR_BG, bordercolor=_ERROR_BORDER)
+    style.configure('Error.TEntry',
+                    fieldbackground=_ERROR_BG, bordercolor=_ERROR_BORDER)
+    style.configure('TFrame', background=themecolor)
+    style.configure('TLabel', background=themecolor, foreground=textcolor)
+    style.configure('TLabelframe', background=themecolor)
+    style.configure('TLabelframe.Label', background=themecolor,
+                    foreground=textcolor, font=theme.section_title_font)
+    style.configure('Error.TLabel', background=_ERROR_LABEL_BG)
+
     args_values = GuiParams()
 
     def _section(title):
         """Themed LabelFrame container for a group of related widgets."""
-        return tk.LabelFrame(
-            scrollable_frame, text=title,
-            bg=themecolor, fg=textcolor,
-            font=(fontfamily, labelfontsize, 'bold'),
-            padx=padx, pady=pady, bd=1, relief='groove',
+        return ttk.LabelFrame(
+            scrollable_frame, text=title, padding=(padx, pady),
         )
 
-    def _label(parent, text, italic=False):
-        """Standard row label inside a section frame."""
-        font = ((fontfamily, 9, 'italic') if italic
-                else (fontfamily, labelfontsize))
-        return tk.Label(parent, text=text, bg=themecolor, fg=textcolor,
-                        font=font, anchor=anchor)
+    def _label(parent, text, italic=False, help_text=None):
+        """Standard row label inside a section frame. If ``help_text`` is
+        given, the label gets a trailing ⓘ icon and shows the text on hover."""
+        font = theme.hint_font if italic else theme.label_font
+        display = f'{text} \u24d8' if help_text else text
+        lbl = ttk.Label(parent, text=display, font=font, anchor=anchor)
+        if help_text:
+            lbl.config(cursor='question_arrow')
+            ToolTip(lbl, help_text)
+        return lbl
 
     section_row = 0
 
     # === General Settings ============================================
     general_frame = _section('General Settings')
     general_frame.grid(row=section_row, column=0, columnspan=4,
-                       sticky='ew', padx=10, pady=(10, 5))
+                       sticky='ew', padx=theme.section_padx,
+                       pady=(theme.section_padx, theme.section_pady))
     section_row += 1
 
     # Home directory, -p
     directory_path_var = tk.StringVar()
-    _label(general_frame, 'Home directory').grid(
+    _label(general_frame, 'Home directory',
+           help_text='Root working directory for the skill assessment. '
+                     'Output files and the ofs_extents/ folder live '
+                     'under this path.').grid(
         row=0, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Button(general_frame, text='Browse...', command=browse_directory,
                style='TButton').grid(row=0, column=1, sticky='w',
                                      padx=padx, pady=pady)
-    ttk.Entry(general_frame, textvariable=directory_path_var).grid(
-        row=0, column=2, sticky='w', padx=padx, pady=pady)
+    directory_entry = ttk.Entry(general_frame, textvariable=directory_path_var)
+    directory_entry.grid(row=0, column=2, sticky='w', padx=padx, pady=pady)
 
     # Config file, -c. Blank/default value means "use the default
     # conf/ofs_dps.conf"; submit_and_close() converts blanks to None
     # so create_1dplot.py's argparse default kicks in.
     config_path_var = tk.StringVar(value='conf/ofs_dps.conf')
-    _label(general_frame, 'Config file').grid(
+    _label(general_frame, 'Config file',
+           help_text='Path to the .conf configuration file. Leave the '
+                     'default (conf/ofs_dps.conf) unless you have a '
+                     'custom config for this run.').grid(
         row=1, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Button(general_frame, text='Browse...', command=browse_config_file,
                style='TButton').grid(row=1, column=1, sticky='w',
@@ -466,11 +574,14 @@ def create_gui(parser):
         'wcofs',
     )
     ofs_entry.set(_OFS_PLACEHOLDER)
-    _label(general_frame, 'OFS').grid(
+    _label(general_frame, 'OFS',
+           help_text='Operational Forecast System to assess. Pick one from '
+                     'the list, then optionally use Quick Run for a '
+                     'one-click recent-cycle run.').grid(
         row=2, column=0, sticky='w', padx=padx, pady=pady)
     ofs_chosen = ttk.Combobox(
         general_frame, width=15, textvariable=ofs_entry,
-        font=('Helvetica', 12), state='readonly',
+        font=(fontfamily, widgetfontsize), state='readonly',
     )
     ofs_chosen['values'] = choices
     ofs_chosen.grid(row=2, column=1, sticky='w', padx=padx, pady=pady)
@@ -488,39 +599,55 @@ def create_gui(parser):
     # === Time Range ==================================================
     time_frame = _section('Time Range')
     time_frame.grid(row=section_row, column=0, columnspan=4,
-                    sticky='ew', padx=10, pady=5)
+                    sticky='ew', padx=theme.section_padx, pady=theme.section_pady)
     section_row += 1
 
     # Start date, -s
-    _label(time_frame, 'Start date & hour').grid(
+    _label(time_frame, 'Start date & hour',
+           help_text='Assessment start date and hour (UTC). Must not be '
+                     'in the future.').grid(
         row=0, column=0, sticky='w', padx=padx, pady=pady)
     start_entry = DateEntry(
-        time_frame, width=16, background='darkblue',
-        foreground='white', bd=2, date_pattern='yyyy-mm-dd',
-        font=('Helvetica', 12),
+        time_frame, width=16, background=theme.datefield_bg,
+        foreground=theme.datefield_fg, bd=2, date_pattern='yyyy-mm-dd',
+        font=(fontfamily, widgetfontsize),
     )
     start_entry.grid(row=0, column=1, sticky='w', padx=padx, pady=pady)
-    s_hour_scale = tk.Scale(time_frame, from_=0, to=23,
-                            orient=tk.HORIZONTAL, length=100)
-    s_hour_scale.grid(row=0, column=2, sticky='w', padx=padx, pady=pady)
+    s_hour_var = tk.IntVar(value=0)
+    s_hour_spin = ttk.Spinbox(
+        time_frame, from_=0, to=23, wrap=True, width=4,
+        textvariable=s_hour_var, state='readonly',
+        font=(fontfamily, widgetfontsize),
+    )
+    s_hour_spin.grid(row=0, column=2, sticky='w', padx=padx, pady=pady)
+    _label(time_frame, 'h (UTC)', italic=True).grid(
+        row=0, column=3, sticky='w', padx=(0, padx), pady=pady)
 
     # End date, -e
-    _label(time_frame, 'End date & hour').grid(
+    _label(time_frame, 'End date & hour',
+           help_text='Assessment end date and hour (UTC). Must be after '
+                     'the start date.').grid(
         row=1, column=0, sticky='w', padx=padx, pady=pady)
     end_entry = DateEntry(
-        time_frame, width=16, background='darkblue',
-        foreground='white', bd=2, date_pattern='yyyy-mm-dd',
-        font=('Helvetica', 12),
+        time_frame, width=16, background=theme.datefield_bg,
+        foreground=theme.datefield_fg, bd=2, date_pattern='yyyy-mm-dd',
+        font=(fontfamily, widgetfontsize),
     )
     end_entry.grid(row=1, column=1, sticky='w', padx=padx, pady=pady)
-    e_hour_scale = tk.Scale(time_frame, from_=0, to=23,
-                            orient=tk.HORIZONTAL, length=100)
-    e_hour_scale.grid(row=1, column=2, sticky='w', padx=padx, pady=pady)
+    e_hour_var = tk.IntVar(value=0)
+    e_hour_spin = ttk.Spinbox(
+        time_frame, from_=0, to=23, wrap=True, width=4,
+        textvariable=e_hour_var, state='readonly',
+        font=(fontfamily, widgetfontsize),
+    )
+    e_hour_spin.grid(row=1, column=2, sticky='w', padx=padx, pady=pady)
+    _label(time_frame, 'h (UTC)', italic=True).grid(
+        row=1, column=3, sticky='w', padx=(0, padx), pady=pady)
 
     # === Whichcasts & Model Cycles ========================================
     wcast_frame = _section('Whichcasts & Model Cycles')
     wcast_frame.grid(row=section_row, column=0, columnspan=4,
-                     sticky='ew', padx=10, pady=5)
+                     sticky='ew', padx=theme.section_padx, pady=theme.section_pady)
     section_row += 1
 
     # Whichcasts, -ws
@@ -529,8 +656,12 @@ def create_gui(parser):
     var_forea = tk.StringVar(value='0')
     var_hind = tk.StringVar(value='0')
 
-    _label(wcast_frame, 'Whichcasts').grid(
-        row=0, column=0, sticky='w', padx=padx, pady=pady)
+    whichcast_lbl = _label(
+        wcast_frame, 'Whichcasts',
+        help_text='Which run types to assess. Nowcast and Forecast_b '
+                  'are the common defaults; Forecast_a uses a single '
+                  'model cycle; Hindcast is only available for LOOFS2.')
+    whichcast_lbl.grid(row=0, column=0, sticky='w', padx=padx, pady=pady)
     now_chk = ttk.Checkbutton(
         wcast_frame, text='Nowcast', variable=var_now,
         onvalue='nowcast', offvalue=0,
@@ -554,35 +685,44 @@ def create_gui(parser):
 
     # Model cycle, -f
     cycle_var = tk.StringVar(value=_OFS_FIRST_PLACEHOLDER)
-    _label(wcast_frame, 'Model cycle (forecast_a only)').grid(
+    _label(wcast_frame, 'Model cycle (forecast_a only)',
+           help_text='Which model cycle to assess when Forecast_a is '
+                     'selected. "Most recent cycle available" picks the '
+                     'latest cycle that should already be on NODD.').grid(
         row=2, column=0, sticky='w', padx=padx, pady=pady)
     cycle_chosen = ttk.Combobox(
         wcast_frame, width=22, textvariable=cycle_var,
-        font=('Helvetica', 12), state='readonly',
+        font=(fontfamily, widgetfontsize), state='readonly',
     )
     cycle_chosen.grid(row=2, column=1, sticky='w', padx=padx, pady=pady)
 
     # === Datums & OFS File Type ==============================================
     datum_frame = _section('Datums & OFS File Type')
     datum_frame.grid(row=section_row, column=0, columnspan=4,
-                     sticky='ew', padx=10, pady=5)
+                     sticky='ew', padx=theme.section_padx, pady=theme.section_pady)
     section_row += 1
 
     # Datum, -d
     datum_var = tk.StringVar()
     dchoices = (_DATUM_PLACEHOLDER,) + tuple(datum_list)
     datum_var.set(_DATUM_PLACEHOLDER)
-    _label(datum_frame, 'Vertical datum').grid(
+    _label(datum_frame, 'Vertical datum',
+           help_text='Vertical datum for water-level comparisons. Great '
+                     'Lakes OFSes typically use IGLD85; tidal coastal '
+                     'OFSes use MLLW.').grid(
         row=0, column=0, sticky='w', padx=padx, pady=pady)
     datum_chosen = ttk.Combobox(
-        datum_frame, width=15, textvariable=datum_var, font=('Helvetica', 12),
+        datum_frame, width=15, textvariable=datum_var, font=(fontfamily, widgetfontsize),
     )
     datum_chosen['values'] = dchoices
     datum_chosen.grid(row=0, column=1, sticky='w', padx=padx, pady=pady)
 
     # File type, -t
     filetype_var = tk.StringVar(value='stations')
-    _label(datum_frame, 'Model output file type').grid(
+    _label(datum_frame, 'Model output file type',
+           help_text='Which OFS NetCDF outputs to compare against. '
+                     '"Station" uses the model station files; "Field" '
+                     'uses the gridded model fields.').grid(
         row=1, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Radiobutton(datum_frame, text='Station', variable=filetype_var,
                     value='stations').grid(row=1, column=1, sticky='w',
@@ -594,7 +734,7 @@ def create_gui(parser):
     # === Station Providers & Variables ========================================
     sv_frame = _section('Station Providers & Variables')
     sv_frame.grid(row=section_row, column=0, columnspan=4,
-                  sticky='ew', padx=10, pady=5)
+                  sticky='ew', padx=theme.section_padx, pady=theme.section_pady)
     section_row += 1
 
     # Station providers, -so
@@ -602,8 +742,12 @@ def create_gui(parser):
     var_ndbc = tk.StringVar(value='ndbc')
     var_usgs = tk.StringVar(value='usgs')
     var_list = tk.StringVar(value='0')
-    _label(sv_frame, 'Station providers').grid(
-        row=0, column=0, sticky='w', padx=padx, pady=pady)
+    providers_lbl = _label(
+        sv_frame, 'Station providers',
+        help_text='Which observation networks to pull stations from. '
+                  '"Add from conf file" lets you supply a custom list '
+                  'in the [station_lists] section of the .conf.')
+    providers_lbl.grid(row=0, column=0, sticky='w', padx=padx, pady=pady)
     _label(sv_frame,
            'If adding stations from list, provider selection is optional',
            italic=True).grid(row=1, column=0, sticky='w',
@@ -626,8 +770,12 @@ def create_gui(parser):
     var_temp = tk.StringVar(value='water_temperature')
     var_salt = tk.StringVar(value='salinity')
     var_cu = tk.StringVar(value='currents')
-    _label(sv_frame, 'Variables').grid(
-        row=2, column=0, sticky='w', padx=padx, pady=pady)
+    variables_lbl = _label(
+        sv_frame, 'Variables',
+        help_text='Which oceanographic variables to skill-assess. '
+                  'Pick any combination; the run only processes the '
+                  'ones you check.')
+    variables_lbl.grid(row=2, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Checkbutton(sv_frame, text='Water level', variable=var_wl,
                     onvalue='water_level', offvalue=0).grid(
         row=2, column=1, sticky='w', padx=padx, pady=(pady, 2))
@@ -644,13 +792,17 @@ def create_gui(parser):
     # === Advanced ====================================================
     adv_frame = _section('Advanced')
     adv_frame.grid(row=section_row, column=0, columnspan=4,
-                   sticky='ew', padx=10, pady=5)
+                   sticky='ew', padx=theme.section_padx, pady=theme.section_pady)
     section_row += 1
 
     # Forecast horizon skill, -hs
     horizon_var = tk.BooleanVar(value=False)
-    _label(adv_frame, 'Assess all forecast horizons?').grid(
-        row=0, column=0, sticky='w', padx=padx, pady=pady)
+    horizon_lbl = _label(
+        adv_frame, 'Assess all forecast horizons?',
+        help_text='If Yes, assesses every forecast horizon between '
+                  'start and end dates. Only works with Station file '
+                  'type.')
+    horizon_lbl.grid(row=0, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Radiobutton(adv_frame, text='No (default)', variable=horizon_var,
                     value=False).grid(row=0, column=1, sticky='w',
                                       padx=padx, pady=pady)
@@ -660,8 +812,12 @@ def create_gui(parser):
 
     # Currents bins CSV, -cb
     cb_var = tk.StringVar()
-    _label(adv_frame, 'Currents bins CSV (Optional)').grid(
-        row=1, column=0, sticky='w', padx=padx, pady=pady)
+    _label(adv_frame, 'Currents bins CSV (Optional)',
+           help_text='Optional CSV that pins which CO-OPS ADCP bins are '
+                     'processed and overrides their depth/orientation/'
+                     'name. Columns: station_id,bin,depth,orientation,'
+                     'name.').grid(row=1, column=0, sticky='w',
+                                   padx=padx, pady=pady)
     ttk.Button(adv_frame, text='Browse...', command=browse_csv_file,
                style='TButton').grid(row=1, column=1, sticky='w',
                                      padx=padx, pady=pady)
@@ -672,7 +828,11 @@ def create_gui(parser):
     # True means the pre-check IS performed (matches the
     # action='store_false' semantics of -df in create_1dplot.py).
     enable_file_check_var = tk.BooleanVar(value=True)
-    _label(adv_frame, 'Pre-check for model output files?').grid(
+    _label(adv_frame, 'Pre-check for model output files?',
+           help_text='If Yes (default), the run verifies model NetCDFs '
+                     'exist before processing and exits early if not. '
+                     'Disable only when supplying custom .prd/.obs '
+                     'files without corresponding model outputs.').grid(
         row=2, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Radiobutton(adv_frame, text='No (disable check)',
                     variable=enable_file_check_var, value=False).grid(
