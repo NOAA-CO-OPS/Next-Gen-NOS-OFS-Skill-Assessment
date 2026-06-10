@@ -6,6 +6,7 @@
 
 
 import copy
+import gc
 import logging
 import logging.config
 import os
@@ -56,11 +57,29 @@ def _get_valid_cached_model(prop):
 
 
 def _set_cached_model(prop, dataset):
-    """Stamp the dataset with the current key when caching."""
+    """Stamp the dataset with the current key when caching.
+
+    If a different dataset was previously cached on this prop (e.g. the
+    previous whichcast's model on a multi-whichcast call), close it and
+    drop the local reference so its file handles and any eagerly-loaded
+    coord buffers are released before the new dataset accumulates on top
+    of it. Without this, a second whichcast loaded into the same Python
+    process holds both datasets' state simultaneously across the cache
+    swap, which on a memory-contested host (shared 64 GB box, etc.)
+    is enough to trigger the kernel OOM killer mid-extraction.
+    """
     if dataset is None:
         return
+    old = getattr(prop, '_cached_model', None)
     prop._cached_model = dataset
     prop._cached_model_key = _cache_key(prop)
+    if old is not None and old is not dataset:
+        try:
+            old.close()
+        except Exception:
+            pass
+        del old
+        gc.collect()
 
 
 def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
@@ -460,7 +479,10 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])
     }
 
-    parallel_config = get_parallel_config(logger)
+    parallel_config = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     max_workers = parallel_config['skill_workers']
 
     def _append_entry(target_dict, entry):
@@ -785,7 +807,10 @@ def get_skill(prop, logger):
                     break
         return cached_model
 
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
 
     def _skill_for_variable(variable, p):
         """Process skill assessment for a single variable."""

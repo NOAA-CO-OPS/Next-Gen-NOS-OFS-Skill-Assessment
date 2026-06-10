@@ -187,7 +187,12 @@ parallel_2d_interp=False
 # False = just interactive plots
 static_plots=False
 
-# Use S3 fallback for missing model files?
-# True = automatically read from NODD S3 bucket if local files are missing
-# False = exit with error if local files are missing (original behavior)
+# NODD S3 bucket usage for model files. Three modes:
+#   True  = prefer local model files; read from the NODD S3 bucket only
+#           when local files are missing (recommended default)
+#   False = local files only; exit with error if local files are missing
+#           (original behavior)
+#   force = always read model files from the NODD S3 bucket, even when
+#           local files are present (useful for validating against the
+#           canonical NODD copy)
 use_s3_fallback=True

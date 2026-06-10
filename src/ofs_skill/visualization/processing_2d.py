@@ -181,7 +181,10 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
 
     # Check parallel config for variable interpolation
     from ofs_skill.obs_retrieval.utils import get_parallel_config
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop1, 'config_file', None),
+    )
     use_parallel_interp = parallel_cfg.get('parallel_2d_interp', False)
     if use_parallel_interp:
         logger.info('Parallel 2D variable interpolation is ENABLED')

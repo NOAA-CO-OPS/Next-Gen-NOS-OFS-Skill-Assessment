@@ -190,19 +190,26 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     time_name = None
     if prop.model_source == 'roms':
         time_name = 'ocean_time'
+        # ``dstart`` is the per-file model-initialization timestamp in
+        # days; it differs across forecast cycles. With
+        # ``data_vars='minimal'`` xarray would refuse to merge files
+        # whose non-time scalars conflict, so it gets dropped here.
+        # (Under the legacy ``data_vars='all'`` it was silently
+        # concatenated along time and never read by anything.)
         drop_variables = [
             'Akk_bak', 'Akp_bak', 'Akt_bak', 'Akv_bak', 'Cs_r', 'Cs_w',
-            'dtfast', 'el', 'f', 'Falpha', 'Fbeta', 'Fgamma', 'FSobc_in',
-            'FSobc_out', 'gamma2', 'grid', 'hc', 'lat_psi', 'lon_psi',
-            'Lm2CLM', 'Lm3CLM', 'LnudgeM2CLM', 'LnudgeM3CLM', 'LnudgeTCLM',
-            'LsshCLM', 'LtracerCLM', 'LtracerSrc', 'LuvSrc', 'LwSrc', 'M2nudg',
-            'M2obc_in', 'M2obc_out', 'M3nudg', 'M3obc_in', 'M3obc_out',
-            'mask_psi', 'mask_u', 'mask_v', 'ndefHIS', 'ndtfast', 'nHIS',
-            'nRST', 'nSTA', 'ntimes', 'Pair', 'pm', 'pn', 'rdrg', 'rdrg2',
-            'rho0', 's_w', 'spherical', 'Tcline', 'theta_b', 'theta_s',
-            'Tnudg', 'Tobc_in', 'Tobc_out', 'Uwind', 'Vwind', 'Vstretching',
-            'Vtransform', 'w', 'wetdry_mask_psi', 'wetdry_mask_rho',
-            'wetdry_mask_u', 'wetdry_mask_v', 'xl', 'Znudg', 'Zob', 'Zos',
+            'dstart', 'dtfast', 'el', 'f', 'Falpha', 'Fbeta', 'Fgamma',
+            'FSobc_in', 'FSobc_out', 'gamma2', 'grid', 'hc', 'lat_psi',
+            'lon_psi', 'Lm2CLM', 'Lm3CLM', 'LnudgeM2CLM', 'LnudgeM3CLM',
+            'LnudgeTCLM', 'LsshCLM', 'LtracerCLM', 'LtracerSrc', 'LuvSrc',
+            'LwSrc', 'M2nudg', 'M2obc_in', 'M2obc_out', 'M3nudg',
+            'M3obc_in', 'M3obc_out', 'mask_psi', 'mask_u', 'mask_v',
+            'ndefHIS', 'ndtfast', 'nHIS', 'nRST', 'nSTA', 'ntimes',
+            'Pair', 'pm', 'pn', 'rdrg', 'rdrg2', 'rho0', 's_w', 'spherical',
+            'Tcline', 'theta_b', 'theta_s', 'Tnudg', 'Tobc_in', 'Tobc_out',
+            'Uwind', 'Vwind', 'Vstretching', 'Vtransform', 'w',
+            'wetdry_mask_psi', 'wetdry_mask_rho', 'wetdry_mask_u',
+            'wetdry_mask_v', 'xl', 'Znudg', 'Zob', 'Zos',
         ]
     elif prop.model_source == 'fvcom':
         time_name = 'time'
@@ -390,6 +397,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                         'engine': engine,
                         'preprocess': preprocess_fn,
                         'concat_dim': time_name,
+                        'data_vars': 'minimal',
                         'decode_times': True,
                         'chunks': 'auto',  # Enables lazy loading with Dask
                     },
@@ -405,12 +413,17 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 chunk_spec = {time_name: 1}
             else:
                 chunk_spec = 'auto'
-            # Note it might be possible to add
-            #     'data_vars': 'minimal'
-            # to the xarray_kwargs to avoid expanding spatial/mesh variables
-            # in the time dimension, which can result in very large arrays.
-            # But this messes up the indexing.py process, so we will leave
-            # it out for now.
+            # ``data_vars='minimal'`` stops xarray from replicating static
+            # mesh vars (lon, lat, lonc, latc, h, siglay, ...) along the
+            # concat time dim during multi-file open. On long windows
+            # this saves the per-whichcast cost of materializing static
+            # coords across hundreds of backing files and frees the
+            # downstream resample helper from having to walk those vars.
+            # ``indexing.py`` was previously coupled to the legacy
+            # ``(time, station)`` replicated shape via ad-hoc ``[0]`` /
+            # ``[1]`` time slicing; the ``_static_coord_1d`` helper in
+            # indexing.py now normalises both shapes so the call sites
+            # are happy under either mode.
             source = intake.open_netcdf(
                 urlpath=urlpaths,
                 xarray_kwargs={
@@ -418,6 +431,7 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                     'engine': engine,
                     'preprocess': preprocess_fn,
                     'concat_dim': time_name,
+                    'data_vars': 'minimal',
                     'decode_times': True,
                     'drop_variables': drop_variables,
                     'chunks': chunk_spec,
@@ -446,6 +460,14 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ds = ds.drop_duplicates(dim=time_name, keep='last')
     elif prop.ofsfiletype == 'stations' and prop.whichcast == 'forecast_a':
         ds = ds.drop_duplicates(dim=time_name, keep='first')
+
+    # forecast_b stacks overlapping cycles in filename order, so the time
+    # axis can be non-monotonic after dedup. Downstream resample() requires
+    # a monotonic index.
+    time_vals = ds[time_name].values
+    if time_vals.size > 1 and not np.all(np.diff(time_vals) > np.timedelta64(0)):
+        logger.info('Sorting non-monotonic time axis before downstream use.')
+        ds = ds.sortby(time_name)
 
     logger.info('Lazy loading complete applying adjustments ...')
 
@@ -503,14 +525,19 @@ def fix_roms_uv(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
     logger.info('Applying adjustments for ROMS currents ...')
 
     if prop.ofsfiletype == 'fields':
-        mask_rho = None
-        if len(data_set['ocean_time']) > 1:
-            mask_rho = np.array(data_set.variables['mask_rho'][:][0])
+        # mask_rho is a static ROMS grid var. Under the legacy
+        # ``data_vars='all'`` intake it was replicated to
+        # (ocean_time, eta_rho, xi_rho); under 'minimal' it stays
+        # (eta_rho, xi_rho). Strip any leading time dim defensively.
+        mask_rho_var = data_set.variables['mask_rho']
+        mask_rho_arr = np.array(mask_rho_var)
+        dims = getattr(mask_rho_var, 'dims', ())
+        if dims and dims[0] == 'ocean_time':
+            mask_rho_arr = mask_rho_arr[0]
+        mask_rho = mask_rho_arr
+        del mask_rho_arr
 
-        elif len(data_set['ocean_time']) == 1:
-            mask_rho = np.array(data_set.variables['mask_rho'][:])
-
-        assert mask_rho is not None  # narrowed by the branches above
+        assert mask_rho is not None  # narrowed by the assignment above
         # Compute slices for interior (exclude boundaries)
         eta_slice = slice(1, mask_rho.shape[-2] - 1)
         xi_slice = slice(1, mask_rho.shape[-1] - 1)
@@ -638,9 +665,28 @@ def fix_fvcom(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
     INFO:root:Applying adjustments for FVCOM ...
     """
     logger.info('Applying adjustments for FVCOM ...')
+
+    def _drop_leading_time(da_or_arr):
+        """Return the first time-slice if a leading time dim is present.
+
+        Under the legacy ``data_vars='all'`` intake, static mesh vars
+        like ``h`` and ``nv`` were replicated to ``(time, ...)`` during
+        nested concat and the old code stripped the time dim with
+        ``[0, ...]``. Under the current ``data_vars='minimal'`` intake
+        they stay at their native rank. This helper accepts either
+        shape and returns the non-time-replicated form.
+        """
+        arr = np.asarray(da_or_arr.values if hasattr(da_or_arr, 'values')
+                         else da_or_arr)
+        dims = getattr(da_or_arr, 'dims', ())
+        if dims and dims[0] in ('time', 'ocean_time'):
+            return arr[0]
+        return arr
+
     if prop.ofsfiletype == 'stations':
 
-        [_, _, deplay, _] = calc_sigma(data_set.h[0, :], data_set.siglev)
+        h_1d = _drop_leading_time(data_set.h)
+        [_, _, deplay, _] = calc_sigma(h_1d, data_set.siglev)
 
         # We now can assign the z coordinate for the data.
         z_cdt = data_set.siglay * data_set.h
@@ -649,14 +695,17 @@ def fix_fvcom(prop: Any, data_set: xr.Dataset, logger: Logger) -> xr.Dataset:
 
     elif prop.ofsfiletype == 'fields':
 
-        [_, _, deplay, _] = calc_sigma(data_set.h[0, :], data_set.siglev)
+        h_1d = _drop_leading_time(data_set.h)
+        [_, _, deplay, _] = calc_sigma(h_1d, data_set.siglev)
 
         # We now can assign the z coordinate for the data.
         data_set['z'] = (['node', 'depth'], deplay)
         data_set['z'].attrs = {
             'long_name': 'nodal z-coordinate', 'units': 'meters'}
-        # We now can assign the zc coordinate for the data.
-        nvs = np.array(data_set.nv)[0, :, :].T - 1
+        # We now can assign the zc coordinate for the data. ``nv`` is the
+        # element-connectivity mesh — static, so it's been replicated
+        # along time under ``data_vars='all'`` and not under 'minimal'.
+        nvs = _drop_leading_time(data_set.nv).T - 1
         zc_list: list[Any] = []
         for tri in nvs:
             zc_list.append(np.mean(deplay.T[:, tri], axis=1))
@@ -1034,6 +1083,7 @@ def remove_extra_stations(engine: str,
                 ds = xr.combine_nested(
                     [ds, tempds],
                     concat_dim=time_name,
+                    data_vars='minimal',
                 )
             except ValueError as e_x:
                 logger.error(f'Station dims are inconsistent! {e_x}')

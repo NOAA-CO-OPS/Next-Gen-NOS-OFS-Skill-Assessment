@@ -45,6 +45,22 @@ from ofs_skill.obs_retrieval import utils, vdatum_resilient
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 
 
+def _node_value(model: xr.Dataset, var_name: str, node: int) -> float:
+    """Read a single station's value for a static model coord var.
+
+    Handles both the legacy ``data_vars='all'`` shape (where the var was
+    replicated to ``(time, station)`` during multi-file concat) and the
+    current ``data_vars='minimal'`` shape (where it stays ``(station,)``).
+    Static coords are time-invariant by construction, so reading the
+    first time row is equivalent to reading the only row.
+    """
+    da = model[var_name]
+    dims = getattr(da, 'dims', ())
+    if dims and dims[0] in ('time', 'ocean_time'):
+        return float(np.asarray(da[0, node]))
+    return float(np.asarray(da[node]))
+
+
 def is_number(n: Any) -> bool:
     """
     Check if a value can be converted to a float.
@@ -322,8 +338,10 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
             logger.warning('vdatum file not found on S3 bucket, trying '
                            'local fallback...')
             try:
-                dir_params = utils.Utils().read_config_section('directories',
-                                                               logger)
+                _conf = getattr(prop, 'config_file', None)
+                dir_params = utils.Utils(
+                    config_file=_conf
+                ).read_config_section('directories', logger)
                 local_vdatum = dir_params.get('local_vdatum')
                 if not local_vdatum:
                     logger.warning(
@@ -514,8 +532,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         try:
             if prop.model_source == 'roms':
                 datum_offset = float(datum_field[
-                    int(np.array(model['Jpos'][0, node])),
-                    int(np.array(model['Ipos'][0, node]))]
+                    int(_node_value(model, 'Jpos', node)),
+                    int(_node_value(model, 'Ipos', node))]
                     )
             elif prop.model_source == 'fvcom':
                 # Gotta search with lat/lon here...
@@ -525,8 +543,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 if 'necofs' in prop.ofs:
                     lon_adjustment = 0
                 target = np.around(
-                    np.array([[model['lon'][0, node] - lon_adjustment],
-                              [model['lat'][0, node]]]), 3)
+                    np.array([[_node_value(model, 'lon', node) - lon_adjustment],
+                              [_node_value(model, 'lat', node)]]), 3)
                 moddistances = np.linalg.norm(vlonlat - target,
                                               axis=0)
                 datum_offset = float(datum_field[int(
@@ -540,12 +558,12 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     nativedatum = 'LWD'
                 dummyval = 10.0
                 # account for the mistake in stofs-3d-atl files
-                if prop.ofs == 'stofs_3d_atl' and model['x'][0,node]> 0:
+                if prop.ofs == 'stofs_3d_atl' and _node_value(model, 'x', node) > 0:
                     _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['x'][0,node],
-                                        model['y'][0,node],
+                                        _node_value(model, 'x', node),
+                                        _node_value(model, 'y', node),
                                         dummyval, #use dummy value
                                         epoch=None,
                                         logger=logger,
@@ -554,8 +572,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node]-360,
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node) - 360,
                                         dummyval, #use dummy value
                                         epoch=None,
                                         logger=logger,
@@ -570,8 +588,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                         _,_,z = vdatum_resilient.convert(
                                             nativedatum,
                                             prop.datum.lower(),
-                                            model['lat'][0,node],
-                                            model['lon'][0,node],
+                                            _node_value(model, 'lat', node),
+                                            _node_value(model, 'lon', node),
                                             dummyval, #use dummy value
                                             epoch=None,
                                             logger=logger,
@@ -580,8 +598,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node],
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node),
                                         dummyval, #use dummy value
                                         epoch=None,
                                         logger=logger,
@@ -595,8 +613,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node],
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node),
                                         dummyval,
                                         epoch=None,
                                         logger=logger,
@@ -647,8 +665,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     _,_,z = vdatum_resilient.convert(
                         nativedatum,
                         prop.datum.lower(),
-                        model['y'][0,node],
-                        model['x'][0,node],
+                        _node_value(model, 'y', node),
+                        _node_value(model, 'x', node),
                         dummyval,
                         epoch=None,
                         logger=logger,

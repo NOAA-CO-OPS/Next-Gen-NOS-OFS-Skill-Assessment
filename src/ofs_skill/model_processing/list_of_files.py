@@ -494,17 +494,24 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
     >>> print(dir_list)
     ['../cbofs/netcdf/2025/01/01', '../cbofs/netcdf/2025/01/02']
     """
-    # Check if S3 fallback is enabled
+    # Parse use_s3_fallback (tri-valued: True / False / force)
     _conf = getattr(prop, 'config_file', None)
     try:
         conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
-        use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
+        s3_setting = conf_settings.get('use_s3_fallback', 'False').strip().lower()
+        force_nodd_streaming = s3_setting in ('force', 'forced')
+        use_s3_fallback = force_nodd_streaming or s3_setting in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False
+        force_nodd_streaming = False
+
+    if force_nodd_streaming:
+        logger.info('use_s3_fallback=force: skipping local model dir checks; NODD S3 URLs will be used for all model files.')
 
     # Deal with LOOFS2 -- switch off
     if prop.ofs == 'loofs2' and prop.whichcast == 'hindcast':
         use_s3_fallback = False
+        force_nodd_streaming = False
 
     dir_list = []
     if prop.whichcast != 'forecast_a':
@@ -540,7 +547,11 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
                 raise SystemExit(-1)
 
         # Switch to backup directory if files are not in primary directory
-        if not os.path.exists(model_dir) or not os.listdir(model_dir):
+        # (skip entirely if forcing NODD streaming -- model_dir is used only
+        # as an S3-URL template downstream)
+        if force_nodd_streaming:
+            pass
+        elif not os.path.exists(model_dir) or not os.listdir(model_dir):
             logger.info(
                 'Model data path ' + model_dir + ' not found, or is empty. ')
 
@@ -633,22 +644,34 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
     >>> print(len(file_list))
     48
     """
-    # Check if S3 fallback is enabled
+    # Parse use_s3_fallback (tri-valued: True / False / force)
     _conf = getattr(prop, 'config_file', None)
     try:
         conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
-        use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
+        s3_setting = conf_settings.get('use_s3_fallback', 'False').strip().lower()
+        force_nodd_streaming = s3_setting in ('force', 'forced')
+        use_s3_fallback = force_nodd_streaming or s3_setting in ('true', '1', 'yes')
     except Exception:
         use_s3_fallback = False
+        force_nodd_streaming = False
 
     # Deal with LOOFS2 -- switch off if hindcast
     if prop.ofs == 'loofs2' and prop.whichcast == 'hindcast':
         use_s3_fallback = False
+        force_nodd_streaming = False
 
     list_files = []
     try:
         dir_list_len = len(dir_list)
         for i_index in range(0, dir_list_len):
+
+            # If forcing NODD streaming, skip local enumeration entirely and
+            # construct expected (NODD) file names for this directory.
+            if force_nodd_streaming:
+                logger.info(f'use_s3_fallback=force: constructing expected NODD file names for {dir_list[i_index]}')
+                files = construct_expected_files(prop, dir_list[i_index], logger)
+                list_files.append(files)
+                continue  # Skip to next directory
 
             # Check if directory exists; if not and S3 fallback enabled, construct expected file names
             if not os.path.exists(dir_list[i_index]):
@@ -1240,26 +1263,34 @@ def list_of_files(prop: Any, dir_list: list[str], logger: Logger) -> list[str]:
 
     # Now check individual files and use S3 fallback if enabled
     if use_s3_fallback:
-        logger.info('S3 fallback is enabled - checking for missing local files...')
+        if force_nodd_streaming:
+            logger.info('use_s3_fallback=force - converting all model files to NODD S3 URLs...')
+        else:
+            logger.info('S3 fallback is enabled - checking for missing local files...')
         final_list: list[str] = []
         missing_count = 0
+        s3_count = 0
         for file_path in flat_files:
             # Normalize path for checking
             normalized_path = file_path.replace('//', '/')
-            if os.path.isfile(normalized_path):
+            if not force_nodd_streaming and os.path.isfile(normalized_path):
                 # File exists locally, use it
                 final_list.append(file_path)
             else:
-                # File doesn't exist locally, construct S3 URL
+                # File doesn't exist locally (or NODD is forced), construct S3 URL
                 s3_url = construct_s3_url(file_path, prop, logger)
                 if s3_url:
-                    logger.info(f'Local file not found, using S3: {os.path.basename(file_path)}')
+                    if not force_nodd_streaming:
+                        logger.info(f'Local file not found, using S3: {os.path.basename(file_path)}')
+                        missing_count += 1
+                    s3_count += 1
                     final_list.append(s3_url)
-                    missing_count += 1
                 else:
                     logger.error(f'Could not construct S3 URL for: {file_path}')
 
-        if missing_count > 0:
+        if force_nodd_streaming:
+            logger.info(f'Forced NODD streaming: using S3 URLs for {s3_count} model files')
+        elif missing_count > 0:
             logger.info(f'Using S3 URLs for {missing_count} missing local files')
         else:
             logger.info('All model files found locally, or are unavailable '

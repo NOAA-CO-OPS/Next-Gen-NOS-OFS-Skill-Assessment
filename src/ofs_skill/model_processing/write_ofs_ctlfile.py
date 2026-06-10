@@ -38,6 +38,12 @@ import ofs_skill.model_processing.indexing as indexing
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 
+# Public alias for the shape-normalising static-coord helper. Keeps the
+# ctl writer source 1:1 with the indexing layer (both call sites need the
+# same normalisation under ``data_vars='minimal'``) without spraying
+# ``# pylint: disable=protected-access`` over every reference.
+_static_coord_1d = indexing._static_coord_1d  # pylint: disable=protected-access
+
 
 def _model_bathymetry_at_node(
     node_idx: Any, model: Any, model_source: str,
@@ -89,9 +95,23 @@ def _model_bathymetry_at_node(
             for key in ('depth', 'h', 'zcoords'):
                 if key not in model:
                     continue
-                arr = np.asarray(model[key])
                 if key == 'zcoords':
-                    return float(abs(arr[0, int(node_idx), -1]))
+                    # Static depth axis (node, depth) under
+                    # ``data_vars='minimal'``; replicated to
+                    # ``(time, node, depth)`` under the legacy
+                    # ``data_vars='all'``. The helper drops any
+                    # leading time dim. Assert 2-D so a future SCHISM
+                    # layout with depth-first dims fails loudly
+                    # instead of silently returning the wrong axis.
+                    z_arr = _static_coord_1d(model, 'zcoords')
+                    if z_arr.ndim != 2:
+                        logger.debug(
+                            'Bathymetry lookup: SCHISM zcoords is %d-D '
+                            '(expected 2-D (node, depth)); skipping',
+                            z_arr.ndim)
+                        continue
+                    return float(abs(z_arr[int(node_idx), -1]))
+                arr = np.asarray(model[key])
                 if arr.ndim != 1:
                     logger.debug(
                         'Bathymetry lookup: SCHISM key %r is %d-D '
@@ -489,31 +509,49 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     lon_wrap = 360
                     if 'necofs' in prop.ofs:
                         lon_wrap = 0
+                    # Pre-fetch 1-D static coords ONCE per write — they
+                    # are time-invariant, and the helper normalises both
+                    # ``data_vars='minimal'`` (native 1-D) and the legacy
+                    # ``data_vars='all'`` (replicated to (time, node))
+                    # layouts. Avoids per-station ``.compute()`` on a
+                    # dask-backed DataArray.
+                    lat_1d = _static_coord_1d(model, 'lat')
+                    lon_1d = _static_coord_1d(model, 'lon')
+                    # Empty-array sentinels keep mypy happy — these are
+                    # only indexed in the matching ``fields`` + ``cu``
+                    # branch which also gates their initialisation.
+                    latc_1d: np.ndarray = np.empty(0)
+                    lonc_1d: np.ndarray = np.empty(0)
+                    if (prop.ofsfiletype == 'fields'
+                            and name_var == 'cu'):
+                        latc_1d = _static_coord_1d(model, 'latc')
+                        lonc_1d = _static_coord_1d(model, 'lonc')
                     for i in range(0, length):
                         if not np.isnan(list_of_nearest_node[i]):
+                            node_i = int(list_of_nearest_node[i])
                             if prop.ofsfiletype == 'fields':
                                 if name_var == 'cu':
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
-                                        f"{model['latc'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lonc'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
+                                        f'{float(latc_1d[node_i]):.3f}  '
+                                        f'{float(lonc_1d[node_i]) - lon_wrap:.3f}  '
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                                 else:
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
-                                        f"{model['lat'][list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lon'][list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
+                                        f'{float(lat_1d[node_i]):.3f}  '
+                                        f'{float(lon_1d[node_i]) - lon_wrap:.3f}  '
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                             else:
                                 model_ctl_file.append(
                                     f'{list_of_nearest_node[i]} '
                                     f'{list_of_nearest_layer[i]} '
-                                    f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f"{model['lon'][0,list_of_nearest_node[i]].data.compute() - lon_wrap:.3f}  "
+                                    f'{float(lat_1d[node_i]):.3f}  '
+                                    f'{float(lon_1d[node_i]) - lon_wrap:.3f}  '
                                     f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                 )
                         else:
@@ -535,6 +573,27 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                         'obs station %s.', station_id[i])
 
                 elif prop.model_source=='schism':
+                    # Pre-fetch 1-D station coords for stations-mode
+                    # writes. Under ``data_vars='minimal'`` lon/lat
+                    # (and stofs-3d's x/y) come back as ``(station,)``;
+                    # under the legacy ``data_vars='all'`` they were
+                    # replicated to ``(time, station)`` and the old
+                    # code took ``[0, idx]`` to recover one row.
+                    # Use empty arrays as sentinels so mypy keeps the
+                    # ndarray type — these are only indexed inside the
+                    # matching ``'stofs' in/not-in prop.ofs`` branches
+                    # which also gate the initialisation below.
+                    lat_1d_s: np.ndarray = np.empty(0)
+                    lon_1d_s: np.ndarray = np.empty(0)
+                    x_1d_s: np.ndarray = np.empty(0)
+                    y_1d_s: np.ndarray = np.empty(0)
+                    if prop.ofsfiletype == 'stations':
+                        if 'stofs' not in prop.ofs and 'lat' in model:
+                            lat_1d_s = _static_coord_1d(model, 'lat')
+                            lon_1d_s = _static_coord_1d(model, 'lon')
+                        if 'stofs' in prop.ofs and 'x' in model:
+                            x_1d_s = _static_coord_1d(model, 'x')
+                            y_1d_s = _static_coord_1d(model, 'y')
                     for i in range(length):
                         if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
@@ -592,38 +651,39 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                             f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                         )
                             elif prop.ofsfiletype == 'stations':
+                                node_i = int(list_of_nearest_node[i])
                                 if 'stofs' not in prop.ofs:
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{list_of_nearest_layer[i]} '
-                                        f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['lon'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f'{float(lat_1d_s[node_i]):.3f}  '
+                                        f'{float(lon_1d_s[node_i]):.3f}  '
                                         f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
                                     )
                                 # A mistake in post-processing of stofs-3d-atl
                                 elif prop.ofs == 'stofs_3d_atl' and \
-                                    model['x'][0,list_of_nearest_node[i]].data.compute()>0 :
+                                    float(x_1d_s[node_i]) > 0:
                                     # For stations type, depth layer is not used (set to 0)
                                     layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
                                     depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{layer} '
-                                        f"{model['x'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f'{float(x_1d_s[node_i]):.3f}  '
+                                        f'{float(y_1d_s[node_i]):.3f}  '
                                         f'{station_id[i]}  {depth:.1f}\n'
                                     )
 
                                 elif prop.ofs == 'stofs_3d_atl' and \
-                                    model['x'][0,list_of_nearest_node[i]].data.compute()<0 :
+                                    float(x_1d_s[node_i]) < 0:
                                     # For stations type, depth layer is not used (set to 0)
                                     layer = list_of_nearest_layer[i] if len(list_of_nearest_layer) > 0 else 0
                                     depth = list_of_depths[i] if len(list_of_depths) > 0 else 0.0
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{layer} '
-                                        f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['x'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f'{float(y_1d_s[node_i]):.3f}  '
+                                        f'{float(x_1d_s[node_i]):.3f}  '
                                         f'{station_id[i]}  {depth:.1f}\n'
                                     )
                                 elif prop.ofs == 'stofs_3d_pac':
@@ -633,8 +693,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                                     model_ctl_file.append(
                                         f'{list_of_nearest_node[i]} '
                                         f'{layer} '
-                                        f"{model['y'][0,list_of_nearest_node[i]].data.compute():.3f}  "
-                                        f"{model['x'][0,list_of_nearest_node[i]].data.compute() - 360:.3f}  "
+                                        f'{float(y_1d_s[node_i]):.3f}  '
+                                        f'{float(x_1d_s[node_i]) - 360:.3f}  '
                                         f'{station_id[i]}  {depth:.1f}\n'
                                     )
                         else:
@@ -643,14 +703,17 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
 
                 elif prop.model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
+                        x_1d_a = _static_coord_1d(model, 'x')
+                        y_1d_a = _static_coord_1d(model, 'y')
                         for i in range(length):
                             if ~np.isnan(list_of_nearest_node[i]):
                                 # Note the 0 and 0.0 values because STOFS-2D has no layers/depths.
+                                node_i = int(list_of_nearest_node[i])
                                 model_ctl_file.append(
                                     f'{list_of_nearest_node[i]} '
                                     f'0 '
-                                    f"{model['y'][0, list_of_nearest_node[i]].data.compute():.3f}  "
-                                    f"{model['x'][0, list_of_nearest_node[i]].data.compute():.3f}  "
+                                    f'{float(y_1d_a[node_i]):.3f}  '
+                                    f'{float(x_1d_a[node_i]):.3f}  '
                                     f'{station_id[i]}  0.0\n'
                                 )
                             else:

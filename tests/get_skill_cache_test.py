@@ -116,3 +116,78 @@ def test_round_trip_after_invalidation_and_reset(props):
     new_ds = _sentinel('forecast_b-ds')
     _set_cached_model(props, new_ds)
     assert _get_valid_cached_model(props) is new_ds
+
+
+class _ClosableDataset:
+    """Stand-in xarray.Dataset that records when close() is called.
+
+    Allows the close-on-replace behaviour to be observed without
+    pulling xarray into the test fixture.
+    """
+
+    def __init__(self, tag):
+        self.tag = tag
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def test_set_cached_model_closes_previous_dataset_on_replace(props):
+    """When a *different* dataset is cached over an existing one, the
+    previous dataset's .close() should fire so its file handles release
+    before the new one accumulates in memory. This is the load-bearing
+    fix for OOM kills on shared hosts during multi-whichcast runs."""
+    old_ds = _ClosableDataset('nowcast-ds')
+    _set_cached_model(props, old_ds)
+    props.whichcast = 'forecast_b'
+    new_ds = _ClosableDataset('forecast_b-ds')
+
+    _set_cached_model(props, new_ds)
+
+    assert old_ds.closed is True, \
+        'previous dataset should be closed when replaced'
+    assert new_ds.closed is False, \
+        'new dataset must not be closed by the very call that caches it'
+    # The new one is the active cache entry.
+    assert _get_valid_cached_model(props) is new_ds
+
+
+def test_set_cached_model_does_not_close_same_dataset_replaced(props):
+    """If get_node_ofs returns the same cached object we passed in,
+    _set_cached_model shouldn't close it underneath the caller."""
+    ds = _ClosableDataset('shared-ds')
+    _set_cached_model(props, ds)
+    _set_cached_model(props, ds)  # re-cache same object
+    assert ds.closed is False
+
+
+def test_set_cached_model_swallows_close_exception(props):
+    """If .close() raises (already-closed dataset, busted file handle),
+    the cache replace must still succeed."""
+
+    class _BrokenClose:
+        def __init__(self):
+            self.close_called = False
+
+        def close(self):
+            self.close_called = True
+            raise RuntimeError('simulated close failure')
+
+    old = _BrokenClose()
+    _set_cached_model(props, old)
+    new_ds = _ClosableDataset('new')
+
+    # Must not raise.
+    _set_cached_model(props, new_ds)
+
+    assert old.close_called is True
+    assert _get_valid_cached_model(props) is new_ds
+
+
+def test_set_cached_model_no_close_when_no_prior_cache(props):
+    """First-time cache: nothing to close, no exception."""
+    ds = _ClosableDataset('first')
+    _set_cached_model(props, ds)  # Must not raise.
+    assert ds.closed is False
+    assert _get_valid_cached_model(props) is ds
