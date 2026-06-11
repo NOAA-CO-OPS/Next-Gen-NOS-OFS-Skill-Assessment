@@ -517,8 +517,8 @@ def create_gui(parser):
                             orient=tk.HORIZONTAL, length=100)
     e_hour_scale.grid(row=1, column=2, sticky='w', padx=padx, pady=pady)
 
-    # === Whichcast & Forecast ========================================
-    wcast_frame = _section('Whichcast & Forecast')
+    # === Whichcasts & Model Cycles ========================================
+    wcast_frame = _section('Whichcasts & Model Cycles')
     wcast_frame.grid(row=section_row, column=0, columnspan=4,
                      sticky='ew', padx=10, pady=5)
     section_row += 1
@@ -562,8 +562,8 @@ def create_gui(parser):
     )
     cycle_chosen.grid(row=2, column=1, sticky='w', padx=padx, pady=pady)
 
-    # === Datum & Output ==============================================
-    datum_frame = _section('Datum & Output')
+    # === Datums & OFS File Type ==============================================
+    datum_frame = _section('Datums & OFS File Type')
     datum_frame.grid(row=section_row, column=0, columnspan=4,
                      sticky='ew', padx=10, pady=5)
     section_row += 1
@@ -591,8 +591,8 @@ def create_gui(parser):
                     value='fields').grid(row=1, column=2, sticky='w',
                                          padx=padx, pady=pady)
 
-    # === Stations & Variables ========================================
-    sv_frame = _section('Stations & Variables')
+    # === Station Providers & Variables ========================================
+    sv_frame = _section('Station Providers & Variables')
     sv_frame.grid(row=section_row, column=0, columnspan=4,
                   sticky='ew', padx=10, pady=5)
     section_row += 1
