@@ -192,8 +192,8 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
         shared_xaxes=True,
         vertical_spacing=0.08,
         subplot_titles=(
-            f'RMSE per station (target {x1})',
-            'Central frequency per station (≥ 90% pass)',
+            f'RMSE (target {x1})',
+            'Central frequency (≥ 90% pass)',
         ),
     )
     for annot in fig['layout']['annotations']:
