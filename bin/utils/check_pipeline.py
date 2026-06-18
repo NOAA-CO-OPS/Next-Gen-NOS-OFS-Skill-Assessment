@@ -1,7 +1,7 @@
 """OFS Data Processing Pipeline Tracking and Visualization Utility.
 
 This script audits and tracks the progression of physical oceanographic and
-meteorological station data through a linear $7$-stage processing pipeline
+meteorological station data through a linear 7-stage processing pipeline
 within an Operational Forecast System (OFS). It validates baseline inventory
 existence against configured control files and directory assets, outputs a
 structured summary matrix in CSV format, and generates highly optimized,
@@ -23,16 +23,16 @@ Pipeline Developmental Stages:
     7. **HTML Generated**: The final localized web-visualization product (`.html`)
        is complete.
 
-Visual Chunking & Provider Grouping Rules:
-    - **Combined Mode**: If the cumulative unique stations for a variable is $\le 40$,
-      all observation data sources are consolidated into one unified master chart
-      (`_combined.png`).
-    - **Provider Split Mode**: If total stations exceed $40$, the script groups
-      stations strictly by data provider (e.g., `CO-OPS`, `NDBC`, `USGS`),
+Visual Chunking & Provider Grouping Rules (threshold = MAX_STATIONS_PER_PLOT):
+    - **Combined Mode**: If the cumulative unique stations for a variable is at or
+      below the threshold, all observation data sources are consolidated into one
+      unified master chart (`_combined.png`).
+    - **Provider Split Mode**: If total stations exceed the threshold, the script
+      groups stations strictly by data provider (e.g., `CO-OPS`, `NDBC`, `USGS`),
       generating separate layout charts per supplier.
     - **Deep Sub-Chunking**: If a single provider's underlying station list itself
-      exceeds $40$ rows, it is sub-divided into cleanly numbered multi-part files
-      (e.g., `_usgs_pt_1.png`, `_usgs_pt_2.png`).
+      exceeds the threshold, it is sub-divided into cleanly numbered multi-part
+      files (e.g., `_usgs_pt_1.png`, `_usgs_pt_2.png`).
 
 Dependencies:
     - Standard Library: `os`, `csv`, `argparse`, `pathlib`
@@ -64,6 +64,10 @@ HTML_VAR_MAP = {
 
 ALLOWED_WHICHCASTS = ['nowcast', 'forecast_b', 'forecast_a', 'hindcast']
 
+# Maximum stations rendered in a single heatmap before the layout splits by
+# provider and, if still too dense, sub-chunks a provider into numbered parts.
+MAX_STATIONS_PER_PLOT = 35
+
 # ==========================================
 # VISUALIZATION FUNCTION
 # ==========================================
@@ -71,7 +75,7 @@ ALLOWED_WHICHCASTS = ['nowcast', 'forecast_b', 'forecast_a', 'hindcast']
 def generate_visualizations(csv_file_path, home_dir, ofs):
     """Reads the pipeline summary CSV and generates ultra-tight, side-by-side heatmaps.
 
-    This function processes pipeline completion statuses across $7$ linear tracking
+    This function processes pipeline completion statuses across 7 linear tracking
     stages for every monitored variable and forecast type (whichcast). Each grid
     cell represents a stage's completion status (Green/True for completed, Red/False
     for missing) and is explicitly annotated with a bold, single-character indicator
@@ -79,14 +83,15 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
 
     To preserve high visual fidelity and text readability:
     1. **Adaptive Chunking Strategy**: If the total station count for a variable is
-       $\le 40$, all providers are bundled together into a single master plot file
-       (`_combined.png`). If the station count exceeds $40$, the function pivots to
-       group stations strictly by their data provider, outputting one file per source.
+       at or below MAX_STATIONS_PER_PLOT, all providers are bundled together into a
+       single master plot file (`_combined.png`). If the station count exceeds the
+       threshold, the function pivots to group stations strictly by their data
+       provider, outputting one file per source.
     2. **Deep Sub-chunking**: If a single data provider's internal station count
-       exceeds $40$, it is sub-divided into numbered chronological files (e.g.,
+       exceeds MAX_STATIONS_PER_PLOT, it is sub-divided into numbered files (e.g.,
        `_usgs_pt_1.png`, `_usgs_pt_2.png`).
     3. **Anti-Squishing Layout**: The vertical dimensions are automatically scaled
-       with a floor constraint of $6.5$ inches. This prevents sparse station selections
+       with a floor constraint of 6.5 inches. This prevents sparse station selections
        from flattening when squeezed by the top and bottom text margins.
     4. **Dual X-Axis Layout**: Structural tick marks and stage names are mirrored
        identically across both the top and bottom of the heatmap frame. Top labels are
@@ -96,14 +101,14 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
 
     Args:
         csv_file_path (str or pathlib.Path): Path to the generated CSV matrix output
-            containing the $7$-stage pipeline boolean data for all stations.
+            containing the 7-stage pipeline boolean data for all stations.
         home_dir (str or pathlib.Path): Root or target destination directory where
             the finalized visualization image assets will be compiled and written.
         ofs (str): Name of the operational forecast system being audited
             (e.g., 'cbofs', 'dbofs', 'necofs').
 
     Returns:
-        None: Saves generated high-resolution ($150$ DPI) PNG visualization charts
+        None: Saves generated high-resolution (150 DPI) PNG visualization charts
         directly into the target `home_dir`.
 
     Raises:
@@ -124,7 +129,8 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
         from matplotlib.colors import ListedColormap
     except ImportError:
         print('\n[Visualization Skipped] Missing required libraries.')
-        print('To generate visualizations, install them using: pip install pandas matplotlib seaborn numpy')
+        print('To generate visualizations, install them using: '
+              'pip install pandas matplotlib seaborn numpy')
         return
 
     print('\nGenerating visual heatmaps from CSV summary...')
@@ -154,15 +160,13 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
         p = str(provider_name).strip().upper()
         if 'CO-OPS' in p:
             return 'C'
-        elif 'NDBC' in p:
+        if 'NDBC' in p:
             return 'N'
-        elif 'USGS' in p:
+        if 'USGS' in p:
             return 'U'
-        else:
-            return p[0] if p else ''
+        return p[0] if p else ''
 
     variables = plot_df['Variable'].unique()
-    MAX_STATIONS_PER_PLOT = 35
 
     for var in variables:
         var_df = plot_df[plot_df['Variable'] == var]
@@ -196,7 +200,9 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
                     station_groups.append((prov, st_list, f'_{prov_clean}'))
                 else:
                     # NEW: Provider stations exceed max limit -> sub-chunk into parts
-                    sub_chunks = [st_list[i:i + MAX_STATIONS_PER_PLOT] for i in range(0, len(st_list), MAX_STATIONS_PER_PLOT)]
+                    sub_chunks = [
+                        st_list[i:i + MAX_STATIONS_PER_PLOT]
+                        for i in range(0, len(st_list), MAX_STATIONS_PER_PLOT)]
                     for idx, sub_chunk in enumerate(sub_chunks):
                         display_name = f'{prov} (Part {idx + 1})'
                         group_suffix = f'_{prov_clean}_pt_{idx + 1}'
@@ -210,21 +216,28 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
             fig_height = max(6.5, len(station_chunk) * 0.45)
             fig_width = max(6, ncols * 4.5) + 2
 
-            fig, axes = plt.subplots(nrows=1, ncols=ncols, sharey=True, figsize=(fig_width, fig_height))
+            fig, axes = plt.subplots(
+                nrows=1, ncols=ncols, sharey=True,
+                figsize=(fig_width, fig_height))
             if ncols == 1:
                 axes = [axes]
 
             # Dynamically build a clean legend subtitle from present providers in this chunk
             chunk_df = var_df[var_df['Station_ID'].isin(station_chunk)]
-            unique_provs = sorted([str(p).strip() for p in chunk_df['Provider'].dropna().unique() if str(p).strip()])
+            unique_provs = sorted(
+                {str(p).strip() for p in chunk_df['Provider'].dropna().unique()
+                 if str(p).strip()})
             prov_legend_parts = [f'{get_symbol(p)} = {p}' for p in unique_provs if get_symbol(p)]
             prov_legend_str = f"({', '.join(prov_legend_parts)})" if prov_legend_parts else ''
+
+            # Station -> provider lookup is identical across whichcasts; build once
+            provider_map = var_df.set_index('Station_ID')['Provider'].to_dict()
 
             for i, wc in enumerate(whichcasts):
                 ax = axes[i]
 
-                wc_df = var_df[(var_df['Whichcast'] == wc) & (var_df['Station_ID'].isin(station_chunk))]
-                provider_map = var_df.set_index('Station_ID')['Provider'].to_dict()
+                wc_df = var_df[(var_df['Whichcast'] == wc)
+                               & (var_df['Station_ID'].isin(station_chunk))]
                 wc_df = wc_df.set_index('Station_ID').reindex(station_chunk)[stages]
 
                 # Construct cell marking matrices
@@ -272,9 +285,11 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
 
             # Customize main title text depending on whether it is split or combined
             if len(station_groups) > 1:
-                title_text = f'Pipeline Tracking: {ofs.upper()} | Variable: {var} | Provider: {group_name}\n{prov_legend_str}'
+                title_text = (f'Pipeline Tracking: {ofs.upper()} | Variable: {var} '
+                              f'| Provider: {group_name}\n{prov_legend_str}')
             else:
-                title_text = f'Pipeline Tracking: {ofs.upper()} | Variable: {var}\n{prov_legend_str}'
+                title_text = (f'Pipeline Tracking: {ofs.upper()} | Variable: {var}'
+                              f'\n{prov_legend_str}')
 
             fig.suptitle(title_text, fontsize=16, y=0.99)
             axes[0].set_ylabel('Station ID', fontsize=12)
@@ -297,7 +312,8 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
 def main(args):
     ofs = args.OFS.lower()
     var_selection = args.Var_Selection.lower()
-    conf_path = args.config.lower()
+    # Do not lowercase the config path: filesystem paths are case-sensitive on Linux.
+    conf_path = args.config
 
     raw_wc_str = ' '.join(args.Whichcasts)
     clean_wc_str = raw_wc_str.replace('[', ' ').replace(']', ' ').replace(',', ' ')
@@ -306,14 +322,16 @@ def main(args):
     target_whichcasts = []
     for wc in parsed_whichcasts:
         if wc not in ALLOWED_WHICHCASTS:
-            print(f"Error: Invalid whichcast '{wc}'. Allowed choices are: {', '.join(ALLOWED_WHICHCASTS)}")
-            raise SystemExit
+            print(f"Error: Invalid whichcast '{wc}'. Allowed choices are: "
+                  f"{', '.join(ALLOWED_WHICHCASTS)}")
+            raise SystemExit(1)
         if wc not in target_whichcasts:
             target_whichcasts.append(wc)
 
     if not target_whichcasts:
-        print(f"Error: No valid whichcasts provided. Allowed choices are: {', '.join(ALLOWED_WHICHCASTS)}")
-        raise SystemExit
+        print(f"Error: No valid whichcasts provided. Allowed choices are: "
+              f"{', '.join(ALLOWED_WHICHCASTS)}")
+        raise SystemExit(1)
 
     if var_selection == 'all':
         target_vars = ['cu', 'wl', 'temp', 'salt']
@@ -322,15 +340,23 @@ def main(args):
 
     home_dir = Path(args.Path)
     try:
-        dir_params = utils.Utils(os.path.join(home_dir, conf_path)).read_config_section('directories', None)
-    except FileNotFoundError:
+        dir_params = utils.Utils(
+            os.path.join(home_dir, conf_path)
+        ).read_config_section('directories', None)
+    except FileNotFoundError as exc:
         print('No configuration file found! Please check the path.')
-        raise SystemExit
+        raise SystemExit(1) from exc
 
     dir_ctl = Path(os.path.join(home_dir, dir_params['control_files_dir']))
-    dir_obs = Path(os.path.join(home_dir, dir_params['data_dir'], dir_params['observations_dir'], dir_params['1d_station_dir'], ))
-    dir_prd = Path(os.path.join(home_dir, dir_params['data_dir'], dir_params['model_dir'], dir_params['1d_node_dir'], ))
-    dir_int = Path(os.path.join(home_dir, dir_params['data_dir'], dir_params['skill_dir'], dir_params['1d_pair_dir'], ))
+    dir_obs = Path(os.path.join(
+        home_dir, dir_params['data_dir'], dir_params['observations_dir'],
+        dir_params['1d_station_dir']))
+    dir_prd = Path(os.path.join(
+        home_dir, dir_params['data_dir'], dir_params['model_dir'],
+        dir_params['1d_node_dir']))
+    dir_int = Path(os.path.join(
+        home_dir, dir_params['data_dir'], dir_params['skill_dir'],
+        dir_params['1d_pair_dir']))
     dir_html = Path(os.path.join(home_dir, dir_params['data_dir'], dir_params['visual_dir'], ))
 
     output_csv = Path(os.path.join(home_dir, f'pipeline_summary_{ofs}_{var_selection}.csv'))
@@ -406,6 +432,12 @@ def main(args):
                 with open(mod_ctl_path) as f:
                     mod_ctl_content = f.read().lower()
 
+        # NOTE: stage detection below relies on substring matching (station ID is a
+        # substring of the .ctl content / output filename). This deliberately lets a
+        # base station match its per-bin ADCP files (e.g. 'cb0402' -> 'cb0402_b01...'),
+        # but it is approximate: a station ID that is itself a substring of a longer ID
+        # can register a false positive. The tool is an at-a-glance auditor, not an
+        # exact-match validator.
         for st_id in sorted(stations_tracker.keys()):
             if st_id in obs_ctl_content:
                 stations_tracker[st_id]['obs_ctl'] = True
@@ -419,10 +451,14 @@ def main(args):
                 req_prd_int = [st_id, ofs, var, wc]
                 req_html = [st_id, ofs, html_var_term, wc]
 
-                obs_found = any(all(term in fname for term in req_obs) for fname in obs_files)
-                prd_found = any(all(term in fname for term in req_prd_int) for fname in prd_files)
-                int_found = any(all(term in fname for term in req_prd_int) for fname in int_files)
-                html_found = any(all(term in fname for term in req_html) for fname in html_files)
+                obs_found = any(
+                    all(term in fname for term in req_obs) for fname in obs_files)
+                prd_found = any(
+                    all(term in fname for term in req_prd_int) for fname in prd_files)
+                int_found = any(
+                    all(term in fname for term in req_prd_int) for fname in int_files)
+                html_found = any(
+                    all(term in fname for term in req_html) for fname in html_files)
 
                 # UPDATED: Included 'Provider' key into output rows mapping
                 all_csv_rows.append({
@@ -462,7 +498,8 @@ def main(args):
     try:
         final_csv_path = write_csv(output_csv)
     except PermissionError:
-        output_csv_fallback = Path(os.path.join(home_dir, f'pipeline_summary_{ofs}_{var_selection}_2.csv'))
+        output_csv_fallback = Path(os.path.join(
+            home_dir, f'pipeline_summary_{ofs}_{var_selection}_2.csv'))
         print(f'Permission denied for {output_csv}. Trying {output_csv_fallback}...')
         final_csv_path = write_csv(output_csv_fallback)
 
@@ -470,12 +507,24 @@ def main(args):
     print('Pipeline check complete!')
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Track station processing through the entire 7-stage OFS pipeline.')
-    parser.add_argument('--OFS', '-o', type=str, required=True, help="Name of the Operational Forecast System (e.g., 'necofs').")
-    parser.add_argument('--Var_Selection', '-vs', type=str, required=True, choices=['cu', 'wl', 'temp', 'salt', 'all'], help='Variable type to search for.')
-    parser.add_argument('--Whichcasts', '-ws', type=str, nargs='+', required=True, help='Whichcast type(s) to search for.')
-    parser.add_argument('--Path', '-p', type=str, default='.', help='Path to the home directory.')
-    parser.add_argument('-c', '--config', type=str, default='conf/ofs_dps.conf', help='Path to configuration file.')
+    parser = argparse.ArgumentParser(
+        description='Track station processing through the entire 7-stage OFS pipeline.')
+    parser.add_argument(
+        '--OFS', '-o', type=str, required=True,
+        help="Name of the Operational Forecast System (e.g., 'necofs').")
+    parser.add_argument(
+        '--Var_Selection', '-vs', type=str, required=True,
+        choices=['cu', 'wl', 'temp', 'salt', 'all'],
+        help='Variable type to search for.')
+    parser.add_argument(
+        '--Whichcasts', '-ws', type=str, nargs='+', required=True,
+        help='Whichcast type(s) to search for.')
+    parser.add_argument(
+        '--Path', '-p', type=str, default='.',
+        help='Path to the home directory.')
+    parser.add_argument(
+        '-c', '--config', type=str, default='conf/ofs_dps.conf',
+        help='Path to configuration file.')
 
     parsed_args = parser.parse_args()
     main(parsed_args)
