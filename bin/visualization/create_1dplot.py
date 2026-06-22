@@ -141,7 +141,7 @@ def combine_files_by_pattern(directory_path, output_filename, search_string=''):
     matched_files = [
         f for f in matched_files
         if 'combined' not in os.path.basename(f).lower()
-        and '2d' not in os.path.basename(f).lower()
+        and 'skill_2d' not in os.path.basename(f).lower()
         and 'all' not in os.path.basename(f).lower()
     ]
 
