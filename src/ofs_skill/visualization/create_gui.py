@@ -658,9 +658,9 @@ def create_gui(parser):
 
     whichcast_lbl = _label(
         wcast_frame, 'Whichcasts',
-        help_text='Which run types to assess. Nowcast and Forecast_b '
-                  'are the common defaults; Forecast_a uses a single '
-                  'model cycle; Hindcast is only available for LOOFS2.')
+        help_text='Run mode. Nowcast and Forecast_b are the common '
+                  'defaults; Forecast_a uses one complete model cycle; '
+                  'Hindcast is only available for LOOFS2.')
     whichcast_lbl.grid(row=0, column=0, sticky='w', padx=padx, pady=pady)
     now_chk = ttk.Checkbutton(
         wcast_frame, text='Nowcast', variable=var_now,
@@ -686,9 +686,9 @@ def create_gui(parser):
     # Model cycle, -f
     cycle_var = tk.StringVar(value=_OFS_FIRST_PLACEHOLDER)
     _label(wcast_frame, 'Model cycle (forecast_a only)',
-           help_text='Which model cycle to assess when Forecast_a is '
-                     'selected. "Most recent cycle available" picks the '
-                     'latest cycle that should already be on NODD.').grid(
+           help_text='Model cycle to assess when Forecast_a is selected. '
+                     '"Most recent cycle available" picks the latest '
+                     'cycle available on the S3 NODD bucket.').grid(
         row=2, column=0, sticky='w', padx=padx, pady=pady)
     cycle_chosen = ttk.Combobox(
         wcast_frame, width=22, textvariable=cycle_var,
@@ -708,8 +708,8 @@ def create_gui(parser):
     datum_var.set(_DATUM_PLACEHOLDER)
     _label(datum_frame, 'Vertical datum',
            help_text='Vertical datum for water-level comparisons. Great '
-                     'Lakes OFSes typically use IGLD85; tidal coastal '
-                     'OFSes use MLLW.').grid(
+                     'Lakes OFS require IGLD85 or LWD; tidal coastal OFS '
+                     'require tidal datum, xgeoid20b, or NAVD88.').grid(
         row=0, column=0, sticky='w', padx=padx, pady=pady)
     datum_chosen = ttk.Combobox(
         datum_frame, width=15, textvariable=datum_var, font=(fontfamily, widgetfontsize),
@@ -720,9 +720,9 @@ def create_gui(parser):
     # File type, -t
     filetype_var = tk.StringVar(value='stations')
     _label(datum_frame, 'Model output file type',
-           help_text='Which OFS NetCDF outputs to compare against. '
-                     '"Station" uses the model station files; "Field" '
-                     'uses the gridded model fields.').grid(
+           help_text='OFS file type. "Station" uses the 6-min model '
+                     'station files; "Field" uses the hourly gridded '
+                     'model fields.').grid(
         row=1, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Radiobutton(datum_frame, text='Station', variable=filetype_var,
                     value='stations').grid(row=1, column=1, sticky='w',
@@ -744,9 +744,9 @@ def create_gui(parser):
     var_list = tk.StringVar(value='0')
     providers_lbl = _label(
         sv_frame, 'Station providers',
-        help_text='Which observation networks to pull stations from. '
-                  '"Add from conf file" lets you supply a custom list '
-                  'in the [station_lists] section of the .conf.')
+        help_text='Observation data retrieval sources. "Add from conf '
+                  'file" lets you supply a custom list in the '
+                  '[station_lists] section of the config file.')
     providers_lbl.grid(row=0, column=0, sticky='w', padx=padx, pady=pady)
     _label(sv_frame,
            'If adding stations from list, provider selection is optional',
@@ -772,9 +772,9 @@ def create_gui(parser):
     var_cu = tk.StringVar(value='currents')
     variables_lbl = _label(
         sv_frame, 'Variables',
-        help_text='Which oceanographic variables to skill-assess. '
-                  'Pick any combination; the run only processes the '
-                  'ones you check.')
+        help_text='Oceanographic variables to assess. Pick any '
+                  'combination; the run only processes the ones '
+                  'you check.')
     variables_lbl.grid(row=2, column=0, sticky='w', padx=padx, pady=pady)
     ttk.Checkbutton(sv_frame, text='Water level', variable=var_wl,
                     onvalue='water_level', offvalue=0).grid(
