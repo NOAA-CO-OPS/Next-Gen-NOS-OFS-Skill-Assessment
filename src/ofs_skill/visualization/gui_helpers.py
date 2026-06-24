@@ -14,7 +14,9 @@ Key Features:
 
 Classes:
     DateEntry: Cross-platform tkcalendar DateEntry subclass
+    ToolTip: Lightweight hover tooltip for any Tk widget
     GuiParams: Typed dataclass mirroring the argparse namespace
+    GuiTheme: Shared color/font/spacing palette for the GUI
 
 Functions:
     quick_run_datum: Pick a sensible default vertical datum per OFS family
@@ -51,6 +53,45 @@ STOFS_OFS = ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac')
 DEFAULT_DATUMS = (
     'MHHW', 'MHW', 'MLLW', 'MLW', 'NAVD88', 'IGLD85', 'LWD', 'XGEOID20B'
 )
+
+
+@dataclass(frozen=True)
+class GuiTheme:
+    """Shared color/font/spacing palette for the skill-assessment GUI.
+    Frozen so widgets cannot accidentally mutate the live theme."""
+
+    themecolor: str = 'gainsboro'
+    textcolor: str = 'black'
+    datefield_bg: str = 'darkblue'
+    datefield_fg: str = 'white'
+
+    fontfamily: str = 'Helvetica'
+    labelfontsize: int = 12
+    widgetfontsize: int = 12
+    hintfontsize: int = 9
+
+    padx: int = 3
+    pady: int = 10
+    section_padx: int = 10
+    section_pady: int = 5
+
+    anchor: str = 'e'
+
+    @property
+    def label_font(self) -> tuple:
+        return (self.fontfamily, self.labelfontsize)
+
+    @property
+    def widget_font(self) -> tuple:
+        return (self.fontfamily, self.widgetfontsize)
+
+    @property
+    def section_title_font(self) -> tuple:
+        return (self.fontfamily, self.labelfontsize, 'bold')
+
+    @property
+    def hint_font(self) -> tuple:
+        return (self.fontfamily, self.hintfontsize, 'italic')
 
 
 class DateEntry(_TkDateEntry):
@@ -110,6 +151,81 @@ class DateEntry(_TkDateEntry):
             self._calendar.focus_set()
             return
         super()._on_focus_out_cal(event)
+
+
+class ToolTip:
+    """Lightweight hover tooltip for any Tk widget.
+
+    Usage::
+
+        ToolTip(widget, 'This field sets the vertical datum.')
+
+    The tooltip appears after a short delay when the cursor enters the
+    widget and disappears on leave. No external dependencies required.
+    """
+
+    _DELAY_MS = 400
+    _BG = '#ffffe0'
+    _FG = 'black'
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip_window: tk.Toplevel | None = None
+        self._after_id: str | None = None
+        widget.bind('<Enter>', self._schedule, add='+')
+        widget.bind('<Leave>', self._hide, add='+')
+        widget.bind('<ButtonPress>', self._hide, add='+')
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self._widget.after(self._DELAY_MS, self._show)
+
+    def _show(self):
+        if self._tip_window is not None:
+            return
+        tw = tk.Toplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        try:
+            tw.wm_attributes('-topmost', True)
+        except tk.TclError:
+            pass
+        # macOS Aqua: use the undocumented "help" window style so the
+        # tooltip floats over other windows and doesn't steal focus.
+        # Without this, overrideredirect Toplevels often render invisibly.
+        if sys.platform == 'darwin':
+            try:
+                tw.tk.call(
+                    '::tk::unsupported::MacWindowStyle',
+                    'style', tw._w, 'help', 'noActivates',
+                )
+            except tk.TclError:
+                pass
+        label = tk.Label(
+            tw, text=self._text, justify='left',
+            background=self._BG, foreground=self._FG,
+            relief='solid', borderwidth=1,
+            font=('Helvetica', 10),
+            wraplength=300,
+        )
+        label.pack(ipadx=4, ipady=2)
+        x = self._widget.winfo_rootx() + 20
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        tw.wm_geometry(f'+{x}+{y}')
+        tw.update_idletasks()
+        tw.lift()
+        self._tip_window = tw
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._tip_window is not None:
+            self._tip_window.destroy()
+            self._tip_window = None
+
+    def _cancel(self):
+        if self._after_id is not None:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
 
 
 def quick_run_datum(ofs: str) -> str:
