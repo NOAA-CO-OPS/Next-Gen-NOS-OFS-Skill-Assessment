@@ -18,7 +18,11 @@ class TestWrite2dArrayToAsciiGrid:
     """Tests for write_2d_array_to_ascii_grid."""
 
     def test_basic_write_and_read(self, tmp_path):
-        """Round-trip: write a grid, read it back, verify header and data."""
+        """Round-trip: write a grid, read it back, verify header and data.
+
+        Inputs are cell centers; xllcorner/yllcorner are the SW corner
+        of the SW cell (cell center minus half cellsize).
+        """
         lon = np.array([[10.0, 10.5, 11.0], [10.0, 10.5, 11.0]])
         lat = np.array([[20.0, 20.0, 20.0], [20.5, 20.5, 20.5]])
         data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
@@ -29,18 +33,16 @@ class TestWrite2dArrayToAsciiGrid:
         with open(outfile) as f:
             lines = f.readlines()
 
-        # Check header
         assert lines[0].strip() == 'ncols        3'
         assert lines[1].strip() == 'nrows        2'
         assert 'xllcorner' in lines[2]
-        assert float(lines[2].split()[-1]) == pytest.approx(10.0)
+        assert float(lines[2].split()[-1]) == pytest.approx(9.75)
         assert 'yllcorner' in lines[3]
-        assert float(lines[3].split()[-1]) == pytest.approx(20.0)
+        assert float(lines[3].split()[-1]) == pytest.approx(19.75)
         assert 'cellsize' in lines[4]
         assert float(lines[4].split()[-1]) == pytest.approx(0.5)
         assert lines[5].strip() == 'NODATA_value -9999'
 
-        # Check data (6 header lines + 2 data rows)
         assert len(lines) == 8
 
     def test_nan_replaced_with_nodata(self, tmp_path):
@@ -69,9 +71,13 @@ class TestWrite2dArrayToAsciiGrid:
 
     def test_row_order_north_to_south(self, tmp_path):
         """First data row should be northernmost latitude."""
+        # Square cells (dx == dy) so the header keeps the single
+        # ``cellsize`` keyword (6-line header). Non-square cells would
+        # add a separate ``dy`` line -- covered separately in
+        # test_non_square_cells_emit_dx_dy.
         lon = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
-        lat = np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]])
-        # Row 0 is south (lat=10), row 2 is north (lat=30)
+        lat = np.array([[10.0, 10.0], [11.0, 11.0], [12.0, 12.0]])
+        # Row 0 is south (lat=10), row 2 is north (lat=12)
         data = np.array([[100.0, 100.0], [200.0, 200.0], [300.0, 300.0]])
 
         outfile = str(tmp_path / 'order_test.txt')
@@ -104,6 +110,92 @@ class TestWrite2dArrayToAsciiGrid:
         # The NaN in south row (row 0, flipped to last)
         south_row = lines[7].strip().split()
         assert south_row[1] == '-999'
+
+    def test_non_square_cells_emit_dx_dy(self, tmp_path):
+        """Non-square cells (HF radar shape) write dx/dy, not cellsize.
+
+        Issue #144: cell-centered grids with dx != dy were silently
+        collapsed onto a single ``cellsize = dx``, dropping dy and
+        biasing every row's latitude.
+        """
+        # USEGC-shape: dx=0.058 deg, dy=0.054 deg
+        lons1d = np.array([-77.0, -76.942, -76.884])
+        lats1d = np.array([37.0, 37.054, 37.108])
+        lon, lat = np.meshgrid(lons1d, lats1d)
+        data = np.arange(9, dtype=float).reshape(3, 3)
+
+        outfile = str(tmp_path / 'nonsquare.txt')
+        write_2d_array_to_ascii_grid(data, lon, lat, outfile)
+
+        hdr = {}
+        with open(outfile) as f:
+            for _ in range(7):
+                key, val = f.readline().split()
+                hdr[key] = val
+        assert 'dx' in hdr and 'dy' in hdr
+        assert 'cellsize' not in hdr
+        assert float(hdr['dx']) == pytest.approx(0.058, abs=1e-9)
+        assert float(hdr['dy']) == pytest.approx(0.054, abs=1e-9)
+        # SW cell center is (-77.0, 37.0); SW corner is half-cell SW.
+        assert float(hdr['xllcorner']) == pytest.approx(-77.0 - 0.058/2)
+        assert float(hdr['yllcorner']) == pytest.approx(37.0 - 0.054/2)
+
+    def test_xllcorner_yllcorner_match_asc_writer(self, tmp_path):
+        """The .txt header corners must match what the .asc writer would
+        emit for the same source grid (issue #144 root cause).
+
+        ``bin/obs_retrieval/get_hf_radar.export_ascii`` uses
+        ``rasterio.from_origin(lons.min() - dx/2, lats.max() + dy/2)``
+        which makes ``xllcorner == lons.min() - dx/2`` and
+        ``yllcorner == lats.min() - dy/2``. The .txt writer must
+        agree so vector arrows render at the same geographic location
+        as the .asc raster on the front end.
+        """
+        # Mimic an HFR-style cell-center grid (south-up source axis).
+        lons1d = np.linspace(-76.0, -75.0, 11)
+        lats1d = np.linspace(37.0, 38.0, 11)
+        lon, lat = np.meshgrid(lons1d, lats1d)
+        data = np.zeros_like(lon)
+
+        outfile = str(tmp_path / 'corners.txt')
+        write_2d_array_to_ascii_grid(data, lon, lat, outfile)
+
+        hdr = {}
+        with open(outfile) as f:
+            for _ in range(6):
+                key, val = f.readline().split()
+                hdr[key] = val
+        cellsize = float(hdr['cellsize'])
+        assert float(hdr['xllcorner']) == pytest.approx(
+            lons1d.min() - cellsize / 2,
+        )
+        assert float(hdr['yllcorner']) == pytest.approx(
+            lats1d.min() - cellsize / 2,
+        )
+
+    def test_descending_lats_handled(self, tmp_path):
+        """North-up source (lats descending along axis 0) must still
+        produce north-first data rows and a correct yllcorner.
+        """
+        lons1d = np.array([0.0, 1.0])
+        lats1d = np.array([3.0, 2.0, 1.0])  # descending = north-up
+        lon, lat = np.meshgrid(lons1d, lats1d)
+        # Row 0 (lat=3, north) is the largest values
+        data = np.array([[300.0, 300.0], [200.0, 200.0], [100.0, 100.0]])
+
+        outfile = str(tmp_path / 'descending.txt')
+        write_2d_array_to_ascii_grid(data, lon, lat, outfile)
+
+        with open(outfile) as f:
+            lines = f.readlines()
+        hdr = {ln.split()[0]: ln.split()[1] for ln in lines[:6]}
+        # SW cell center = (0.0, 1.0); cellsize = 1.0
+        assert float(hdr['xllcorner']) == pytest.approx(-0.5)
+        assert float(hdr['yllcorner']) == pytest.approx(0.5)
+        assert float(hdr['cellsize']) == pytest.approx(1.0)
+        # First written row is northernmost (300s)
+        assert [float(v) for v in lines[6].split()] == [300.0, 300.0]
+        assert [float(v) for v in lines[8].split()] == [100.0, 100.0]
 
 
 class TestComputeCurrentMagDir:
