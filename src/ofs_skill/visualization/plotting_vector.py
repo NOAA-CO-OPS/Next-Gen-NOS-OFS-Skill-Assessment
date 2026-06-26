@@ -205,7 +205,7 @@ def oned_vector_plot1(
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
-            seriesname = prop.whichcasts[i].capitalize(
+            seriesname = 'Model ' + prop.whichcasts[i].capitalize(
             ) + ' Guidance'  # + f"{i}",
         # Parse filenames from key
         try:
@@ -217,7 +217,7 @@ def oned_vector_plot1(
             namekey = [name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
-        except AttributeError:
+        except (AttributeError, IndexError):
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
             namekey = None
@@ -306,7 +306,7 @@ def oned_vector_plot1(
             namekey = [name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
-        except AttributeError:
+        except (AttributeError, IndexError):
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
             namekey = None
@@ -344,7 +344,7 @@ def oned_vector_plot1(
         elif prop.whichcasts[i].capitalize() == 'Forecast_a':
             sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'z - Obs.'
         else:
-            sdboxName = 'Model'+str(i+1)+' - Obs.'
+            sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
             go.Scattergl(
                 x=list(now_fores_paired[i].DateTime),

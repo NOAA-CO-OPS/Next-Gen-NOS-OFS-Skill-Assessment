@@ -70,6 +70,7 @@ import logging
 import logging.config
 import os
 import sys
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -576,7 +577,14 @@ def create_1dplot(prop, logger):
                        ['datum_list']).split(' ')
     conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
-
+    use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+    if use_custom_files:
+        pause_seconds = 5
+        logger.warning('HEADS UP: You are using custom model input file names! '
+                       'If you want to disable this option, update your conf '
+                       'file and restart. Pausing %d seconds...', pause_seconds)
+        time.sleep(pause_seconds)
+        logger.info('Continuing with custom file names...')
 
     # Parse incoming arguments stored in prop from string to a list
     prop.whichcasts = parse_arguments_to_list(prop.whichcasts, logger)
@@ -741,10 +749,10 @@ def create_1dplot(prop, logger):
 
     # Hindcast validation -- LOOFS2 only! Also, LOOFS2 cannot use nowcast or
     # forecast yet.
-    if prop.ofs == 'loofs2':
+    if prop.ofs in ['loofs2']:
         prop.whichcasts = ['hindcast']
-    if 'hindcast' in prop.whichcasts and prop.ofs != 'loofs2':
-        logger.warning('Hindcast can only be used with loofs2! Switching to '
+    if 'hindcast' in prop.whichcasts and prop.ofs not in ['loofs2','necofs']:
+        logger.warning('Hindcast can only be used with loofs2 or necofs! Switching to '
                        'nowcast + forecast_b...')
         prop.whichcasts = ['nowcast', 'forecast_b']
 

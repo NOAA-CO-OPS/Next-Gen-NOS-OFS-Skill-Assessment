@@ -176,8 +176,13 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
     """Two-row plotly figure: RMSE on top, CF on bottom."""
     x1, _ = plotting_functions.get_error_range(name_var, prop, logger)
     labels = _x_labels(df, name_var)
-    rmse_vals = [float(v) if pd.notna(v) else None for v in df['rmse']]
-    cf_vals = [float(v) if pd.notna(v) else None for v in df['central_freq']]
+    rmse_vals = [float(v) if pd.notna(v) and v != '<5 data points' else None for v in df['rmse']]
+    cf_vals = [float(v) if pd.notna(v) and v != '<5 data points' else None for v in df['central_freq']]
+
+    if all(v is None for v in rmse_vals):
+        logger.warning('Cannot create summary bar plots because there are not '
+                       'enough data points to calculate statistics.')
+        return None
 
     custom = list(zip(
         df.get('ID', pd.Series([''] * len(df))).astype(str),
@@ -192,8 +197,8 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
         shared_xaxes=True,
         vertical_spacing=0.08,
         subplot_titles=(
-            f'RMSE per station (target {x1})',
-            'Central frequency per station (≥ 90% pass)',
+            f'RMSE (target {x1})',
+            'Central frequency (≥ 90% pass)',
         ),
     )
     for annot in fig['layout']['annotations']:

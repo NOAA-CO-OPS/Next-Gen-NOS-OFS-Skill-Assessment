@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from ofs_skill.model_processing import do_horizon_skill_utils
 
@@ -825,6 +826,11 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
 
     formatted_series = \
         scalar(data_model, start_date, end_date)
+
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_temp_salt! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
     return formatted_series
 
 
@@ -1006,6 +1012,11 @@ def format_currents(prop, model, ofs_ctlfile, i, precomputed=None):
     formatted_series = \
         vector(mfp.data_model, start_date, end_date)
 
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_currents! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
+
     return formatted_series
 
 
@@ -1113,8 +1124,60 @@ def format_waterlevel(prop, model, ofs_ctlfile, model_var,
     formatted_series = \
         scalar(data_model, start_date, end_date)
 
+    if not formatted_series:
+        logger.error('Formatted series is empty in format_waterlevel! If using '
+                     'custom model file names, make sure input date range and '
+                     'the date range of your files overlap.')
+
     return formatted_series, datum_offset
 
+def find_time_variable_name(ds: xr.Dataset) -> str:
+    """Scans an xarray Dataset to find the coordinate name representing time
+
+    based on its datetime64 data type.
+    """
+    # First, check the coordinates (most common place for the time dimension)
+    for coord_name in ds.coords:
+        if np.issubdtype(ds[coord_name].dtype, np.datetime64):
+            return str(coord_name)
+
+    # Fallback: check data variables if it wasn't explicitly marked as a coordinate
+    for var_name in ds.data_vars:
+        if np.issubdtype(ds[var_name].dtype, np.datetime64):
+            return str(var_name)
+
+    raise ValueError(
+        'Could not automatically detect a datetime variable in this dataset.'
+    )
+
+
+def has_date_overlap(
+    start_date: datetime,
+    end_date: datetime,
+    ds: xr.Dataset,
+    ) -> bool:
+    """Checks for a date overlap by auto-detecting the time variable in an
+
+    xarray Dataset.
+    """
+    # 1. Auto-detect the time coordinate name
+    time_var_name = find_time_variable_name(ds)
+
+    # 2. Extract the lazy-loaded time array using the detected name
+    time_array = ds[time_var_name]
+
+    # 3. Convert input Python datetimes to numpy.datetime64
+    np_start = np.datetime64(start_date)
+    np_end = np.datetime64(end_date)
+
+    # 4. Extract min and max boundaries lazily
+    xr_min = time_array.min().values
+    xr_max = time_array.max().values
+
+    # 5. Check for overlap
+    overlap = (np_start <= xr_max) and (xr_min <= np_end)
+
+    return bool(overlap)
 
 def parameter_validation(prop, dir_params, logger):
     """Parameter validation"""
@@ -1237,6 +1300,23 @@ def parameter_validation(prop, dir_params, logger):
             prop.var_list = ['water_level']
             # I think we can alter its state here, but maybe there's a reason not to?
 
+def read_custom_filenames(filepath):
+    """Read a custom model-file list, one path/URL per line.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the text file enumerating model file locations.
+
+    Returns
+    -------
+    list[str]
+        One entry per line with trailing newlines stripped.
+    """
+    with open(filepath) as file:
+        lines = file.read().splitlines()
+    return lines
+
 
 def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var,
                             expected_timesteps, logger):
@@ -1346,6 +1426,16 @@ def get_node_ofs(prop, logger, model_dataset=None):
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
+
+    # Check if custom filename input is enabled
+    try:
+        conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
+        use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+    except (KeyError, AttributeError, ValueError, OSError) as exc:
+        logger.warning('Could not read [settings] for custom-file mode (%s); '
+                       'proceeding with default model file discovery.', exc)
+        use_custom_files = False
+
     # Parse variable selection input to list
     prop.var_list = parse_arguments_to_list(prop.var_list, logger)
     # Parameter validation
@@ -1395,11 +1485,48 @@ def get_node_ofs(prop, logger, model_dataset=None):
         model = model_dataset
         logger.info('Using pre-loaded model dataset (skipping intake_model)')
     else:
-        dir_list = list_of_dir(prop, logger)
-        list_files = list_of_files_func(prop, dir_list, logger)
+        if not use_custom_files:
+            dir_list = list_of_dir(prop, logger)
+            list_files = list_of_files_func(prop, dir_list, logger)
+        else:
+            filepath = (utils.Utils(_conf).read_config_section('settings', logger)\
+                               ['filename_path'])
+            try:
+                list_files = read_custom_filenames(filepath)
+            except FileNotFoundError:
+                logger.error('No custom model filename file found in get_node_ofs! '
+                             'Please check the file path and try again.')
+                raise SystemExit(1)
+            except Exception as e:
+                logger.error('Error when loading custom filenames from file in '
+                             'get_node_ofs! Error: %s', e)
+                raise SystemExit(1)
+
         logging.info('About to start intake_scisa from get_node ...')
         model = intake_model(list_files, prop, logger)
         logging.info('Lazily loaded dataset complete for %s!', prop.whichcast)
+
+        if use_custom_files:
+            # Check if dates of loaded model data overlap with user-input dates
+            try:
+                date_overlap = has_date_overlap(datetime.strptime(
+                    start_date_internal.split('-')[0], '%Y%m%d'),
+                    datetime.strptime(end_date_internal.split('-')[0], '%Y%m%d'),
+                    model)
+                if not date_overlap:
+                    logger.error('The date range of the loaded model files '
+                                 'does not overlap with the start and end '
+                                 'dates of the skill assessment run. Please '
+                                 'either disable custom file name loading '
+                                 'in the conf file, or check that the provided '
+                                 'filenames are correct. Exiting...')
+                    raise SystemExit(1)
+            except Exception as e:
+                logger.error('Cannot verify if the dates in user-supplied '
+                             'custom model files overlap with the start and '
+                             'end dates of the skill assessment run. Program '
+                             'may crash further down the pipeline! Error: %s',
+                             e)
 
     if not model:
         logger.error('No model files or URLs to load in intake! Exiting...')
@@ -1775,7 +1902,8 @@ def get_node_ofs(prop, logger, model_dataset=None):
             for variable in prop.var_list:
                 prop_local = copy.deepcopy(prop)
                 prop_local.var_list = [variable]
-                futures.append(executor.submit(_extract_variable, variable, prop_local))
+                futures.append(executor.submit(
+                    _extract_variable, variable, prop_local))
             for f in futures:
                 f.result()  # Raise any exceptions
     else:
