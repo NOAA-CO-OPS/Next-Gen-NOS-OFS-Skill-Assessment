@@ -111,13 +111,18 @@ def make_skill_maps(
     duplicates = df.duplicated(subset=['X ', 'Y '], keep=False)
 
     if duplicates.any():
-        logger.info(f'Adding jitter to {duplicates.sum()} overlapping points.')
-        # Roughly 0.0005 degrees is ~50 meters. Adjust this if you need more/less spread.
-        jitter_amount = 0.005
+        n_dupes = int(duplicates.sum())
+        logger.info('Adding jitter to %d overlapping points.', n_dupes)
+        # ~0.0005 degrees is roughly 50 m; enough to separate co-located
+        # markers without materially misplacing them on the map.
+        jitter_amount = 0.0005
 
-        # Add random uniform noise to both X and Y for just the duplicate rows
-        df.loc[duplicates, 'X '] += np.random.uniform(-jitter_amount, jitter_amount, size=duplicates.sum())
-        df.loc[duplicates, 'Y '] += np.random.uniform(-jitter_amount, jitter_amount, size=duplicates.sum())
+        # Seeded RNG so marker positions are reproducible run-to-run.
+        rng = np.random.default_rng(0)
+        df.loc[duplicates, 'X '] += rng.uniform(
+            -jitter_amount, jitter_amount, size=n_dupes)
+        df.loc[duplicates, 'Y '] += rng.uniform(
+            -jitter_amount, jitter_amount, size=n_dupes)
 
     # Absolute mean bias for marker sizing
     df['Abs mean bias '] = df['Mean bias '].abs()
@@ -325,7 +330,9 @@ def make_skill_maps(
     fig.add_trace(mb_outline)
     fig.add_trace(mb_trace)
 
-    # ADD CLUSTERING TO MAPBOX TRACES
+    # Marker clustering is disabled here: skill maps show every station
+    # individually (jitter above separates co-located points). Set
+    # enabled=True if dense maps ever need clustering.
     fig.update_traces(cluster=dict(enabled=False))
 
     # 5. Layout & Dropdown Menus

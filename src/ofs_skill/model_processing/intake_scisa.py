@@ -228,8 +228,15 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ]
         time_name = 'time'
 
-    if prop.ofs in ['stofs_2d_glo'] or \
-        any('2017_free_run_station' in file for file in file_list):
+    # Custom NECOFS free-run station files are NetCDF3 and need the scipy
+    # engine. They are identified by this filename marker; if other NetCDF3
+    # custom files are added, extend this list. The intake_model call below
+    # also falls back with a clear error if the wrong engine is selected.
+    _netcdf3_filename_markers = ('2017_free_run_station',)
+    if prop.ofs in ['stofs_2d_glo'] or any(
+            marker in f
+            for f in file_list
+            for marker in _netcdf3_filename_markers):
         engine = 'scipy'
     elif prop.ofs in ['necofs', 'loofs2', 'secofs']:
         engine = 'netcdf4'

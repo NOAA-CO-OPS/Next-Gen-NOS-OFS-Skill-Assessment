@@ -1301,8 +1301,19 @@ def parameter_validation(prop, dir_params, logger):
             # I think we can alter its state here, but maybe there's a reason not to?
 
 def read_custom_filenames(filepath):
+    """Read a custom model-file list, one path/URL per line.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the text file enumerating model file locations.
+
+    Returns
+    -------
+    list[str]
+        One entry per line with trailing newlines stripped.
+    """
     with open(filepath) as file:
-        # Reads the whole file and splits it into a list, removing '\n'
         lines = file.read().splitlines()
     return lines
 
@@ -1420,7 +1431,9 @@ def get_node_ofs(prop, logger, model_dataset=None):
     try:
         conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
-    except Exception:
+    except (KeyError, AttributeError, ValueError, OSError) as exc:
+        logger.warning('Could not read [settings] for custom-file mode (%s); '
+                       'proceeding with default model file discovery.', exc)
         use_custom_files = False
 
     # Parse variable selection input to list

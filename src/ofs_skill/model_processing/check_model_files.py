@@ -39,6 +39,18 @@ from ofs_skill.model_processing.list_of_files import list_of_dir, list_of_files
 from ofs_skill.obs_retrieval import utils
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib handler that refuses to follow redirects on the HEAD probe.
+
+    Following redirects on an arbitrary custom URL could bounce the request to
+    an unexpected internal host (SSRF). A 3xx is treated as a verification
+    failure instead.
+    """
+
+    def redirect_request(self, *_args, **_kwargs):  # noqa: D102
+        return None
+
+
 def check_custom_file_list(file_list_path: str, logger: Logger) -> None:
     """
     Reads a text file containing a list of paths (local, S3 URIs, or HTTPS URLs) and
@@ -63,6 +75,11 @@ def check_custom_file_list(file_list_path: str, logger: Logger) -> None:
         raise SystemExit(1)
 
     s3_client = None
+    # Exception types are bound alongside the client on first use; default to
+    # empty tuples so the except clauses are always defined (and match nothing
+    # until boto3 is actually imported).
+    s3_client_error: Any = ()
+    s3_other_errors: Any = ()
     missing_files = []
 
     for filepath in files_to_check:
@@ -71,9 +88,19 @@ def check_custom_file_list(file_list_path: str, logger: Logger) -> None:
             if s3_client is None:
                 try:
                     import boto3
-                    # If dealing with public NODD buckets, you may need to configure
-                    # unsigned requests: boto3.client('s3', config=Config(signature_version=UNSIGNED))
-                    s3_client = boto3.client('s3')
+                    from botocore import UNSIGNED
+                    from botocore.client import Config
+                    from botocore.exceptions import (
+                        BotoCoreError,
+                        ClientError,
+                        NoCredentialsError,
+                    )
+                    # NODD buckets are public; sign-less requests avoid the 403
+                    # that a default (signed) client returns without creds.
+                    s3_client = boto3.client(
+                        's3', config=Config(signature_version=UNSIGNED))
+                    s3_client_error = ClientError
+                    s3_other_errors = (BotoCoreError, NoCredentialsError)
                 except ImportError:
                     logger.error('boto3 library is required to verify s3:// paths. Please install it.')
                     raise SystemExit(1)
@@ -84,27 +111,46 @@ def check_custom_file_list(file_list_path: str, logger: Logger) -> None:
 
             try:
                 s3_client.head_object(Bucket=bucket, Key=key)
-            except Exception:
-                # Catching general exception; typically botocore.exceptions.ClientError for 404/403
+            except s3_client_error as exc:
+                code = exc.response.get('Error', {}).get('Code', '')
+                if code in ('404', 'NoSuchKey', 'NoSuchBucket'):
+                    missing_files.append(filepath)
+                else:
+                    # 403/permission/transient: log distinctly rather than
+                    # implying the object simply does not exist.
+                    logger.error(
+                        'Could not verify s3 path %s (error %s); treating as '
+                        'unverified.', filepath, code)
+                    missing_files.append(filepath)
+            except s3_other_errors as exc:
+                logger.error('S3 client error verifying %s: %s', filepath, exc)
                 missing_files.append(filepath)
 
-        # Check HTTP/HTTPS paths pointing to S3 (or any web server)
-        elif filepath.startswith(('http://', 'https://')):
+        # Check HTTPS paths pointing to S3 (or any web server). Plain http://
+        # is rejected: cleartext + redirect-following is an SSRF foot-gun.
+        elif filepath.startswith('https://'):
             try:
-                # Use a HEAD request to check for file existence without downloading the payload
+                # HEAD request: check existence without downloading the payload.
+                # Use an opener with redirects disabled so a crafted entry cannot
+                # bounce the probe to an unexpected internal host.
                 req = urllib.request.Request(
                     filepath,
                     headers={'User-Agent': 'Mozilla/5.0'},
                     method='HEAD'
                 )
-                with urllib.request.urlopen(req, timeout=10) as response:
+                opener = urllib.request.build_opener(_NoRedirect)
+                with opener.open(req, timeout=10) as response:
                     if response.status >= 400:
                         missing_files.append(filepath)
-            except (HTTPError, URLError):
-                # HTTPError handles 403 Forbidden, 404 Not Found, etc. URLError handles connection failures.
+            except (HTTPError, URLError) as exc:
+                # HTTPError covers 403/404; URLError covers connection failures.
+                logger.error('Could not verify URL %s: %s', filepath, exc)
                 missing_files.append(filepath)
-            except Exception:
-                missing_files.append(filepath)
+        elif filepath.startswith('http://'):
+            logger.error(
+                'Refusing to verify insecure http:// custom file entry %s; '
+                'use https:// or s3:// instead.', filepath)
+            missing_files.append(filepath)
 
         # Check local paths
         else:
@@ -160,9 +206,11 @@ def check_model_files(prop: Any, logger: Logger) -> None:
     try:
         conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
-        # Retrieve the path to the text file list from config (adjust key as needed)
+        # Retrieve the path to the text file list from config
         custom_file_list_path = conf_settings.get('filename_path', '')
-    except Exception:
+    except (KeyError, AttributeError, ValueError, OSError) as exc:
+        logger.warning('Could not read [settings] for custom-file check (%s); '
+                       'proceeding with default model file discovery.', exc)
         use_custom_files = False
         custom_file_list_path = ''
 

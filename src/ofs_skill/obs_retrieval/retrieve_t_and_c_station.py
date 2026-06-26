@@ -25,7 +25,7 @@ import os
 import random
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from logging import Logger
 from typing import Any, Optional, Union
 from urllib.error import HTTPError
@@ -534,7 +534,7 @@ def check_bin_depth_changes(
         return False
 
     # Group bins by their specific deployment ID
-    deployment_profiles = {}
+    deployment_profiles: dict[Any, dict[int, float]] = {}
     for b in bins_list:
         # Protect against anomalous non-dict items in the list
         if not isinstance(b, dict):
@@ -561,7 +561,7 @@ def check_bin_depth_changes(
     profiles = list(deployment_profiles.values())
     baseline_profile = profiles[0]
 
-    for i, profile in enumerate(profiles[1:], start=1):
+    for profile in profiles[1:]:
         if profile != baseline_profile:
             logger.warning(
                 'CO-OPS station %s has shifting bin depths across deployments! '
@@ -573,10 +573,22 @@ def check_bin_depth_changes(
     logger.info('CO-OPS station %s bin depths are consistent across all deployments.', station_id)
     return False
 
+def _csv_safe(value: Any) -> Any:
+    """Neutralise spreadsheet formula injection in exported CSV cells.
+
+    A cell that begins with ``=``, ``+``, ``-`` or ``@`` is interpreted as a
+    formula when the CSV is opened in Excel/Sheets. Prefix such strings with a
+    single quote so they render literally. Non-strings pass through unchanged.
+    """
+    if isinstance(value, str) and value[:1] in ('=', '+', '-', '@'):
+        return "'" + value
+    return value
+
+
 def log_and_export_deployment_info(
     station_id: str,
     mdapi_url: str,
-    control_files_path: str,
+    control_files_path: Optional[str],
     logger: Logger,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -631,15 +643,18 @@ def log_and_export_deployment_info(
                     r_val = dep.get('retrieved')
                     if d_val:
                         d_dt = datetime.strptime(d_val, '%Y-%m-%d %H:%M:%S')
-                        # Active deployments lack a retrieved date; cap at current time
-                        r_dt = datetime.strptime(r_val, '%Y-%m-%d %H:%M:%S') if r_val else datetime.utcnow()
+                        # Active deployments lack a retrieved date; cap at current
+                        # time (naive UTC to stay consistent with the strptime values)
+                        r_dt = (datetime.strptime(r_val, '%Y-%m-%d %H:%M:%S')
+                                if r_val
+                                else datetime.now(UTC).replace(tzinfo=None))
                         dep_intervals.append((d_dt, r_dt))
 
                 # Sort intervals chronologically by start date
                 dep_intervals.sort(key=lambda x: x[0])
 
                 # Merge overlapping deployments to define solid coverage blocks
-                merged_coverage = []
+                merged_coverage: list[tuple[datetime, datetime]] = []
                 for current in dep_intervals:
                     if not merged_coverage:
                         merged_coverage.append(current)
@@ -668,7 +683,8 @@ def log_and_export_deployment_info(
                     overlap_end = min(gap_end, e_dt)
 
                     if overlap_start < overlap_end:
-                        window_gap_days = (overlap_end - overlap_start).seconds/60/24
+                        window_gap_days = (
+                            (overlap_end - overlap_start).total_seconds() / 86400.0)
                         total_gap_days += window_gap_days
                         gap_details.append(
                             f"{ overlap_start.strftime('%Y-%m-%d')} to {overlap_end.strftime('%Y-%m-%d')} ({window_gap_days:.2f} days)"
@@ -676,14 +692,18 @@ def log_and_export_deployment_info(
 
                 gaps_str = '; '.join(gap_details) if gap_details else 'None'
 
-        except Exception as ex:
-            logger.debug('Failed to parse dates for window checks on %s: %s', station_id, ex)
+        except (ValueError, KeyError, TypeError) as ex:
+            # A malformed deployment record should not silently zero out the
+            # gap diagnostic this feature exists to surface — surface it.
+            logger.warning(
+                'Failed to parse deployment dates for window checks on %s: %s. '
+                'Reported gap details may be incomplete.', station_id, ex)
 
     # 3. Emit the Log
     logger.info(
         'Station %s deployment summary: %d total deployments, '
         'has_historical_shifts=%s, change_in_requested_window=%s, '
-        'gap_days_in_window=%d, mounting=%s',
+        'gap_days_in_window=%.2f, mounting=%s',
         station_id, num_deployments, has_depth_shifts,
         window_change, total_gap_days, mounting_type
     )
@@ -700,13 +720,13 @@ def log_and_export_deployment_info(
         actual_gap_str = 'N/A'
 
     row_dict = {
-        'Station ID': station_id,
+        'Station ID': _csv_safe(station_id),
         'Total Deployments': num_deployments,
         'Multiple Deployments in Window': window_change if (start_date and end_date) else 'N/A',
         'Has Bin Depth Shifts': has_depth_shifts,
-        'Current Mounting Type': mounting_type,
-        'REPORTED (metadata) Gap Details': gaps_str,
-        'ACTUAL (observed) Gap Details': actual_gap_str
+        'Current Mounting Type': _csv_safe(mounting_type),
+        'REPORTED (metadata) Gap Details': _csv_safe(gaps_str),
+        'ACTUAL (observed) Gap Details': _csv_safe(actual_gap_str)
     }
 
     df = pd.DataFrame([row_dict])
@@ -849,7 +869,7 @@ _get_station_deployment = get_station_deployment
 def retrieve_t_and_c_station(
     retrieve_input: Any,
     logger: Logger,
-    control_files_path: Any,
+    control_files_path: Optional[str] = None,
     only_bins: Optional[set[int]] = None,
     config_file=None,
 ) -> Optional[Union[pd.DataFrame, dict[int, pd.DataFrame]]]:
@@ -1285,7 +1305,8 @@ def _retrieve_currents_all_bins(
                 end_dt_0=end_dt_0,
                 api_url=api_url,
                 logger=logger,
-                deployment_info=deployment_info,  # <-- ADDED
+                deployment_info=deployment_info,
+                has_depth_shifts=has_depth_shifts,
             )
             if df is None:
                 continue
@@ -1456,7 +1477,8 @@ def _retrieve_side_looking_currents(
             end_dt_0=end_dt_0,
             api_url=api_url,
             logger=logger,
-            deployment_info=deployment_info,  # <-- ADDED
+            deployment_info=deployment_info,
+            has_depth_shifts=has_depth_shifts,
         )
         if df is None:
             logger.info(
@@ -1530,7 +1552,8 @@ def _retrieve_currents_legacy_fallback(
         end_dt_0=end_dt_0,
         api_url=api_url,
         logger=logger,
-        deployment_info=deployment_info,  # <-- ADDED
+        deployment_info=deployment_info,
+        has_depth_shifts=has_depth_shifts,
     )
     if legacy is None:
         return None
@@ -1584,6 +1607,54 @@ def _legacy_fallback_bin(
                 return rtb
     return 1
 
+def _active_deployment_periods(
+    deployment_info: Optional[dict],
+    start_dt_0: datetime,
+    end_dt_0: datetime,
+    logger: Optional[Logger] = None,
+) -> tuple[list[tuple[datetime, datetime]], bool]:
+    """Intersect each deployment with ``[start_dt_0, end_dt_0]``.
+
+    Returns ``(periods, has_boundary)`` where ``periods`` is the sorted list of
+    ``(start, end)`` tuples for deployments overlapping the window, and
+    ``has_boundary`` is True when a physical deploy/retrieve event falls inside
+    the window. Active deployments (no ``retrieved`` date) are capped at
+    ``datetime.max``.
+    """
+    periods: list[tuple[datetime, datetime]] = []
+    has_boundary = False
+    if not (deployment_info and deployment_info.get('deployments')):
+        return periods, has_boundary
+
+    for dep in deployment_info['deployments']:
+        dep_str = dep.get('deployed')
+        ret_str = dep.get('retrieved')
+        if not dep_str:
+            continue
+        try:
+            dep_dt = datetime.strptime(dep_str, '%Y-%m-%d %H:%M:%S')
+            ret_dt = (datetime.strptime(ret_str, '%Y-%m-%d %H:%M:%S')
+                      if ret_str else datetime.max)
+        except ValueError as exc:
+            if logger is not None:
+                logger.debug('Failed to parse deployment dates: %s', exc)
+            continue
+
+        # A physical deploy/retrieve event strictly inside the window
+        if (start_dt_0 <= dep_dt <= end_dt_0) or (start_dt_0 <= ret_dt <= end_dt_0):
+            has_boundary = True
+
+        # Intersect this deployment with the requested date window
+        if dep_dt <= end_dt_0 and ret_dt >= start_dt_0:
+            p_start = max(start_dt_0, dep_dt)
+            p_end = min(end_dt_0, ret_dt)
+            if p_start <= p_end:
+                periods.append((p_start, p_end))
+
+    periods.sort()
+    return periods, has_boundary
+
+
 def _fetch_currents_chunked(
     station_id: str,
     bin_num: Optional[int],
@@ -1592,6 +1663,7 @@ def _fetch_currents_chunked(
     api_url: str,
     logger: Logger,
     deployment_info: Optional[dict] = None,
+    has_depth_shifts: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Pull currents data for a station (optionally a specific bin) in
     30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
@@ -1664,32 +1736,8 @@ def _fetch_currents_chunked(
 
     if deployment_info and deployment_info.get('deployments'):
         # Compile a list of active deployment periods within the requested window
-        active_periods = []
-        for dep in deployment_info['deployments']:
-            dep_str = dep.get('deployed')
-            ret_str = dep.get('retrieved')
-
-            if not dep_str:
-                continue
-
-            try:
-                dep_dt = datetime.strptime(dep_str, '%Y-%m-%d %H:%M:%S')
-                if ret_str:
-                    ret_dt = datetime.strptime(ret_str, '%Y-%m-%d %H:%M:%S')
-                else:
-                    ret_dt = datetime.max
-
-                # Intersect this deployment with the requested date window
-                if dep_dt <= end_dt_0 and ret_dt >= start_dt_0:
-                    p_start = max(start_dt_0, dep_dt)
-                    p_end = min(end_dt_0, ret_dt)
-                    if p_start <= p_end:
-                        active_periods.append((p_start, p_end))
-            except ValueError as e:
-                logger.debug('Failed to parse deployment dates for %s: %s', station_id, e)
-                continue
-
-        active_periods.sort()
+        active_periods, _ = _active_deployment_periods(
+            deployment_info, start_dt_0, end_dt_0, logger)
 
         if not active_periods:
             logger.info(
@@ -1835,42 +1883,41 @@ def _fetch_currents_chunked(
     if df.empty:
         return None
 
-    # Handles overlapping duplicates generated by the expanding 3-hour windows
-    df = df.sort_values(by='DateTime').drop_duplicates()
+    # Drop duplicate timestamps generated by the expanding 3-hour windows
+    # (and by overlapping deployments). Dedup on DateTime only — two instruments
+    # reporting the same bin number at the same time with slightly different
+    # speed/dir must not both survive, or downstream time-alignment breaks.
+    df = df.sort_values(by='DateTime').drop_duplicates(subset='DateTime')
+
+    # Resolve the physical deployment periods overlapping the requested window.
+    _active_periods, _has_boundary_in_window = _active_deployment_periods(
+        deployment_info, start_dt_0, end_dt_0, logger)
+
+    # When bin depths shift across deployments, observations recorded at
+    # different physical depths share one bin number. Concatenating them and
+    # comparing against a single fixed model node depth corrupts the skill
+    # statistics, so restrict to the most recent deployment period (whose depth
+    # matches the label stamped on this series downstream) rather than mixing.
+    if has_depth_shifts and len(_active_periods) > 1:
+        keep_start, keep_end = _active_periods[-1]
+        before = len(df)
+        df = df[(df['DateTime'] >= keep_start) & (df['DateTime'] <= keep_end)]
+        logger.warning(
+            'CO-OPS station %s (bin=%s) has bin-depth shifts across '
+            'deployments; restricting to the most recent deployment '
+            '(%s to %s) and dropping %d cross-boundary observation(s) to '
+            'avoid mixing physical depths in one skill comparison.',
+            station_id, bin_num,
+            keep_start.strftime('%Y-%m-%d %H:%M'),
+            keep_end.strftime('%Y-%m-%d %H:%M'),
+            before - len(df))
+        if df.empty:
+            return None
 
     # --- CALCULATE OBSERVED GAP (DEPLOYMENT BOUNDARIES ONLY) ---
     total_gap_seconds = 0.0
 
-    # 1. Safely resolve active physical deployment periods from metadata
-    _active_periods = []
-    _has_boundary_in_window = False
-    if deployment_info and deployment_info.get('deployments'):
-        for dep in deployment_info['deployments']:
-            dep_str = dep.get('deployed')
-            ret_str = dep.get('retrieved')
-            if not dep_str:
-                continue
-            try:
-                dep_dt = datetime.strptime(dep_str, '%Y-%m-%d %H:%M:%S')
-                ret_dt = datetime.strptime(ret_str, '%Y-%m-%d %H:%M:%S') if ret_str else datetime.max
-
-                # Check if a physical deploy/retrieve event strictly happened in this window
-                if (start_dt_0 <= dep_dt <= end_dt_0) or (start_dt_0 <= ret_dt <= end_dt_0):
-                    _has_boundary_in_window = True
-
-                # Intersect this deployment with the requested date window
-                if dep_dt <= end_dt_0 and ret_dt >= start_dt_0:
-                    p_start = max(start_dt_0, dep_dt)
-                    p_end = min(end_dt_0, ret_dt)
-                    if p_start <= p_end:
-                        _active_periods.append((p_start, p_end))
-            except ValueError:
-                continue
-
-        # Sort chronologically
-        _active_periods.sort()
-
-    # 2. Sum ONLY the observed data gaps if a boundary actually occurred during this fetch window
+    # Sum ONLY the observed data gaps if a boundary actually occurred during this fetch window
     if _has_boundary_in_window and len(_active_periods) > 1:
         for i in range(len(_active_periods) - 1):
             dep1_end = _active_periods[i][1]

@@ -579,10 +579,11 @@ def create_1dplot(prop, logger):
     prop.static_plots = conf_settings['static_plots']
     use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
     if use_custom_files:
+        pause_seconds = 5
         logger.warning('HEADS UP: You are using custom model input file names! '
                        'If you want to disable this option, update your conf '
-                       'file and restart. Pausing 5 seconds...')
-        time.sleep(10)
+                       'file and restart. Pausing %d seconds...', pause_seconds)
+        time.sleep(pause_seconds)
         logger.info('Continuing with custom file names...')
 
     # Parse incoming arguments stored in prop from string to a list
