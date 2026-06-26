@@ -66,6 +66,7 @@ Remarks:
 import argparse
 import copy
 import gc
+import glob
 import logging
 import logging.config
 import os
@@ -95,6 +96,136 @@ warnings.filterwarnings('ignore')
 
 def parameter_validation(prop, logger):
     """ Parameter validation """
+
+# Ordered (keyword, label) lookups for filename classification. Order
+# matters: more specific keywords (e.g. 'water_level_hw', 'forecast_a')
+# must precede their broader prefixes.
+_VARIABLE_KEYWORDS = (
+    ('water_level_hw', 'Water Level high tide'),
+    ('water_level_lw', 'Water Level low tide'),
+    ('water_level', 'Water Level'),
+    ('temperature', 'Temperature'),
+    ('currents_dir', 'Current direction'),
+    ('currents', 'Current speed'),
+    ('salinity', 'Salinity'),
+)
+
+_CAST_KEYWORDS = (
+    ('nowcast', 'Nowcast'),
+    ('forecast_a', 'Forecast (A)'),
+    ('forecast_b', 'Forecast (B)'),
+    ('forecast', 'Forecast'),
+    ('hindcast', 'Hindcast'),
+)
+
+
+def get_variable_from_filename(filename):
+    """Determine the variable type based on keywords in the filename."""
+    name = filename.lower()
+    for keyword, label in _VARIABLE_KEYWORDS:
+        if keyword in name:
+            return label
+    return 'Other'
+
+
+def get_forecast_type_from_filename(filename):
+    """Determine the cast type (nowcast/forecast_a/forecast_b/hindcast)
+    from keywords in the filename."""
+    name = filename.lower()
+    for keyword, label in _CAST_KEYWORDS:
+        if keyword in name:
+            return label
+    return 'Unknown'
+
+
+def combine_files_by_pattern(directory_path, output_filename,
+                             search_string='', whichcasts=None, logger=None):
+    """Combine per-variable skill-stat CSVs into one aggregate table.
+
+    Searches ``directory_path`` for CSV files whose name contains
+    ``search_string`` (typically the OFS name), tags each row with the source
+    filename, variable, and cast type, concatenates them, and writes the
+    result to ``output_filename`` inside ``directory_path``.
+
+    Args:
+        directory_path: Directory holding the individual skill-stat CSVs.
+        output_filename: Name of the combined CSV to write (in
+            ``directory_path``).
+        search_string: Substring the candidate filenames must contain.
+        whichcasts: Optional iterable of cast names (e.g.
+            ``['nowcast', 'forecast_b']``). When provided, only files whose
+            name contains one of these casts are included, so stale files
+            from other casts are not swept in.
+        logger: Optional logger; falls back to the module logger.
+
+    Returns:
+        The combined ``pandas.DataFrame``, or ``None`` if no files matched.
+    """
+    log = logger or logging.getLogger(__name__)
+
+    # Match the search string anywhere in the basename. glob.escape guards
+    # against any glob metacharacters in the OFS name.
+    matched_files = glob.glob(
+        os.path.join(directory_path, f'*{glob.escape(search_string)}*'))
+
+    # Keep only individual skill tables for the requested cast(s): drop the
+    # aggregate output itself, 2D tables, and previously combined files so
+    # re-runs stay idempotent, then (optionally) restrict to the casts the
+    # current run produced so stale files from other casts aren't folded in.
+    casts = [c.lower() for c in whichcasts] if whichcasts else None
+
+    def _wanted(path):
+        base = os.path.basename(path).lower()
+        if ('combined' in base or 'skill_2d' in base
+                or base.endswith('_all_stations.csv')):
+            return False
+        return casts is None or any(c in base for c in casts)
+
+    dataframes = []
+    skipped = 0
+    for file in filter(_wanted, matched_files):
+        try:
+            df = pd.read_csv(file)
+            filename = os.path.basename(file)
+
+            # Add metadata columns
+            df['source_file'] = filename
+            df['variable'] = get_variable_from_filename(filename)
+            df['type'] = get_forecast_type_from_filename(filename)
+
+            dataframes.append(df)
+            log.info('Aggregating %s -> %s (%s)', filename,
+                     df['variable'].iloc[0], df['type'].iloc[0])
+        except (OSError, ValueError, pd.errors.ParserError) as err:
+            skipped += 1
+            log.warning('Skipping unreadable skill file %s: %s', file, err)
+
+    if not dataframes:
+        log.warning("No skill files matching '*%s*' found in '%s'.",
+                    search_string, directory_path)
+        return None
+
+    # Combine all DataFrames into one, ignoring the original indices.
+    combined_df = pd.concat(dataframes, ignore_index=True)
+
+    # Drop stale duplicate rows (same station, variable, and cast) that can
+    # linger from earlier runs; keep one copy per station/variable/cast.
+    dedup_keys = [c for c in ('ID', 'variable', 'type')
+                  if c in combined_df.columns]
+    if dedup_keys:
+        n_before = len(combined_df)
+        combined_df = combined_df.drop_duplicates(
+            subset=dedup_keys, keep='last').reset_index(drop=True)
+        if n_before != len(combined_df):
+            log.info('Dropped %d duplicate skill row(s) during aggregation.',
+                     n_before - len(combined_df))
+
+    combined_df.to_csv(
+        os.path.join(directory_path, output_filename), index=False)
+    log.info("Combined %d skill file(s) into '%s'%s.", len(dataframes),
+             output_filename, f' ({skipped} skipped)' if skipped else '')
+    return combined_df
+
 
 def ofs_ctlfile_read(prop, name_var, logger):
     '''
@@ -926,6 +1057,16 @@ def create_1dplot(prop, logger):
         # the model is loaded once and shared.
         for variable in prop.var_list:
             _plot_variable(variable, prop)
+
+    # Aggregate every per-variable skill table for this OFS into a single
+    # consolidated file. Runs once here, after all variables and casts have
+    # been processed, so the combined table is complete and written only once.
+    combine_files_by_pattern(
+        prop.data_skill_stats_path,
+        f'skill_{prop.ofs}_all_stations.csv',
+        search_string=prop.ofs,
+        whichcasts=getattr(prop, 'whichcasts', None),
+        logger=logger)
 
     return logger
 
