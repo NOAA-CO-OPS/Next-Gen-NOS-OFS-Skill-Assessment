@@ -36,6 +36,7 @@ from botocore.exceptions import ClientError
 
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours, get_s3_bucket
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.model_processing import get_fcst_cycle
 
 
 def construct_s3_url(local_path: str, prop: Any, logger: Logger) -> Optional[str]:
@@ -509,7 +510,7 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
         logger.info('use_s3_fallback=force: skipping local model dir checks; NODD S3 URLs will be used for all model files.')
 
     # Deal with LOOFS2 -- switch off
-    if prop.ofs == 'loofs2' and prop.whichcast == 'hindcast':
+    if (prop.ofs == 'loofs2' and prop.whichcast == 'hindcast') or prop.ofs == 'secofs':
         use_s3_fallback = False
         force_nodd_streaming = False
 

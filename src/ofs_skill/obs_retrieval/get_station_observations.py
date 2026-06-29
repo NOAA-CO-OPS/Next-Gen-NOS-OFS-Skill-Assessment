@@ -386,6 +386,8 @@ def _fetch_and_format_station(
     try:
         station_id = station_info[0]
         source = station_info[3]
+        datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
+                           ['datum_list']).split(' ')
 
         # Each worker gets its own RetrieveProperties — critical for
         # thread safety since the object carries mutable request state.
@@ -402,11 +404,22 @@ def _fetch_and_format_station(
                     _split_virtual_currents_id(station_id)
                     if variable == 'currents' else (str(station_id), None)
                 )
+                # Find correct retrieval datum
+                # Convert list1 to a set for fast lookup
+                set1 = set(datum_list)
+                # Get the first value in list2 that exists in set1
+                # Returns None if no common value is found
+                common_value = next((x for x in station_metadata if x in set1), None)
+                if common_value == 'NAVD88':
+                    common_value = 'NAVD'
+                if common_value == 'IGLD85':
+                    common_value = 'IGLD'
+
                 retrieve_input.station = parent_id
                 retrieve_input.start_date = start_date
                 retrieve_input.end_date = end_date
                 retrieve_input.variable = variable
-                retrieve_input.datum = datum
+                retrieve_input.datum = common_value
 
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger,

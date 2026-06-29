@@ -78,6 +78,7 @@ def index_nearest_node(
     model_netcdf: dict[str, Any],
     model_source: str,
     name_var: str,
+    ofs: str,
     logger: logging.Logger
 ) -> list[int]:
     """
@@ -232,7 +233,7 @@ def index_nearest_node(
                 coord_cache[key] = idx
                 index_min_dist.append(idx)
                 logger.info(
-                    f'Nearest node found: station {obs_p + 1} of {len(ctl_file_extract)}'
+                    f'Nearest node found: node {obs_p + 1} of {len(ctl_file_extract)}'
                 )
 
     elif model_source == 'roms':
@@ -353,91 +354,111 @@ def index_nearest_node(
             else:
                 index_min_dist.append(np.nan)
                 logger.warning(
-                    f'No nearby nodes found: station {obs_p + 1} of {len(ctl_file_extract)}'
+                    f'No nearby nodes found: node {obs_p + 1} of {len(ctl_file_extract)}'
                 )
 
     elif model_source == 'schism':
-        index_min_dist = []  # type: ignore[no-redef]
-        if name_var == 'wl':
-             #model_var="elevation" # Using out2d files = "elev"
-             var_name='elevation' # Using out2d files
-        elif  name_var == 'salt':
-             var_name = 'salinity'
-        elif  name_var == 'temp':
-             var_name = 'temperature'
-        elif  name_var == 'cu':
-             var_name = 'horizontalVelX'
-        # Extract coordinates
-        # Handle x coordinate
-        x_var = model_netcdf['SCHISM_hgrid_node_x']
-        if 'time' in x_var.dims:
-             for t in range(x_var.sizes['time']):
-                 test_slice = x_var.isel(time=t)
-                 if not test_slice.isnull().all():
-                     x_coords = test_slice
-                     break
-        else:
-             x_coords = x_var
-        # Handle y coordinate
-        y_var = model_netcdf['SCHISM_hgrid_node_y']
-        if 'time' in y_var.dims:
-             y_coords = y_var.isel(time=t)  # use same t as for x_coords
-        else:
-             y_coords = y_var
+        index_min_dist = []
+        if ofs in ['secofs']:
+            lat_np = np.array(model_netcdf['lat'])[0,:]
+            lon_np = np.array(model_netcdf['lon'])[0,:]
+            for obs_p in range(0, len(ctl_file_extract)):
+                dist = []
+                obs_lon = float(ctl_file_extract[obs_p][1])# + 360
+                obs_lat = float(ctl_file_extract[obs_p][0])
 
-        model_data = model_netcdf[var_name][0,:].compute()  # shape: [time, node]
-        depth_values = model_netcdf['zCoordinates'][0,:].compute()
-        # Convert to NumPy arrays (and force computation because lazy-loaded via Dask)
-        if hasattr(x_coords, 'compute'):
-           x_coords = x_coords.compute()
-        if hasattr(y_coords, 'compute'):
-           y_coords = y_coords.compute()
+                # Find nearby nodes within 0.1 degree window
+                nearby_nodes = np.argwhere(
+                    (lon_np > obs_lon - 0.1) &
+                    (lon_np < obs_lon + 0.1) &
+                    (lat_np > obs_lat - 0.1) &
+                    (lat_np < obs_lat + 0.1)
+                )
+                for mod_p in nearby_nodes[:, 0]:
+                    dvalue = calculate_station_distance(
+                        lat_np[int(mod_p)],
+                        lon_np[int(mod_p)],
+                        obs_lat,
+                        obs_lon
+                    )
+                    dist.append(dvalue)
 
-        x_np = np.array(x_coords)
-        y_np = np.array(y_coords)
-        for obs_p in range(len(ctl_file_extract)):
-            obs_lon = float(ctl_file_extract[obs_p][1])
-            obs_lat = float(ctl_file_extract[obs_p][0])
+                index_min_dist.append(int(np.squeeze(nearby_nodes[dist.index(min(dist))])))
+                logger.info(
+                    f'Nearest node found: node {obs_p + 1} of {len(ctl_file_extract)}'
+                )
 
-            key = _coords_lookup_key(obs_lat, obs_lon)
-            if key in coord_cache:
-                index_min_dist.append(coord_cache[key])
-                logger.debug(
-                    'Nearest-node cache hit for station %d at %s',
-                    obs_p + 1, key)
-                continue
-
-            # Find nearby nodes within a small bounding box (±0.1 degrees)
-            nearby_nodes = np.argwhere(
-             (x_np > obs_lon - 0.1) & (x_np < obs_lon + 0.1) &
-             (y_np > obs_lat - 0.1) & (y_np < obs_lat + 0.1)
-              )
-
-            if len(nearby_nodes) == 0:
-                logger.warning(f'No nearby nodes found for station {obs_p}')
-                index_min_dist.append(-1)
-                continue
-            # Compute squared distances (ignoring NaNs safely)
-            dist = []
-            for node_idx in nearby_nodes[:, 0]:
-                x_val = float(x_np[node_idx])
-                y_val = float(y_np[node_idx])
-                if np.isnan(x_val) or np.isnan(y_val) or \
-                   model_data[node_idx].isnull().all() or depth_values[node_idx,:].isnull().all():
-                   dist.append(np.nan)
-                else:
-                   d = (x_val - obs_lon) ** 2 + (y_val - obs_lat) ** 2
-                   dist.append(d)
-            dist = np.array(dist)  # type: ignore[assignment]
-
-            if np.all(np.isnan(dist)):
-               logger.warning(f'All distances NaN for station {obs_p}')
-               index_min_dist.append(-1)
+        elif 'stofs' in ofs:
+            if name_var == 'wl':
+                 #model_var="elevation" # Using out2d files = "elev"
+                 var_name='elevation' # Using out2d files
+            elif  name_var == 'salt':
+                 var_name = 'salinity'
+            elif  name_var == 'temp':
+                 var_name = 'temperature'
+            elif  name_var == 'cu':
+                 var_name = 'horizontalVelX'
+            # Extract coordinates
+            # Handle x coordinate
+            x_var = model_netcdf['SCHISM_hgrid_node_x']
+            if 'time' in x_var.dims:
+                 for t in range(x_var.sizes['time']):
+                     test_slice = x_var.isel(time=t)
+                     if not test_slice.isnull().all():
+                         x_coords = test_slice
+                         break
             else:
-               nearest_idx = int(nearby_nodes[np.nanargmin(dist)][0])
-               coord_cache[key] = nearest_idx
-               index_min_dist.append(nearest_idx)
-            logger.info('Nearest element found: station %s of %s', obs_p + 1, len(ctl_file_extract))
+                 x_coords = x_var
+            # Handle y coordinate
+            y_var = model_netcdf['SCHISM_hgrid_node_y']
+            if 'time' in y_var.dims:
+                 y_coords = y_var.isel(time=t)  # use same t as for x_coords
+            else:
+                 y_coords = y_var
+
+            model_data = model_netcdf[var_name][0,:].compute()  # shape: [time, node]
+            depth_values = model_netcdf['zCoordinates'][0,:].compute()
+            # Convert to NumPy arrays (and force computation because lazy-loaded via Dask)
+            if hasattr(x_coords, 'compute'):
+               x_coords = x_coords.compute()
+            if hasattr(y_coords, 'compute'):
+               y_coords = y_coords.compute()
+
+            x_np = np.array(x_coords)
+            y_np = np.array(y_coords)
+            for obs_p in range(len(ctl_file_extract)):
+                obs_lon = float(ctl_file_extract[obs_p][1])
+                obs_lat = float(ctl_file_extract[obs_p][0])
+                # Find nearby nodes within a small bounding box (±0.1 degrees)
+                nearby_nodes = np.argwhere(
+                 (x_np > obs_lon - 0.1) & (x_np < obs_lon + 0.1) &
+                 (y_np > obs_lat - 0.1) & (y_np < obs_lat + 0.1)
+                  )
+
+                if len(nearby_nodes) == 0:
+                    logger.warning(f'No nearby nodes found for station {obs_p}')
+                    index_min_dist.append(-1)
+                    continue
+                # Compute squared distances (ignoring NaNs safely)
+                dist = []
+                for node_idx in nearby_nodes[:, 0]:
+                    x_val = float(x_np[node_idx])
+                    y_val = float(y_np[node_idx])
+                    if np.isnan(x_val) or np.isnan(y_val) or \
+                       model_data[node_idx].isnull().all() or depth_values[node_idx,:].isnull().all():
+                       dist.append(np.nan)
+                    else:
+                       d = (x_val - obs_lon) ** 2 + (y_val - obs_lat) ** 2
+                       dist.append(d)
+                dist = np.array(dist)
+
+                if np.all(np.isnan(dist)):
+                   logger.warning(f'All distances NaN for station {obs_p}')
+                   index_min_dist.append(-1)
+                else:
+                   nearest_idx = int(nearby_nodes[np.nanargmin(dist)][0])
+                   index_min_dist.append(nearest_idx)
+                logger.info('Nearest element found: station %s of %s', obs_p + 1, len(ctl_file_extract))
 
     elif model_source == 'adcirc':
         raise NotImplementedError('ADCIRC indexing not yet implemented.')
@@ -462,6 +483,7 @@ def index_nearest_depth(
     station_ctl_file_extract: Any,
     model_source: str,
     name_var: str,
+    ofs: str,
     logger: logging.Logger
 ) -> tuple[list[Any], Any]:
     """
@@ -496,16 +518,24 @@ def index_nearest_depth(
 
     Notes
     -----
-    Only applies to 'fields' file type (3D output).
-    For 'stations' file type, returns empty lists.
-    Model depths are typically negative (below surface).
+
     """
 
     if prop.ofsfiletype == 'fields':
         index_min_depth: list[Any] = []
         depth_value: list[Any] = []
         length = len(index_min_dist)
-
+        if name_var == 'wl':
+            # Water level (zeta) is a 2D surface variable — no depth indexing needed
+            for idx in range(length):
+                if ~np.isnan(index_min_dist[idx]):
+                    index_min_depth.append(0)
+                    depth_value.append(0.0)
+                    logger.info('Nearest depth found: node %s of %s', idx + 1, length)
+                else:
+                    index_min_depth.append(np.nan)
+                    depth_value.append(np.nan)
+            return index_min_depth, np.abs(depth_value)
         if model_source == 'fvcom':
             if 'zc' in model_netcdf:
                 zc_np = _static_coord_1d(model_netcdf, 'zc')  # Element center depths
@@ -528,6 +558,14 @@ def index_nearest_depth(
                     "precomputed 'z' variable on the dataset. "
                     'Tracked at issue #129.'
                 )
+
+        elif model_source == 'schism' and ofs in ['secofs']:
+            try:
+                z_np = np.array(model_netcdf['zCoordinates'])[0,:,:]    # Node depths
+            except KeyError:
+                logger.warning('SECOFS field file does not have depth '
+                               'info! Taking surface value...')
+                return np.asarray(model_netcdf['salinity']).shape[1]-1, 0
         elif model_source == 'roms':
             lon_rho_np = _static_coord_1d(model_netcdf, 'lon_rho')
             s_rho_np = _static_coord_1d(model_netcdf, 's_rho')
@@ -615,7 +653,7 @@ def index_nearest_depth(
                 index_min_depth.append(index_min_depth_node)
 
                 logger.info(
-                    f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
+                    f'Nearest depth found: depth {idx + 1} of {len(index_min_dist)}'
                 )
 
             elif model_source == 'roms':
@@ -680,44 +718,51 @@ def index_nearest_depth(
                 index_min_depth.append(index_min_depth_node)
 
                 logger.info(
-                    f'Nearest depth found: node {idx + 1} of {len(index_min_dist)}'
+                    f'Nearest depth found: depth {idx + 1} of {len(index_min_dist)}'
                 )
 
             elif model_source == 'schism':
-                if name_var == 'wl':
-                    index_min_depth.append(0)
-                else:
-                    # we assume layers are consistance at all the time steps,
-                    # therefore, we use depth layes at time 0
-                    #z_coords_1d = model_netcdf['zCoordinates'].load()
-                    z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).load()  # to handle memory error
-                    node = index_min_dist[idx]
+                # we assume layers are consistance at all the time steps,
+                # therefore, we use depth layes at time 0
+                #z_coords_1d = model_netcdf['zCoordinates'].load()
+                try:
+                    z_coords_1d = np.asarray(model_netcdf['zCoordinates'])[0,:,:]
+                except KeyError:
+                    logger.warning('SECOFS field file does not have depth '
+                                   'info! Taking surface value...')
+                    return np.asarray(model_netcdf['salinity']).shape[1]-1, 0
+                if np.asarray(model_netcdf['temp']).shape[1] == len(z_coords_1d):
+                    # Transpose for secofs, or other OFS
+                    # where the depth and node dims are reversed
+                    z_coords_1d = z_coords_1d.T
+                node = index_min_dist[idx]
 
-                    if np.isnan(node) or np.isnan(float(station_ctl_file_extract[idx][3])):
-                       logger.warning(f'No nearby depth found for node {idx + 1}')
-                       index_min_dist.append(-1)
-                       depth_value.append(-1)
-                       continue
+                if np.isnan(node) or np.isnan(float(station_ctl_file_extract[idx][3])):
+                   logger.warning(f'No nearby depth found for node {idx + 1}')
+                   index_min_dist.append(-1)
+                   depth_value.append(-1)
+                   continue
 
-                    #model_depths = z_coords_1d[0,node,:]
-                    model_depths = z_coords_1d[node,:].values
-                    station_depth = station_ctl_file_extract[idx][3]
-                    dist = []
-                    # this is positive here because model depths (depth) are negative
-                    # values and obs depths (station_depth) are positive
-                    for depth in model_depths:
+                #model_depths = z_coords_1d[0,node,:]
+                model_depths = z_coords_1d[node,:]
+                station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
 
-                        if  not np.isnan(depth):
-                            dist.append(float(station_depth) + depth)
-                        else:
-                            dist.append(np.nan)
-                    dist = [np.abs(i) for i in dist]
-                    index_min_depth_node = dist.index(np.nanmin(dist))
-                    index_min_depth.append(index_min_depth_node)
-                    depth_value.append(model_depths[
-                    index_min_depth_node])
+                dist = []
+                # this is positive here because model depths (depth) are negative
+                # values and obs depths (station_depth) are positive
+                for depth in model_depths:
+
+                    if  not np.isnan(depth):
+                        dist.append(float(station_depth) + depth)
+                    else:
+                        dist.append(np.nan)
+                dist = [np.abs(i) for i in dist]
+                index_min_depth_node = dist.index(np.nanmin(dist))
+                index_min_depth.append(index_min_depth_node)
+                depth_value.append(model_depths[
+                index_min_depth_node])
                 logger.info(
-                  'Nearest depth found: node %s of %s', idx + 1,
+                  'Nearest depth found: depth %s of %s', idx + 1,
                   len(index_min_dist))
             elif model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
@@ -737,23 +782,23 @@ def index_nearest_depth(
                     raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
 
     elif prop.ofsfiletype == 'stations':
-        if 'stofs' in prop.ofs:
+        if prop.ofs in ['stofs']:
             return [], []
         index_min_depth = []  # type: ignore[no-redef]
         depth_value = []  # type: ignore[no-redef]
         length = len(index_min_dist)
+        if name_var == 'wl':
+            # Water level (zeta) is a 2D surface variable — no depth indexing needed
+            for idx in range(length):
+                if ~np.isnan(index_min_dist[idx]):
+                    index_min_depth.append(0)
+                    depth_value.append(0.0)
+                    logger.info('Nearest depth found: node %s of %s', idx + 1, length)
+                else:
+                    index_min_depth.append(np.nan)
+                    depth_value.append(np.nan)
+            return index_min_depth, np.abs(depth_value)
         if model_source == 'fvcom':
-            if name_var == 'wl':
-                # Water level (zeta) is a 2D surface variable — no depth indexing needed
-                for idx in range(length):
-                    if ~np.isnan(index_min_dist[idx]):
-                        index_min_depth.append(0)
-                        depth_value.append(0.0)
-                        logger.info('Nearest depth found: node %s of %s', idx + 1, length)
-                    else:
-                        index_min_depth.append(np.nan)
-                        depth_value.append(np.nan)
-                return index_min_depth, np.abs(depth_value)
             if 'z' in model_netcdf:
                 z_np = _static_coord_1d(model_netcdf, 'z')
             else:
@@ -770,13 +815,23 @@ def index_nearest_depth(
         elif model_source == 'roms':
             s_rho_np = _static_coord_1d(model_netcdf, 's_rho')
             h_np = _static_coord_1d(model_netcdf, 'h')
-        elif model_source == 'schism' and prop.ofs == 'loofs2':
+
+        elif model_source == 'schism':
             if name_var == 'wl':
                 for idx in range(length):
                     index_min_depth.append(0)
                     depth_value.append(0.0)
                 return index_min_depth, np.abs(depth_value)
-            z_np = _static_coord_1d(model_netcdf, 'zcoords')
+            if prop.ofs == 'loofs2':
+                z_np = _static_coord_1d(model_netcdf, 'zcoords')
+            elif prop.ofs == 'secofs':
+                depth_tracker = None
+                try:
+                    z_np = np.array(model_netcdf['zCoordinates'])
+                except KeyError:
+                    logger.warning('SECOFS station file does not have depth '
+                                   'info! Taking surface value...')
+                    depth_tracker = 1
 
         for idx in range(0, length):
             if ~np.isnan(index_min_dist[idx]):
@@ -788,10 +843,19 @@ def index_nearest_depth(
                 elif model_source=='roms':
                     # h is 1-D (node,) after normalisation.
                     model_depths = np.asarray(s_rho_np * h_np[node])
-                elif model_source == 'schism' and prop.ofs == 'loofs2':
-                    # zcoords for SCHISM has node+depth axes; the helper
-                    # already dropped any leading time-replicated dim.
-                    model_depths = np.asarray(z_np[node, :])
+                elif model_source == 'schism':
+                    if prop.ofs == 'loofs2':
+                        # zcoords for SCHISM has node+depth axes; the helper
+                        # already dropped any leading time-replicated dim.
+                        model_depths = np.asarray(z_np[node, :])
+                    elif prop.ofs == 'secofs':
+                        if not depth_tracker:
+                            model_depths = np.asarray(z_np[0, :, node])
+                        else:
+                            index_min_depth.append(np.asarray(
+                                model_netcdf['salinity']).shape[1] - 1)
+                            depth_value.append(0)
+                            continue
                 elif model_source == 'adcirc':
                     if prop.ofs == 'stofs_2d_glo':
                         if name_var == 'wl':

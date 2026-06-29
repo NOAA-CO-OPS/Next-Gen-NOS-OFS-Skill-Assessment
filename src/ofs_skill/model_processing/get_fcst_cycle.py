@@ -209,7 +209,7 @@ def get_fcst_hours(ofs):
     # Now need to know forecast length in hours
     if ofs in (
         'cbofs', 'ciofs', 'creofs', 'dbofs', 'ngofs2', 'sfbofs',
-        'tbofs', 'stofs_3d_pac',
+        'tbofs', 'stofs_3d_pac', 'secofs'
     ):
         fcstlength = 48
     elif ofs in ('gomofs', 'wcofs', 'sscofs', 'necofs'):
@@ -274,6 +274,9 @@ def get_fcst_dates(prop, logger):
         conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
         use_s3_fallback = conf_settings.get('use_s3_fallback', 'False').lower() in ('true', '1', 'yes')
     except (KeyError, FileNotFoundError):
+        use_s3_fallback = False
+
+    if prop.ofs in ('loofs2','secofs'):
         use_s3_fallback = False
 
     # Define forecast cycle hours for each OFS group

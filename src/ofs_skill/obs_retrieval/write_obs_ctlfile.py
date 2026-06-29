@@ -872,6 +872,7 @@ def _process_variable(
                         control_files_path=control_files_path,
                     )
                 )
+
             for future in futures:
                 result = future.result()
                 if result:
@@ -1116,6 +1117,7 @@ def write_obs_ctlfile(
                     config_file,
                 )
             )
+
         for future in futures:
             future.result()
 

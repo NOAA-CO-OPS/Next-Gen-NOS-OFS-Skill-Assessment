@@ -597,7 +597,18 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     for i in range(length):
                         if not np.isnan(list_of_nearest_node[i]):
                             if prop.ofsfiletype == 'fields':
-                                if name_var == 'wl':
+                                if prop.ofs == 'secofs':
+                                    # SECOFS fields carry node lon/lat directly
+                                    # (no SCHISM_hgrid_node_x/y); index the
+                                    # nearest node's coords from the model.
+                                    model_ctl_file.append(
+                                        f'{list_of_nearest_node[i]} '
+                                        f'{list_of_nearest_layer[i]} '
+                                        f"{model['lat'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f"{model['lon'][0,list_of_nearest_node[i]].data.compute():.3f}  "
+                                        f'{station_id[i]}  {list_of_depths[i]:.1f}\n'
+                                    )
+                                elif name_var == 'wl':
                                     x_var = model['SCHISM_hgrid_node_x']
                                     y_var = model['SCHISM_hgrid_node_y']
 

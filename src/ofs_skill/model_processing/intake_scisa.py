@@ -978,7 +978,6 @@ def get_station_dim(engine: str, urlpaths: list[str],
     ...     print(f"Will use file {dim_ref} as reference for slicing")
     """
 
-
     def _read_dim(file):
         source = intake.open_netcdf(
             urlpath=file,
@@ -1005,6 +1004,7 @@ def get_station_dim(engine: str, urlpaths: list[str],
 
     dim_compat = True
     dim_ref: Any = []
+
     if np.nanmax(np.diff(station_dim)) != 0:
         dim_compat = False
         # Get reference dataset index
@@ -1063,6 +1063,7 @@ def remove_extra_stations(engine: str,
     INFO:root:Looping through each stations file, applying corrections...
     INFO:root:Done with corrections loop! Files are combined.
     """
+
     refsource = intake.open_netcdf(
         urlpath=urlpaths[dim_ref],
         xarray_kwargs={
@@ -1071,23 +1072,44 @@ def remove_extra_stations(engine: str,
         },
     )
     refds = refsource.read()
-    reflat = np.array(refds['lat_rho'])
+    # Get correct latitude key
+    lat_key = 'lat'
+    if 'lat_rho' in list(refds.variables):
+        lat_key = 'lat_rho'
+
+    reflat = np.array(refds[lat_key])
     # Now loop through datasets. Check for and remove extra stations.
     logger.info('Looping through each stations file, applying corrections...')
     for i, file in enumerate(urlpaths):
         tempsource = intake.open_netcdf(
-            urlpath=file,
+            urlpath=[file,file],
             xarray_kwargs={
-                'engine': 'h5netcdf',
+                'concat_dim': time_name,
+                'combine': 'nested',
+                'engine': engine,
                 'drop_variables': drop_variables,
                 'decode_times': True,
                 'chunks': 'auto',
+                'preprocess': preprocess_with_filename,
             },
         )
+
         tempds = tempsource.read()
-        latcheck = np.isin(np.array(tempds['lat_rho']), reflat, invert=True)
-        latcheck = np.where(latcheck)[0]  # type: ignore[assignment]
-        tempds = tempds.drop_isel(station=latcheck)
+        tempds = tempds.drop_duplicates(dim=time_name, keep='first')
+        latcheck = np.isin(np.array(tempds[lat_key]), reflat, invert=True)
+        latcheck_1 = np.where(latcheck)[0]
+        try:
+            tempds = tempds.drop_isel(station=latcheck_1)
+        except IndexError:
+            #Try other dimension -- this is for secofs
+            latcheck_1 = np.where(latcheck)[1]
+            try:
+                tempds = tempds.drop_isel(station=latcheck_1)
+            except IndexError:
+                logger.error('Unable to trim extra stations to make array '
+                             'dimensions consistent! Must exit...')
+                raise SystemExit(-1)
+
         # If compatible, then combine datasets
         if file == urlpaths[0]:
             ds = tempds
@@ -1102,5 +1124,8 @@ def remove_extra_stations(engine: str,
                 logger.error(f'Station dims are inconsistent! {e_x}')
                 logger.info('Check intake_scisa.py.')
                 raise SystemExit(-1)
+            except Exception as e:
+                logger.error('Error when combining trimmed station netcdfs! '
+                             'Error: %s', e)
     logger.info('Done with corrections loop! Files are combined.')
     return ds
