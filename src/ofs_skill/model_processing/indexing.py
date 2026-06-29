@@ -383,6 +383,11 @@ def index_nearest_node(
                     )
                     dist.append(dvalue)
 
+                if len(nearby_nodes) == 0 or len(dist) == 0:
+                    logger.warning(f'No nearby nodes found for station {obs_p}')
+                    index_min_dist.append(-1)
+                    continue
+
                 index_min_dist.append(int(np.squeeze(nearby_nodes[dist.index(min(dist))])))
                 logger.info(
                     f'Nearest node found: node {obs_p + 1} of {len(ctl_file_extract)}'
@@ -745,7 +750,7 @@ def index_nearest_depth(
 
                 #model_depths = z_coords_1d[0,node,:]
                 model_depths = z_coords_1d[node,:]
-                station_depth = np.array(station_ctl_file_extract)[:, 3][idx]
+                station_depth = station_ctl_file_extract[idx][3]
 
                 dist = []
                 # this is positive here because model depths (depth) are negative

@@ -778,8 +778,9 @@ def format_temp_salt(prop, model, ofs_ctlfile, model_var, i, precomputed=None):
     elif prop.model_source=='schism':
         # SECOFS: time x depth x node
         if prop.ofsfiletype == 'fields':
-            if model_var=='temp' and 'stofs' in prop.ofs:
-               model_var='temperature'
+            if 'stofs' in prop.ofs:
+               if model_var=='temp':
+                   model_var='temperature'
                model_obs = np.array(model[model_var][:, int(ofs_ctlfile[1][i]),
                                                      int(ofs_ctlfile[2][i])])
             elif 'secofs' in prop.ofs:

@@ -1080,7 +1080,7 @@ def remove_extra_stations(engine: str,
     reflat = np.array(refds[lat_key])
     # Now loop through datasets. Check for and remove extra stations.
     logger.info('Looping through each stations file, applying corrections...')
-    for i, file in enumerate(urlpaths):
+    for _i, file in enumerate(urlpaths):
         tempsource = intake.open_netcdf(
             urlpath=[file,file],
             xarray_kwargs={
@@ -1123,9 +1123,10 @@ def remove_extra_stations(engine: str,
             except ValueError as e_x:
                 logger.error(f'Station dims are inconsistent! {e_x}')
                 logger.info('Check intake_scisa.py.')
-                raise SystemExit(-1)
+                raise SystemExit(-1) from e_x
             except Exception as e:
                 logger.error('Error when combining trimmed station netcdfs! '
                              'Error: %s', e)
+                raise SystemExit(-1) from e
     logger.info('Done with corrections loop! Files are combined.')
     return ds

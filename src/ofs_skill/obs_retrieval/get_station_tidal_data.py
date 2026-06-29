@@ -13,6 +13,39 @@ from ofs_skill.obs_retrieval import (
 from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
 
 
+def _convert_tidal_datum(tidal_data, used_datum, requested_datum, lat, lon, logger):
+    """
+    Re-references a tidal prediction series from its retrieved datum to the
+    requested datum.
+
+    CO-OPS serves no xgeoid20b, so tides are pulled at a native datum and
+    converted here. ``vdatum_resilient.convert`` returns ``z' = z + (from_zero -
+    to_zero)``, so the value offset ``(z' - dummy_val)`` is ADDED to the tide to
+    match the model-side conversion in get_datum_offset.py / get_node_ofs.py.
+
+    Returns:
+        tuple: (tidal_data, used_datum). ``tidal_data`` is None if the
+        conversion offset is non-finite.
+    """
+    logger.info('Retrieved datum (%s) for tidal predictions is different '
+                'than the requested datum (%s)! Converting...',
+                used_datum, requested_datum)
+    dummy_val = 10
+    _,_,z = vdatum_resilient.convert(
+        used_datum.lower(),
+        requested_datum.lower(),
+        lat,
+        lon,
+        dummy_val, #use dummy value
+        epoch=None,
+        logger=logger,
+        )
+    if math.isinf(z):
+        return None, used_datum
+    tidal_data['TIDE'] = tidal_data['TIDE'] + (float(round(z-dummy_val, 2)))
+    return tidal_data, requested_datum
+
+
 def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
     """
     Retrieves tidal prediction data for a station or its nearest neighbors.
@@ -102,24 +135,8 @@ def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
         tidal_data, used_datum = try_get_tidal_data(obs_station_id)
         if tidal_data is not None:
             if used_datum != requested_datum:
-                logger.info('Retrieved datum (%s) for tidal predictions is different '
-                            'than the requested datum (%s)! Converting...',
-                            used_datum, requested_datum)
-                dummy_val = 10
-                _,_,z = vdatum_resilient.convert(
-                    used_datum.lower(),
-                    requested_datum.lower(),
-                    lat,
-                    lon,
-                    dummy_val, #use dummy value
-                    epoch=None,
-                    logger=logger,
-                    )
-                if math.isinf(z):
-                    tidal_data = None
-                else:
-                    tidal_data['TIDE'] = tidal_data['TIDE'] - (float(round(z-dummy_val, 2)))
-                    used_datum = requested_datum
+                tidal_data, used_datum = _convert_tidal_datum(
+                    tidal_data, used_datum, requested_datum, lat, lon, logger)
             tidal_station_id = obs_station_id
             tidal_station_distance = 0.0
 
@@ -137,24 +154,8 @@ def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
 
             if tidal_data is not None:
                 if used_datum != requested_datum:
-                    logger.info('Retrieved datum (%s) for tidal predictions is different '
-                                'than the requested datum (%s)! Converting...',
-                                used_datum, requested_datum)
-                    dummy_val = 10
-                    _,_,z = vdatum_resilient.convert(
-                        used_datum.lower(),
-                        requested_datum.lower(),
-                        lat,
-                        lon,
-                        dummy_val, #use dummy value
-                        epoch=None,
-                        logger=logger,
-                        )
-                    if math.isinf(z):
-                        tidal_data = None
-                    else:
-                        tidal_data['TIDE'] = tidal_data['TIDE'] - (float(round(z-dummy_val, 2)))
-                        used_datum = requested_datum
+                    tidal_data, used_datum = _convert_tidal_datum(
+                        tidal_data, used_datum, requested_datum, lat, lon, logger)
                 tidal_station_id = candidate_id
                 tidal_station_name = candidate_name
                 tidal_station_distance = candidate_dist

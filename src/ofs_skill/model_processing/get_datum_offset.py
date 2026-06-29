@@ -45,6 +45,11 @@ import xarray as xr
 from ofs_skill.obs_retrieval import utils, vdatum_resilient
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 
+# SECOFS model-zero/datum transition date. The MLLW corrections file ships
+# two correction columns; dates after this cutoff use Correction2, dates on or
+# before it use Correction1. The secofs_vdatums.nc file is stamped this date.
+SECOFS_MODELZERO_TRANSITION = '04/30/2026'
+
 
 def _node_value(model: xr.Dataset, var_name: str, node: int) -> float:
     """Read a single station's value for a static model coord var.
@@ -480,22 +485,28 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         # then use the Vdatum file
         # 3. If file is not available, return file not found error code
     elif prop.ofs == 'secofs':
-        dir_params = utils.Utils().read_config_section('directories', logger)
-        path = dir_params['local_vdatum']
+        dir_params = utils.Utils(
+            getattr(prop, 'config_file', None)).read_config_section(
+                'directories', logger)
+        path = dir_params.get('local_vdatum')
+        if not path:
+            logger.error('No local_vdatum path configured in ofs_dps.conf. '
+                         'Cannot do SECOFS datum conversion.')
+            return -9994
         if prop.datum.lower() == 'mllw':
             try:
                 vdatums = pd.read_csv(path, sep='\t')
                 # Find ID number in dataframe
                 if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
-                    > datetime.strptime('04/30/2026','%m/%d/%Y'):
+                    > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
                     corr_col = 'Correction2'
                 else:
                     corr_col = 'Correction1'
                 wl_corr = float(vdatums[vdatums['ID']==int(id_number)][corr_col])*-1
                 return wl_corr
-            except (FileNotFoundError, TypeError, UnicodeDecodeError):
+            except (FileNotFoundError, TypeError, UnicodeDecodeError, ValueError):
                 filename = 'secofs_vdatums.nc'
-                head, tail = os.path.split(dir_params['local_vdatum'])
+                head, tail = os.path.split(path)
                 path = os.path.join(head, filename)
                 try:
                     vdatums = xr.open_dataset(path)
@@ -505,7 +516,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     return -9994
         else:
             filename = 'secofs_vdatums.nc'
-            head, tail = os.path.split(dir_params['local_vdatum'])
+            head, tail = os.path.split(path)
             path = os.path.join(head, filename)
             try:
                 vdatums = xr.open_dataset(path)
@@ -531,9 +542,15 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         # Deal with SECOFS separately
         elif prop.ofs == 'secofs':
             try:
-                datum_field1 = vdatums['navd88tomsl'] - vdatums['navd88toxgeoid20b']
+                # Use the directly-populated xgeoid20b->msl field rather than
+                # reconstructing it from navd88tomsl - navd88toxgeoid20b. Both
+                # of those variables carry a -999999.0 fill at ~12.5% of nodes,
+                # where the subtraction cancels to exactly 0.0 (an invalid
+                # offset that passes the >-999 guard).
+                datum_field1 = vdatums['xgeoid20btomsl']
                 if prop.datum.lower() == 'xgeoid20b':
-                    datum_field = datum_field1
+                    # Model-zero is xgeoid20b, so the offset to xgeoid20b is 0.
+                    datum_field = xr.zeros_like(datum_field1)
                 else:
                     datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
                     datum_field = datum_field1 - datum_field2
@@ -613,8 +630,22 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                               [model['lat'][0, node]]]), 3)
                 moddistances = np.linalg.norm(vlonlat - target,
                                               axis=0)
-                datum_offset = float(datum_field[int(
-                    np.argmin(moddistances))])
+                # The nearest node by distance may carry a fill value in
+                # datum_field. datum_field = xgeoid20btomsl - {datum}tomsl,
+                # so a -999999 fill in either source surfaces as a large
+                # magnitude of EITHER sign (e.g. xgeoid - (-999999) = +999999).
+                # Mask on absolute magnitude so positive fills are caught too,
+                # and the nearest VALID node is chosen instead.
+                datum_vals = np.array(datum_field)
+                invalid = np.isnan(datum_vals) | (np.abs(datum_vals) >= 999)
+                if invalid.all():
+                    logger.error('No valid SECOFS datum node found near '
+                                 'station %s. Returning -9999.', id_number)
+                    datum_offset = -9999
+                else:
+                    moddistances = np.where(invalid, np.inf, moddistances)
+                    datum_offset = float(datum_field[int(
+                        np.argmin(moddistances))])
             elif prop.model_source == 'schism':
                 if prop.ofs == 'stofs_3d_atl':
                     nativedatum = 'navd88'

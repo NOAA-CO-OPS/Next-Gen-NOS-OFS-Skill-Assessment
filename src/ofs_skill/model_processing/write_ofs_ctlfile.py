@@ -455,6 +455,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                             model,
                             prop.model_source,
                             name_var,
+                            prop.ofs,
                             logger,
                         )
                 elif prop.ofsfiletype == 'stations':
@@ -490,6 +491,7 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         extract[-1],
                         prop.model_source,
                         name_var,
+                        prop.ofs,
                         logger,
                     )
 
