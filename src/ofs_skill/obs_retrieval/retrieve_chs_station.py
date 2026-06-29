@@ -14,16 +14,19 @@ Supported variables:
 Created on Wed Feb  4 19:51:12 2026
 """
 
-import time
-from collections import deque
 from datetime import datetime, timedelta
 from logging import Logger
 from typing import Optional
 
 import pandas as pd
-import requests
-from searvey import _chs_api
 from searvey._chs_api import fetch_chs_station
+
+from ofs_skill.obs_retrieval.chs_utils import (
+    CHS_IWLS_BASE_URL,
+    chs_get,
+    chs_rate_limiter,
+    is_chs_uuid,
+)
 
 # CHS time series codes per variable, in priority order (try first, fallback)
 _SCALAR_CODE_MAP = {
@@ -48,62 +51,14 @@ _CURRENT_SENSOR_PAIRS = [('wcs1', 'wcd1'), ('wcs2', 'wcd2')]
 _ACCEPTED_QC_CODES = {'1', '2'}
 
 
-class RateLimiter:
-    """
-    Enforces dual rolling rate limits:
-    - Max 5 requests per second
-    - Max 30 requests per minute
-    """
-    def __init__(self):
-        self.second_history = deque()
-        self.minute_history = deque()
-
-    def wait(self):
-        now = time.time()
-
-        # Purge timestamps older than 1 second and 60 seconds
-        while self.second_history and now - self.second_history[0] >= 1.0:
-            self.second_history.popleft()
-        while self.minute_history and now - self.minute_history[0] >= 60.0:
-            self.minute_history.popleft()
-
-        wait_time = 0.0
-
-        # If we hit the 5/sec limit, wait until the oldest in the 1s window expires
-        if len(self.second_history) >= 5:
-            wait_time = max(wait_time, 1.0 - (now - self.second_history[0]))
-
-        # If we hit the 30/min limit, wait until the oldest in the 60s window expires
-        if len(self.minute_history) >= 30:
-            wait_time = max(wait_time, 60.0 - (now - self.minute_history[0]))
-
-        if wait_time > 0:
-            time.sleep(wait_time)
-            now = time.time() # Update 'now' after sleeping
-
-            # Re-purge lists to ensure accurate counting after the sleep
-            while self.second_history and now - self.second_history[0] >= 1.0:
-                self.second_history.popleft()
-            while self.minute_history and now - self.minute_history[0] >= 60.0:
-                self.minute_history.popleft()
-
-        self.second_history.append(now)
-        self.minute_history.append(now)
-
-# Initialize global rate limiter for the module
-chs_rate_limiter = RateLimiter()
-
-
 def _get_chs_uuid(identifier: str, logger: Logger) -> Optional[str]:
     """Helper to resolve a CHS station code to its UUID."""
-    # If it already looks like a UUID (36 chars, contains hyphens), return it
-    if len(identifier) == 36 and '-' in identifier:
+    if is_chs_uuid(identifier):
         return identifier
 
-    url = f'{_chs_api.CHS_BASE_URL}/stations?code={identifier}'
+    url = f'{CHS_IWLS_BASE_URL}/stations?code={identifier}'
     try:
-        chs_rate_limiter.wait()  # Apply rate limiting
-        response = requests.get(url, timeout=10)
+        response = chs_get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         if data and isinstance(data, list):
@@ -111,6 +66,7 @@ def _get_chs_uuid(identifier: str, logger: Logger) -> Optional[str]:
     except Exception as e:
         logger.error('Failed to map CHS code %s to UUID: %s', identifier, e)
     return None
+
 
 def _make_date_chunks(start_date, end_date, interval_hours):
     """
@@ -134,18 +90,10 @@ def _fetch_chs_chunked(date_list, id_number, time_series_code):
     Fetch CHS data in 7-day chunks for a single time series code.
 
     Includes global module rate limiting: Max 5 req/sec AND Max 30 req/min.
-
-    Args:
-        date_list: List of datetime chunk boundaries
-        id_number: CHS station ID
-        time_series_code: CHS time series code (e.g., 'wlo', 'wt1')
-
-    Returns:
-        Concatenated DataFrame of all chunks, or None if no data.
     """
     data_all_append = []
     for start, end in zip(date_list, date_list[1:]):
-        chs_rate_limiter.wait()  # Apply rate limiting
+        chs_rate_limiter.wait()  # Apply rate limiting to external library call
         data_station = fetch_chs_station(
             station_id=str(id_number),
             time_series_code=time_series_code,
@@ -164,8 +112,7 @@ def _fetch_chs_chunked(date_list, id_number, time_series_code):
 def _filter_qc(data_all):
     """Filter out records with rejected/suspect QC flags."""
     if 'qcFlagCode' in data_all.columns:
-        data_all = data_all[
-            data_all['qcFlagCode'].isin(_ACCEPTED_QC_CODES)]
+        data_all = data_all[data_all['qcFlagCode'].isin(_ACCEPTED_QC_CODES)]
     return data_all
 
 
@@ -173,14 +120,16 @@ def _format_raw_data(data_all):
     """Filter QC flags and format raw CHS API response into standard columns."""
     data_all = _filter_qc(data_all)
     data_all['DateTime'] = pd.to_datetime(
-        data_all['eventDate'], format='%Y-%m-%dT%H:%M:%SZ')
-    drop_cols = [c for c in ['eventDate', 'qcFlagCode',
-                             'timeSeriesId', 'reviewed']
-                 if c in data_all.columns]
+        data_all['eventDate'], format='%Y-%m-%dT%H:%M:%SZ'
+    )
+    drop_cols = [
+        c
+        for c in ['eventDate', 'qcFlagCode', 'timeSeriesId', 'reviewed']
+        if c in data_all.columns
+    ]
     data_all = data_all.drop(columns=drop_cols)
     data_all.rename(columns={'value': 'OBS'}, inplace=True)
-    data_all.drop_duplicates(subset=['DateTime'], keep='first',
-                             inplace=True)
+    data_all.drop_duplicates(subset=['DateTime'], keep='first', inplace=True)
     return data_all
 
 
@@ -199,8 +148,12 @@ def _retrieve_chs_scalar(date_list, id_number, variable, logger):
     for code in codes:
         data_all = _fetch_chs_chunked(date_list, id_number, code)
         if data_all is not None:
-            logger.info('CHS %s data found using code %s for station %s',
-                        variable, code, str(id_number))
+            logger.info(
+                'CHS %s data found using code %s for station %s',
+                variable,
+                code,
+                str(id_number),
+            )
             break
 
     if data_all is None:
@@ -215,51 +168,51 @@ def _retrieve_chs_scalar(date_list, id_number, variable, logger):
 
 
 def _retrieve_chs_currents(date_list, id_number, logger):
-    """
-    Retrieve CHS current speed and direction, merge into single DataFrame.
-
-    Tries matched sensor pairs (wcs1+wcd1, then wcs2+wcd2) to avoid
-    mixing sensors at different depths. Falls back across pairs only if
-    a matched pair is not available.
-    """
-    # Try matched sensor pairs first (same sensor number for speed+dir)
+    """Retrieve CHS current speed and direction, merge into single DataFrame."""
     for speed_code, dir_code in _CURRENT_SENSOR_PAIRS:
         speed_data = _fetch_chs_chunked(date_list, id_number, speed_code)
         if speed_data is None:
             continue
         dir_data = _fetch_chs_chunked(date_list, id_number, dir_code)
         if speed_data is not None and dir_data is not None:
-            logger.info('CHS currents found using matched pair %s/%s '
-                        'for station %s',
-                        speed_code, dir_code, str(id_number))
+            logger.info(
+                'CHS currents found using matched pair %s/%s for station %s',
+                speed_code,
+                dir_code,
+                str(id_number),
+            )
             break
     else:
-        # No matched pair found
-        logger.warning('CHS currents: no matched speed/direction sensor '
-                       'pair found for station %s', str(id_number))
+        logger.warning(
+            'CHS currents: no matched speed/direction sensor pair found for station %s',
+            str(id_number),
+        )
         return None
 
-    # Apply QC filtering before merge
     speed_data = _filter_qc(speed_data)
     dir_data = _filter_qc(dir_data)
 
     if speed_data.empty or dir_data.empty:
         return None
 
-    # Parse DateTimes for both
     for df in [speed_data, dir_data]:
         df['DateTime'] = pd.to_datetime(
-            df['eventDate'], format='%Y-%m-%dT%H:%M:%SZ')
+            df['eventDate'], format='%Y-%m-%dT%H:%M:%SZ'
+        )
 
     speed_data = speed_data[['DateTime', 'value']].drop_duplicates(
-        subset=['DateTime'], keep='first')
+        subset=['DateTime'], keep='first'
+    )
     dir_data = dir_data[['DateTime', 'value']].drop_duplicates(
-        subset=['DateTime'], keep='first')
+        subset=['DateTime'], keep='first'
+    )
 
-    merged = speed_data.merge(dir_data, on='DateTime',
-                              suffixes=('_speed', '_dir'))
-    merged.rename(columns={'value_speed': 'OBS', 'value_dir': 'DIR'},
-                  inplace=True)
+    merged = speed_data.merge(
+        dir_data, on='DateTime', suffixes=('_speed', '_dir')
+    )
+    merged.rename(
+        columns={'value_speed': 'OBS', 'value_dir': 'DIR'}, inplace=True
+    )
     merged['DEP01'] = 0.0
 
     return merged
@@ -270,40 +223,18 @@ def retrieve_chs_station(
     end_date: str,
     id_number: str,
     variable: str,
-    logger: Logger
+    logger: Logger,
 ) -> Optional[pd.DataFrame]:
-    """
-    Retrieve CHS station data using SEARVEY library.
-
-    This function fetches CHS data for a given station and time period.
-
-    Args:
-        start_date: Start date in YYYYMMDD format
-        end_date: End date in YYYYMMDD format
-        id_number: CHS station ID
-        variable: Variable to retrieve ('water_level',
-                  'water_temperature', 'salinity', 'currents')
-        logger: Logger instance for logging messages
-
-    Returns:
-        DataFrame with columns:
-            - DateTime: Observation timestamps
-            - DEP01: Depth (0.0 for all CHS observations)
-            - OBS: Observation values
-            - DIR: Direction (for currents only)
-            - Datum: Vertical datum (for water_level only, 'IGLD')
-        Returns None if no data available.
-    """
-
+    """Retrieve CHS station data using SEARVEY library."""
     chs_uuid = _get_chs_uuid(id_number, logger)
     if not chs_uuid:
         logger.error('Could not resolve CHS UUID for station %s', str(id_number))
         return None
 
-    start_date_str = (start_date[:4] + '-' + start_date[4:6]
-                      + '-' + start_date[6:])
-    end_date_str = (end_date[:4] + '-' + end_date[4:6]
-                    + '-' + end_date[6:])
+    start_date_str = (
+        start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:]
+    )
+    end_date_str = end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:]
     start_date_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
     end_date_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
 
@@ -315,23 +246,13 @@ def retrieve_chs_station(
     if variable == 'currents':
         data_all = _retrieve_chs_currents(date_list, chs_uuid, logger)
     else:
-        data_all = _retrieve_chs_scalar(
-            date_list, chs_uuid, variable, logger)
+        data_all = _retrieve_chs_scalar(date_list, chs_uuid, variable, logger)
 
     if data_all is None:
         logger.error(
             'Retrieve CHS station %s failed for %s -- station contacted, '
-            'but no data available.', str(id_number), variable)
-    return data_all
-
-    if variable == 'currents':
-        data_all = _retrieve_chs_currents(date_list, id_number, logger)
-    else:
-        data_all = _retrieve_chs_scalar(
-            date_list, chs_uuid, variable, logger)
-
-    if data_all is None:
-        logger.error(
-            'Retrieve CHS station %s failed for %s -- station contacted, '
-            'but no data available.', str(id_number), variable)
+            'but no data available.',
+            str(id_number),
+            variable,
+        )
     return data_all
