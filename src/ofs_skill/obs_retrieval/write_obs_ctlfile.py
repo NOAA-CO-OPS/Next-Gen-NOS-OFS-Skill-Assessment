@@ -29,7 +29,6 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -728,14 +727,14 @@ def _process_chs_station(id_number, name, x_value, y_value,
                                'lsofs': 183.2,
                                'loofs': 74.2,
                                'loofs2': 74.2}
-                if 'IGLD' in datum and not meta_offset:
-                    zdiff = glofs_datums.get(ofs)
-                if 'IGLD' in datum and meta_offset:
-                    zdiff = meta_offset
-                elif datum == 'LWD':
-                    zdiff = np.abs(meta_offset - glofs_datums.get(ofs))
-                else:
-                    zdiff = 'UNKNOWN'
+            if 'IGLD' in datum and meta_offset is not None:
+                zdiff = meta_offset
+            elif 'IGLD' in datum:
+                zdiff = glofs_datums.get(ofs, 'UNKNOWN')
+            elif datum == 'LWD':
+                zdiff = 0  # CHS data already relative to LWD/chart datum — no correction
+            else:
+                zdiff = 'UNKNOWN'
 
             return [(
                 f'{station_code} '
