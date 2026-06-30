@@ -199,7 +199,7 @@ def skill_scalar(
         # Worst case outlier frequency (WOF)
         wof = None
         tidal_data = None
-        if name_var == 'wl':
+        if name_var == 'wl' and prop.ofs[0] != 'l':
             # tidal_info contains the 'used_datum' that successfully returned data
             tidal_data, tidal_info = get_station_tidal_data(
                 df_paired['DateTime'].min().to_pydatetime(),

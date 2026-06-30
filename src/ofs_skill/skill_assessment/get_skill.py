@@ -357,7 +357,7 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
         logger.info(f'{filename} is created successfully')
 
         # Water-level extrema (HW/LW) independent detection + ±3h pairing
-        if name_var == 'wl':
+        if name_var == 'wl' and prop.ofs[0] != 'l':
             mod_extrema = extract_water_level_extrema(
                 np.asarray(series_df['DateTime']),
                 np.asarray(series_df['OFS']), 4, logger
