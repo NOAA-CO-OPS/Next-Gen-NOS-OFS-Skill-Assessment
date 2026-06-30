@@ -354,8 +354,8 @@ def _process_coops_station(
                     str(id_number),
                 )
                 return None
-            if ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs']:
-                datum_canonical = _normalize_vdatum_name(datum).upper()
+            datum_canonical = _normalize_vdatum_name(datum).upper()
+            if ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
                 if str(datum_found).upper() == datum_canonical:
                     zdiff = 0
                 elif (
@@ -381,25 +381,25 @@ def _process_coops_station(
                 else:
                     zdiff = 'UNKNOWN'
             else:
-                if datum == 'LWD' and str(datum_found).upper() == 'IGLD':
+                if 'LWD' in datum.upper() and 'IGLD' in str(datum_found).upper():
                     if ofs == 'leofs':
                         zdiff = -173.5
                     elif ofs == 'lmhofs':
                         zdiff = -176.0
                     elif ofs == 'lsofs':
                         zdiff = -183.2
-                    elif ofs == 'loofs':
+                    elif 'loofs' in ofs:
                         zdiff = -74.2
-                elif datum == 'IGLD' and str(datum_found).upper() == 'LWD':
+                elif 'IGLD' in datum.upper() and 'LWD' in str(datum_found).upper():
                     if ofs == 'leofs':
                         zdiff = 173.5
                     elif ofs == 'lmhofs':
                         zdiff = 176.0
                     elif ofs == 'lsofs':
                         zdiff = 183.2
-                    elif ofs == 'loofs':
+                    elif 'loofs' in ofs:
                         zdiff = 74.2
-                elif datum == str(datum_found).upper():
+                elif datum_canonical == str(datum_found).upper():
                     zdiff = 0
                 else:
                     zdiff = 'UNKNOWN'
