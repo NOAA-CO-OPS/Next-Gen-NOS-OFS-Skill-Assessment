@@ -386,6 +386,8 @@ def _fetch_and_format_station(
     try:
         station_id = station_info[0]
         source = station_info[3]
+        datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
+                           ['datum_list']).split(' ')
 
         # Each worker gets its own RetrieveProperties — critical for
         # thread safety since the object carries mutable request state.
@@ -402,11 +404,33 @@ def _fetch_and_format_station(
                     _split_virtual_currents_id(station_id)
                     if variable == 'currents' else (str(station_id), None)
                 )
+                # Find the retrieval datum: pick the first station-native
+                # datum (from ``station_metadata``) that is also one of the
+                # configured CO-OPS-servable datums in ``datum_list``. The
+                # observations are pulled at this native datum and a
+                # downstream shift re-references them to the requested datum.
+                datum_set = set(datum_list)
+                # First native datum present in the configured set, else None.
+                common_value = next(
+                    (x for x in station_metadata if x in datum_set), None)
+                if common_value == 'NAVD88':
+                    common_value = 'NAVD'
+                if common_value == 'IGLD85':
+                    common_value = 'IGLD'
+                if common_value is None:
+                    # No station-native datum matched the configured set;
+                    # fall back to the originally-requested datum.
+                    logger.info(
+                        'No native datum for station %s matched the '
+                        'configured datum_list; falling back to requested '
+                        'datum %s', station_id, datum)
+                    common_value = datum
+
                 retrieve_input.station = parent_id
                 retrieve_input.start_date = start_date
                 retrieve_input.end_date = end_date
                 retrieve_input.variable = variable
-                retrieve_input.datum = datum
+                retrieve_input.datum = common_value
 
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger,

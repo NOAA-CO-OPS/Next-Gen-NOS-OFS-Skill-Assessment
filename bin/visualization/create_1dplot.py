@@ -829,7 +829,7 @@ def create_1dplot(prop, logger):
         logger.info('Specified datum %s available for model conversion!',
                 prop.datum)
     except KeyError:
-        if (prop.ofs.lower() not in ['loofs','lmhofs','leofs','lsofs'] and
+        if (prop.ofs.lower() not in ['loofs','lmhofs','leofs','lsofs','loofs2'] and
             'stofs' not in prop.ofs.lower()):
             logger.warning('Datum %s is NOT available for %s! '
                          'Switching to MLLW...', prop.datum, prop.ofs)
