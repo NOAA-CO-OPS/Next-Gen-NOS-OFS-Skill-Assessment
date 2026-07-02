@@ -113,10 +113,10 @@ def get_ofs_cycle(prop, logger):
     # Forecast cycles from int to str
     fcstcycles = [f'{item:02}' for item in fcstcycles]
 
-    # Get hour strings & time steps (dt)
+    # Get hour strings & field file time step (dt)
     if prop.ofs in (
         'cbofs', 'ciofs', 'creofs', 'dbofs', 'sfbofs', 'tbofs',
-        'leofs', 'lmhofs', 'loofs', 'loofs2', 'lsofs', 'sscofs',
+        'leofs', 'lmhofs', 'loofs', 'loofs2', 'lsofs', 'sscofs', 'secofs'
     ):
         d_t = 1
     elif prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):

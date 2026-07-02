@@ -28,6 +28,14 @@ def logger():
     logging.basicConfig(level=logging.INFO)
     return logging.getLogger('test_chs')
 
+@pytest.fixture(autouse=True)
+def mock_chs_uuid():
+    """Bypass network UUID resolution and echo back the test station ID."""
+    with patch(
+        'ofs_skill.obs_retrieval.retrieve_chs_station._get_chs_uuid',
+        side_effect=lambda station_id, logger: station_id,
+    ):
+        yield
 
 def _make_chs_api_response(values, start='2025-01-01', minutes=5):
     """Helper to create a fake CHS API response DataFrame."""

@@ -14,16 +14,17 @@ future HF radar or OFS additions.
         2.5) Average the u/v data for the daily average mode.
     3) Convert it to mag/dir data.
     4) Output ASCII files from NetCDF.
-        - For 25-hr daily average, expected file output looks like this:
+        - For each fully-covered UTC date in the requested window, a daily
+          average set is written:
             {ofs_name}_hfradar_dir_YYYYMMDD.asc
             {ofs_name}_hfradar_dir_YYYYMMDD.prj
             {ofs_name}_hfradar_mag_YYYYMMDD.asc
             {ofs_name}_hfradar_mag_YYYYMMDD.prj
         - For hourly, expected file output looks like this per hour:
-            {ofs_name}_hfradar_dir_YYYYMMDD_HH00.asc
-            {ofs_name}_hfradar_dir_YYYYMMDD_HH00.prj
-            {ofs_name}_hfradar_mag_YYYYMMDD_HH00.asc
-            {ofs_name}_hfradar_mag_YYYYMMDD_HH00.prj
+            {ofs_name}_hfradar_dir_YYYYMMDD-HHz.asc
+            {ofs_name}_hfradar_dir_YYYYMMDD-HHz.prj
+            {ofs_name}_hfradar_mag_YYYYMMDD-HHz.asc
+            {ofs_name}_hfradar_mag_YYYYMMDD-HHz.prj
 
 HF Radar sources and times available per source (as of March 11, 2026):
     USEGC (US East Coast and Gulf of America)
@@ -37,14 +38,10 @@ HF Radar sources and corresponding OFSes:
     GLNA -> LMHOFS
     GAK -> CIOFS
 
-Example daily average call:
-    python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
+Example call:
+    python ./bin/obs_retrieval/get_hf_radar.py \\
+        -s 2026-03-10T00:00:00Z -e 2026-03-11T00:00:00Z \\
         -C ./data/observations/ -b ./ofs_extents/sfbofs.shp
-
-Example hourly call:
-    python ./bin/obs_retrieval/get_hf_radar.py -d 20260310 \\
-        -C ./data/observations/ -b ./ofs_extents/sfbofs.shp \\
-        -m hourly -s 2026030900 -e 2026031023
 """
 from __future__ import annotations
 
@@ -162,9 +159,9 @@ def get_geospatial_bounds(nc_file):
 
 
 def parse_utc_timestamp(timestr):
-    """Parse a UTC timestamp string in YYYYMMDDHH format to a datetime object."""
+    """Parse a UTC timestamp string in YYYY-MM-DDTHH:MM:SSZ format to a datetime."""
     try:
-        return datetime.strptime(timestr, '%Y%m%d%H')
+        return datetime.strptime(timestr, '%Y-%m-%dT%H:%M:%SZ')
     except Exception as e:
         logger.error("Error parsing timestamp '%s': %s", timestr, e)
         return None
@@ -507,7 +504,12 @@ def process_files(
     """
     today = datetime.now(timezone.utc).date()
 
-    if date_obj.date() == today:
+    explicit_window = start_time is not None and end_time is not None
+
+    if explicit_window:
+        start_dt = start_time
+        end_dt = end_time
+    elif date_obj.date() == today:
         end_dt = (datetime.now(timezone.utc) - NRT_DELAY).replace(
             minute=0, second=0, microsecond=0
         )
@@ -515,11 +517,6 @@ def process_files(
     else:
         start_dt = datetime.combine(date_obj.date(), datetime.min.time())
         end_dt = start_dt + timedelta(hours=24)
-
-    # Override time window if explicit start/end provided
-    if start_time is not None and end_time is not None:
-        start_dt = start_time
-        end_dt = end_time
 
     logger.info('Got start time and end time')
 
@@ -556,8 +553,6 @@ def process_files(
 
         logger.info('Clipped u/v data to study area')
 
-        date_str = date_obj.strftime('%Y%m%d')
-
         # --- Hourly outputs ---
         logger.info('Starting hourly u/v -> mag/dir file creation')
 
@@ -569,7 +564,9 @@ def process_files(
             dir_rad = np.arctan2(u_hour, v_hour)
             direction = (np.degrees(dir_rad) + 360) % 360
 
-            timestamp = pd.to_datetime(u_hour.time.values).strftime('%Y%m%d_%H%M')
+            ts = pd.to_datetime(u_hour.time.values)
+            timestamp = ts.strftime('%Y%m%d-%Hz')
+            hour_date_str = ts.strftime('%Y%m%d')
             mag_outfile = data_dir / f'{ofs}_hfradar_mag_{timestamp}.asc'
             dir_outfile = data_dir / f'{ofs}_hfradar_dir_{timestamp}.asc'
 
@@ -578,7 +575,7 @@ def process_files(
 
             # Write hourly JSON + ASCII grid txt
             hourly_paths = _build_hfradar_output_paths(
-                data_dir, ofs, date_str, timestamp,
+                data_dir, ofs, hour_date_str, timestamp,
             )
             _write_leaflet_outputs(
                 u_hour, v_hour, hourly_paths, logger,
@@ -588,43 +585,55 @@ def process_files(
             logger.info('Finished writing hourly files for %s', timestamp)
 
         # --- Daily averaged outputs ---
-        # Require at least 13 of 25 hourly observations for a valid
-        # daily average (tidal filtering needs sufficient coverage).
-        valid_count = u_data.count(dim='time')
-        u_avg = u_data.mean(dim='time', skipna=True)
-        v_avg = v_data.mean(dim='time', skipna=True)
+        # Group hourly slices by UTC date and emit a daily set per date
+        # spanned by the window. The per-cell ≥13-hour threshold filters
+        # out cells with insufficient coverage (tidal filtering needs at
+        # least 13 of 25 hourly observations).
+        if explicit_window:
+            time_index = pd.to_datetime(u_data.time.values)
+            unique_dates = pd.Index(time_index.normalize()).unique()
+        else:
+            # Single-date fallback (legacy path): emit one daily for date_obj
+            unique_dates = pd.Index([pd.Timestamp(date_obj.date())])
 
-        u_avg = u_avg.where(valid_count >= 13)
-        v_avg = v_avg.where(valid_count >= 13)
+        for day in unique_dates:
+            day_str = pd.Timestamp(day).strftime('%Y%m%d')
 
-        u_avg = u_avg.astype('float64')
-        v_avg = v_avg.astype('float64')
+            if explicit_window:
+                day_mask = pd.to_datetime(u_data.time.values).normalize() == day
+                day_idx = np.where(day_mask)[0]
+                u_day = u_data.isel(time=day_idx)
+                v_day = v_data.isel(time=day_idx)
+            else:
+                u_day = u_data
+                v_day = v_data
 
-        logger.info('Created u and v averages for daily average')
+            valid_count = u_day.count(dim='time')
+            u_avg = u_day.mean(dim='time', skipna=True).where(valid_count >= 13)
+            v_avg = v_day.mean(dim='time', skipna=True).where(valid_count >= 13)
 
-        mag = np.sqrt(u_avg**2 + v_avg**2)
-        dir_rad = np.arctan2(u_avg, v_avg)
-        direction = (np.degrees(dir_rad) + 360) % 360
+            u_avg = u_avg.astype('float64')
+            v_avg = v_avg.astype('float64')
 
-        direction = direction.where(np.isfinite(direction))
+            mag = np.sqrt(u_avg**2 + v_avg**2)
+            dir_rad = np.arctan2(u_avg, v_avg)
+            direction = (np.degrees(dir_rad) + 360) % 360
+            direction = direction.where(np.isfinite(direction))
 
-        mag_outfile = data_dir / f'{ofs}_hfradar_mag_{date_str}.asc'
-        dir_outfile = data_dir / f'{ofs}_hfradar_dir_{date_str}.asc'
+            mag_outfile = data_dir / f'{ofs}_hfradar_mag_{day_str}.asc'
+            dir_outfile = data_dir / f'{ofs}_hfradar_dir_{day_str}.asc'
 
-        logger.info('Translated u/v into mag/dir data')
+            export_ascii(mag, mag_outfile)
+            export_ascii(direction, dir_outfile)
 
-        export_ascii(mag, mag_outfile)
-        export_ascii(direction, dir_outfile)
+            daily_paths = _build_hfradar_output_paths(data_dir, ofs, day_str)
+            _write_leaflet_outputs(
+                u_avg, v_avg, daily_paths, logger,
+                static_plots=static_plots, ofs=ofs,
+                title_tag=f'{day_str} Daily Avg',
+            )
 
-        # Write daily JSON + ASCII grid txt
-        daily_paths = _build_hfradar_output_paths(data_dir, ofs, date_str)
-        _write_leaflet_outputs(
-            u_avg, v_avg, daily_paths, logger,
-            static_plots=static_plots, ofs=ofs,
-            title_tag=f'{date_str} Daily Avg',
-        )
-
-        logger.info('Finished writing daily average files')
+            logger.info('Finished writing daily average files for %s', day_str)
 
     logger.info('Finished get_hf_radar.py!')
 
@@ -637,9 +646,15 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-d', '--date',
+        '-s', '--StartDate_full',
         required=True,
-        help='Date for daily data collection (YYYYMMDD)'
+        help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g.'2026-03-10T00:00:00Z'",
+    )
+
+    parser.add_argument(
+        '-e', '--EndDate_full',
+        required=True,
+        help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g.'2026-03-11T00:00:00Z'",
     )
 
     parser.add_argument(
@@ -664,32 +679,11 @@ if __name__ == '__main__':
         help='OFS of interest (used to derive shapefile path if -b not given)'
     )
 
-    parser.add_argument(
-        '-m', '--mode',
-        choices=['daily', 'hourly'],
-        default='daily',
-        help='Choose daily or hourly period'
-    )
-
-    parser.add_argument(
-        '-s', '--start',
-        help='Start time for hourly period in format YYYYMMDDHH (UTC)'
-    )
-
-    parser.add_argument(
-        '-e', '--end',
-        help='End time for hourly period in format YYYYMMDDHH (UTC)'
-    )
-
     args = parser.parse_args()
 
     # Validate that -b or -o is provided
     if args.bounds is None and args.ofs is None:
         parser.error('Either -b/--bounds or -o/--ofs must be provided.')
-
-    # Validate hourly mode requires start and end
-    if args.mode == 'hourly' and (args.start is None or args.end is None):
-        parser.error('Hourly mode requires both -s/--start and -e/--end.')
 
     # Set up logging
     config_file = utils.Utils().get_config_file()
@@ -707,21 +701,27 @@ if __name__ == '__main__':
     logger.info('Using config %s', config_file)
     logger.info('Using log config %s', log_config_file)
 
-    date_obj = datetime.strptime(args.date, '%Y%m%d')
+    start_time = parse_utc_timestamp(args.StartDate_full)
+    end_time = parse_utc_timestamp(args.EndDate_full)
+
+    if start_time is None or end_time is None:
+        parser.error(
+            'Both -s/--StartDate_full and -e/--EndDate_full must be in '
+            'YYYY-MM-DDTHH:MM:SSZ format (UTC).'
+        )
+
+    if start_time >= end_time:
+        parser.error(
+            f'End Date {args.EndDate_full} is not after Start Date '
+            f'{args.StartDate_full}.'
+        )
+
+    # Anchor date used by the legacy default-window branch when callers
+    # invoke process_files programmatically without start/end.
+    date_obj = start_time
 
     data_dir = Path(args.catalogue)
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    mode = args.mode
-
-    start_time = None
-    end_time = None
-
-    if args.start:
-        start_time = parse_utc_timestamp(args.start)
-
-    if args.end:
-        end_time = parse_utc_timestamp(args.end)
 
     # Determine OFS name and shapefile path
     if args.bounds is not None:
@@ -743,5 +743,9 @@ if __name__ == '__main__':
         'static_plots', 'False',
     ).lower() in ('true', '1', 'yes')
 
-    check_for_overlap(date_obj, data_dir, gdf, ofs, mode, start_time, end_time,
+    # mode is retained as a positional argument for process_files but no
+    # longer affects which outputs are produced — both hourly and daily are
+    # always emitted.
+    check_for_overlap(date_obj, data_dir, gdf, ofs, 'daily',
+                      start_time, end_time,
                       static_plots=static_plots)

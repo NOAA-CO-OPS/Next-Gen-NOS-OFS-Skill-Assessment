@@ -98,33 +98,63 @@ def oned_scalar_plot(
     """
     modetype = 'lines+markers'
     lineopacity = 1
-    marker_opacity = 0.5
+    marker_opacity = 1.0
     data_count = 48
-    min_size = 1
-    gap_length = 10
+    min_size = 0
+    if prop.ofsfiletype == 'stations':
+        gap_length = 15
+    else:
+        gap_length = 5
     marker_size = 6
-    marker_size_obs = 9
+    marker_size_obs = 8
 
     # Combine obs from different casts into one main obs array
     obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
+    valid_count = obs_df.OBS.count()
+    total_count = len(obs_df.OBS)
 
-    if len(list(obs_df.DateTime)) > data_count:
-        marker_size = (
-            marker_size**(
-                data_count/len(list(obs_df.DateTime))
-            )
-        ) + (min_size-1)
-        marker_size_obs = (
-            marker_size_obs**(
-                data_count/len(list(obs_df.DateTime))
-            )
-        ) + (min_size-1)
-
-    # Check for long data gaps
+    # Check for long data gaps FIRST so `connectgaps` is used in sizing logic
     if find_max_data_gap(obs_df.OBS) > gap_length:
         connectgaps = False
     else:
         connectgaps = True
+
+    # base scale using only valid data (prevents too much shrinking)
+    if total_count > 0:
+        marker_size = (
+            marker_size**(
+                data_count/total_count
+            )
+        ) + (min_size-1)
+    if valid_count > data_count:
+        marker_size_obs = (
+            marker_size_obs**(
+                data_count/valid_count
+            )
+        ) + (min_size-1)
+
+    if valid_count > 0:
+        # scale up proportionally to the amount of missing data/gaps
+        gap_ratio = total_count/valid_count
+        if gap_ratio > 1.0:
+            marker_size_obs *= gap_ratio
+
+    # give an extra boost if there are gaps causing disconnected lines, or
+    # a lot of data points
+    if not connectgaps:
+        if valid_count < 240:
+            marker_size_obs *= 2
+        else:
+            marker_size_obs *= 10
+            marker_opacity = 0.5
+
+    # cap the maximum size so they don't get out of control on extremely sparse datasets
+    marker_size = min(marker_size, 8)
+    marker_size_obs = min(marker_size_obs, 8)
+    if marker_size_obs < 5:
+        line_width = 0.0
+    else:
+        line_width = 0.25
 
     if name_var == 'wl':
         plot_name = 'Water Level ' + f'at {prop.datum} (<i>meters<i>)'
@@ -176,7 +206,7 @@ def oned_scalar_plot(
             legendgroup='obs', marker=dict(
                 symbol=allmarkerstyles[0], size=marker_size_obs,
                 color=palette[0],opacity=marker_opacity,
-                line=dict(width=0, color='black'),
+                line=dict(width=line_width, color='black'),
             ),
         ), 1, 1,
     )
@@ -215,7 +245,7 @@ def oned_scalar_plot(
             namekey = [name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
-        except AttributeError:
+        except (AttributeError, IndexError):
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
             namekey = None
@@ -373,7 +403,7 @@ def oned_scalar_plot(
                     )
                 ],
                 name=sdboxName,
-                connectgaps=False,
+                connectgaps=connectgaps,
                 hovertemplate='%{y:.2f}',
                 mode=modetype, line=dict(
                     color=palette[i+1],
@@ -382,10 +412,10 @@ def oned_scalar_plot(
                 legendgroup=sdboxName,
                 marker=dict(
                     # i+1 because observations already used first marker type
-                    symbol=allmarkerstyles[i+1], size=marker_size,
+                    symbol=allmarkerstyles[i+1], size=marker_size_obs,
                     color=palette[i+1],
                     # 'firebrick',
-                    opacity=marker_opacity, line=dict(width=0, color='black'),
+                    opacity=marker_opacity, line=dict(width=line_width, color='black'),
                 ),
             ), 2,
             1,
@@ -495,6 +525,13 @@ def oned_scalar_plot(
     figheight = 700
     figwidth  = 950
     yoffset = 1.01
+    # Issue #136: each additional whichcast adds another row of legend
+    # entries (Obs + N model traces, all horizontal). The legend grows
+    # upward from y=yoffset (just above the plot area) and overlaps the
+    # title at y=0.97 once it wraps. Track the whichcast count to grow
+    # the top margin so the legend has somewhere to expand into. Uses
+    # the same dynamic-margin pattern as plotting_scalar_ice.py.
+    tmargin = 150 + 30 * max(0, len(prop.whichcasts) - 1)
     fig.update_layout(
         title=dict(
             text=get_title(prop, node, station_id, name_var, logger),
@@ -538,7 +575,7 @@ def oned_scalar_plot(
         transition_ordering='traces first', dragmode='zoom',
         hovermode='x unified', height=figheight, width=figwidth,
         template='plotly_white', margin=dict(
-            t=150, b=100,
+            t=tmargin, b=100,
         ),
         legend=dict(
             orientation='h', yanchor='bottom',
@@ -559,6 +596,8 @@ def oned_scalar_plot(
             df = pd.read_csv(filename)
             has_fail = df.loc[df[df['Station ID'] == int(
                 station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
+            if has_fail.empty:
+                has_fail = pd.Series([False])
         except ValueError:
             has_fail = df.loc[df[df['Station ID'] == str(
                 station_id[0])].index]['Datum conversion pass/fail'] == 'fail'
@@ -576,28 +615,32 @@ def oned_scalar_plot(
             )
 
     # Add annotation if assumed surface depth (no depth data from API).
-    # Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default
-    # rather than a resolved value. CO-OPS (bins endpoint / side-looking
-    # resolver) and NDBC report authoritative depths.
-    if (
-        name_var != 'wl'
-        and len(station_id) > 3
-        and station_id[2] in ('USGS', 'CHS')
-    ):
-        try:
-            obs_depth = float(station_id[3])
-            if obs_depth == 0.0:
-                fig.add_annotation(
-                    text='<b>Note: no obs depth<br>available from API.<br>'
-                         'Assumed surface (0 m)</b>',
-                    xref='x domain', yref='y domain',
-                    font=dict(size=12, color='#E68A00'),
-                    x=0, y=0.0,
-                    showarrow=False,
-                    row=1, col=1,
-                )
-        except (ValueError, TypeError):
-            pass
+    # Fires for USGS/CHS (0.0 is a hard-coded fallback) and for CO-OPS
+    # side-looking ADCPs whose sensor_depth was unavailable from MDAPI
+    # (signalled by a "depth unknown" substring in the station name
+    # suffix written by write_obs_ctlfile). NDBC and resolved CO-OPS
+    # bins always report authoritative depths.
+    if name_var != 'wl' and len(station_id) > 3:
+        name = str(station_id[1]) if len(station_id) > 1 else ''
+        is_usgs_chs = station_id[2] in ('USGS', 'CHS')
+        is_coops_unknown = (
+            station_id[2] == 'CO-OPS' and 'depth unknown' in name.lower()
+        )
+        if is_usgs_chs or is_coops_unknown:
+            try:
+                obs_depth = float(station_id[3])
+                if obs_depth == 0.0:
+                    fig.add_annotation(
+                        text='<b>Note: no obs depth<br>available from API.<br>'
+                             'Assumed surface (0 m)</b>',
+                        xref='x domain', yref='y domain',
+                        font=dict(size=12, color='#E68A00'),
+                        x=0, y=0.0,
+                        showarrow=False,
+                        row=1, col=1,
+                    )
+            except (ValueError, TypeError):
+                pass
 
     # Set x-axis moving bar
     fig.update_xaxes(

@@ -2,7 +2,7 @@
 # OFS Data Processing System Config
 # Master configuration File
 #
-# PARAMETER values are set as PAREMETER=value (no spaces).
+# PARAMETER values are set as PARAMETER=value.
 # Any comments must start with a # and must be on a
 # separate line. Parameter names must be unique and must
 # start at the beginning of a line. Parameters are grouped
@@ -12,12 +12,6 @@
 # prefixed by DB_.
 #
 # Note: keys are case-insensitive and stored in lowercase
-#
-#
-# REVISION HISTORY:
-#
-#
-
 
 [directories]
 #-- Directory info and other config parameters ------------------------
@@ -40,7 +34,6 @@ observations_dir=observations
 2d_satellite_ice_dir=2d_satellite_ice
 model_dir=model
 skill_dir=skill
-fvcom_dir=fvcom
 model_historical_dir=%(home)s/example_data
 model_obc_dir=%(home)s/example_data
 netcdf_dir=netcdf
@@ -54,15 +47,17 @@ stats_dir=stats
 stats_ice_dir=ice_stats
 visual_dir=visual
 visual_ice_dir=ice_visual
-visual_ice_time_series = time_series
-visual_ice_static_maps = static_maps
-visual_ice_json_maps = json_maps
-visual_ice_stats = stats
-visual_horizon_dir = horizon_visual
-om_dir = om_files
-om_dir_ice = om_files_ice
-tidal_analysis_dir = tidal_analysis
+visual_ice_time_series=time_series
+visual_ice_static_maps=static_maps
+visual_ice_json_maps=json_maps
+visual_ice_stats=stats
+visual_horizon_dir=horizon_visual
+visual_maps=plotly_maps
+om_dir=om_files
+om_dir_ice=om_files_ice
+tidal_analysis_dir=tidal_analysis
 model_historical_dir_backup=Add_model_historical_dir_backup
+
 # Local fallback path for the vertical datum NetCDF file. Only used if the
 # vdatum file cannot be read from the NODD S3 bucket (noaa-nos-ofs-pds).
 # Set this to the full path of a local copy of {ofs}_vdatums.nc.
@@ -94,14 +89,19 @@ nssr_sport=https://nssrgeo.ndc.nasa.gov/SPoRT/enhanced_sst/ghrsst_netcdf
 [datums]
 # List of vertical datums that the program can convert between. If a new datum
 # is added to the package, include it here!
-datum_list = MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
+datum_list=MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
 
 
 [station_IDs]
 # Optional input list of observation station IDs to assess.
-# If list is blank, the skill assessment will
-# include all stations found in an OFS.
-station_ID_list = 8551910 8571421
+# This list can only be actiavted by using the `list` argument
+# for the flag -so --Station_Owner:
+# `-so list`
+# OR
+# `--Station_Owner list`
+# If using `-so list` and the list below is blank, the skill
+# assessment will include all stations found in an OFS.
+station_ID_list=8551910 8571421
 
 
 [user_xy_inputs]
@@ -116,7 +116,7 @@ station_ID_list = 8551910 8571421
 # For example:
 #    myloc1 39.582 -75.589 0
 #    myloc2 37.996 -76.464 2
-user_xy_path = path/to/filename.txt
+user_xy_path=path/to/filename.txt
 
 
 [parallelization]
@@ -187,7 +187,19 @@ parallel_2d_interp=False
 # False = just interactive plots
 static_plots=False
 
-# Use S3 fallback for missing model files?
-# True = automatically read from NODD S3 bucket if local files are missing
-# False = exit with error if local files are missing (original behavior)
+# NODD S3 bucket usage for model files. Three modes:
+#   True  = prefer local model files; read from the NODD S3 bucket only
+#           when local files are missing (recommended default)
+#   False = local files only; exit with error if local files are missing
+#           (original behavior)
+#   force = always read model files from the NODD S3 bucket, even when
+#           local files are present (useful for validating against the
+#           canonical NODD copy)
 use_s3_fallback=True
+
+# Use a custom list of model files?
+# True = load filenames from user-provided text file
+# False = default; SA will fetch file names either from the S3 bucket, or locally
+# If True, set 'filename_path' to the path to your text file, including the filename.
+use_custom_filenames=False
+filename_path=path/to/filename.txt

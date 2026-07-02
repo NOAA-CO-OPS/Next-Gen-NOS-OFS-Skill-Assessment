@@ -108,34 +108,61 @@ def oned_vector_plot1(
     """
     modetype = 'lines+markers'
     lineopacity = 1
-    linewidth = 1.5
-    marker_opacity = 0.5
+    marker_opacity = 1.0
     data_count = 48
-    min_size = 1
-    gap_length = 10
-    data_count = 48
+    min_size = 0
+    if prop.ofsfiletype == 'stations':
+        gap_length = 15
+    else:
+        gap_length = 5
+    marker_size = 6
+    marker_size_obs = 8
     # Combine obs from different casts into one main obs array
     obs_df, now_fores_paired = combine_obs_across_casts(now_fores_paired, prop)
+    valid_count = obs_df.OBS_SPD.count()
+    total_count = len(obs_df.OBS_SPD)
 
-    if len(list(obs_df.DateTime)) > data_count:
-        marker_size = (
-            6**(
-                data_count/len(list(obs_df.DateTime))
-            )
-        ) + (min_size-1)
-        marker_size_obs = (
-            9**(
-                data_count/len(list(obs_df.DateTime))
-            )
-        ) + (min_size-1)
-    else:
-        marker_size = 6
-        marker_size_obs = 9
-    # Check for long data gaps
+    # Check for long data gaps FIRST so `connectgaps` is used in sizing logic
     if find_max_data_gap(obs_df.OBS_SPD) > gap_length:
         connectgaps = False
     else:
         connectgaps = True
+
+    # base scale using only valid data (prevents too much shrinking)
+    if total_count > 0:
+        marker_size = (
+            marker_size**(
+                data_count/total_count
+            )
+        ) + (min_size-1)
+    if valid_count > data_count:
+        marker_size_obs = (
+            marker_size_obs**(
+                data_count/valid_count
+            )
+        ) + (min_size-1)
+
+    if valid_count > 0:
+        # scale up proportionally to the amount of missing data/gaps
+        gap_ratio = total_count/valid_count
+        if gap_ratio > 1.0:
+            marker_size_obs *= gap_ratio
+
+    # give an extra boost if there are huge gaps causing disconnected lines
+    if not connectgaps:
+        if valid_count < 240:
+            marker_size_obs *= 2
+        else:
+            marker_size_obs *= 10
+            marker_opacity = 0.5
+
+    # cap the maximum size so they don't get out of control on extremely sparse datasets
+    marker_size = min(marker_size, 8)
+    marker_size_obs = min(marker_size_obs, 8)
+    if marker_size_obs < 5:
+        line_width = 0.0
+    else:
+        line_width = 0.25
 
     # Current speed
     fig.add_trace(
@@ -146,14 +173,14 @@ def oned_vector_plot1(
             hovertemplate='%{y:.2f}',
             connectgaps=connectgaps,
             opacity=lineopacity,
-            line=dict(color=palette[0], width=linewidth, dash='dash'),
+            line=dict(color=palette[0], width=1.5, dash='dash'),
             mode=modetype, legendgroup='obs', marker=dict(
                 symbol=allmarkerstyles[0], size=marker_size_obs,
                 color=palette[0],
                 # angle=list(now_fores_paired[0].OBS_DIR),
                 opacity=marker_opacity,
                 # angleref='up',
-                line=dict(width=0, color='black'),
+                line=dict(width=line_width, color='black'),
             ),
         ), 1, 1,
     )
@@ -178,7 +205,7 @@ def oned_vector_plot1(
         elif prop.whichcasts[i].capitalize() == 'Nowcast':
             seriesname = 'Model Nowcast Guidance'
         else:
-            seriesname = prop.whichcasts[i].capitalize(
+            seriesname = 'Model ' + prop.whichcasts[i].capitalize(
             ) + ' Guidance'  # + f"{i}",
         # Parse filenames from key
         try:
@@ -186,7 +213,11 @@ def oned_vector_plot1(
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
-        except AttributeError:
+        except ValueError:
+            namekey = [name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except (AttributeError, IndexError):
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
             namekey = None
@@ -201,7 +232,7 @@ def oned_vector_plot1(
                 connectgaps=False,
                 line=dict(
                     color=palette[i+1],
-                    width=linewidth,
+                    width=1.5,
                 ), mode=modetype, opacity=lineopacity,
                 legendgroup=seriesname,
                 marker=dict(
@@ -241,14 +272,14 @@ def oned_vector_plot1(
             y=list(obs_df.OBS_DIR),
             name='Observations',
             hovertemplate='%{y:.2f}',
-            connectgaps=False,
+            connectgaps=connectgaps,
             opacity=lineopacity,
             showlegend=False,
-            line=dict(color=palette[0], width=linewidth, dash='dash'),
+            line=dict(color=palette[0], width=1.5, dash='dash'),
             mode='lines+markers', legendgroup='obs', marker=dict(
                 symbol=allmarkerstyles[0], size=marker_size, color=palette[0],
                 opacity=marker_opacity,
-                line=dict(width=0, color='black'),
+                line=dict(width=line_width, color='black'),
             ),
         ), 2, 1,
     )
@@ -271,7 +302,11 @@ def oned_vector_plot1(
                        + ' ' + name.split('.')[1] if isinstance(name, str) else '' \
                        for name in list(now_fores_paired[i].filename)]
             hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
-        except AttributeError:
+        except ValueError:
+            namekey = [name.split('.')[1] if isinstance(name, str) else '' \
+                       for name in list(now_fores_paired[i].filename)]
+            hovertemplate = f"{seriesname.split(' ')[1]}: %{{y:.2f}}<br><i>Model cycle: %{{text}}<i><extra></extra>"
+        except (AttributeError, IndexError):
             logger.error('No hoverinfo filenames available!')
             hovertemplate='%{y:.2f}'
             namekey = None
@@ -296,7 +331,7 @@ def oned_vector_plot1(
                     # angle=list(now_fores_paired[i].OFS_DIR),
                     opacity=1,
                     # 0.6,
-                    line=dict(width=0, color='black'),
+                    line=dict(width=line_width, color='black'),
                 ), ), 2, 1,
         )
 
@@ -309,7 +344,7 @@ def oned_vector_plot1(
         elif prop.whichcasts[i].capitalize() == 'Forecast_a':
             sdboxName = 'Forecast ' + prop.forecast_hr[:-1] + 'z - Obs.'
         else:
-            sdboxName = 'Model'+str(i+1)+' - Obs.'
+            sdboxName = prop.whichcasts[i].capitalize() + ' - Obs.'
         fig.add_trace(
             go.Scattergl(
                 x=list(now_fores_paired[i].DateTime),
@@ -450,6 +485,13 @@ def oned_vector_plot1(
     figheight = 700
     figwidth  = 900
     yoffset = 1.01
+    # Issue #136: each additional whichcast adds another row of legend
+    # entries (Obs + N model traces, all horizontal). The legend grows
+    # upward from y=yoffset (just above the plot area) and overlaps the
+    # title at y=0.97 once it wraps. Track the whichcast count to grow
+    # the top margin so the legend has somewhere to expand into. Same
+    # dynamic-margin pattern as plotting_scalar_ice.py.
+    tmargin = 150 + 30 * max(0, len(prop.whichcasts) - 1)
     # Figure Config
     fig.update_layout(
         # margin=dict(t=5),
@@ -519,7 +561,7 @@ def oned_vector_plot1(
         transition_ordering='traces first', dragmode='zoom',
         hovermode='x unified', height=figheight, width=figwidth,
         template='plotly_white', margin=dict(
-            t=150, b=100,
+            t=tmargin, b=100,
         ),
         legend=dict(
             orientation='h', yanchor='bottom',
@@ -534,24 +576,32 @@ def oned_vector_plot1(
     )
 
     # Add annotation if assumed surface depth (no depth data from API).
-    # Only fires for USGS/CHS, where a 0.0 obs depth is a fallback default
-    # rather than a resolved value. CO-OPS (bins endpoint / side-looking
-    # resolver) and NDBC report authoritative depths.
-    if len(station_id) > 3 and station_id[2] in ('USGS', 'CHS'):
-        try:
-            obs_depth = float(station_id[3])
-            if obs_depth == 0.0:
-                fig.add_annotation(
-                    text='<b>Note: no obs depth<br>available from API.<br>'
-                         'Assumed surface (0 m)</b>',
-                    xref='x domain', yref='y domain',
-                    font=dict(size=12, color='#E68A00'),
-                    x=0, y=0.0,
-                    showarrow=False,
-                    row=1, col=1,
-                )
-        except (ValueError, TypeError):
-            pass
+    # Fires for USGS/CHS (0.0 is a hard-coded fallback) and for CO-OPS
+    # side-looking ADCPs whose sensor_depth was unavailable from MDAPI
+    # (signalled by a "depth unknown" substring in the station name
+    # suffix written by write_obs_ctlfile). NDBC and resolved CO-OPS
+    # bins always report authoritative depths.
+    if len(station_id) > 3:
+        name = str(station_id[1]) if len(station_id) > 1 else ''
+        is_usgs_chs = station_id[2] in ('USGS', 'CHS')
+        is_coops_unknown = (
+            station_id[2] == 'CO-OPS' and 'depth unknown' in name.lower()
+        )
+        if is_usgs_chs or is_coops_unknown:
+            try:
+                obs_depth = float(station_id[3])
+                if obs_depth == 0.0:
+                    fig.add_annotation(
+                        text='<b>Note: no obs depth<br>available from API.<br>'
+                             'Assumed surface (0 m)</b>',
+                        xref='x domain', yref='y domain',
+                        font=dict(size=12, color='#E68A00'),
+                        x=0, y=0.0,
+                        showarrow=False,
+                        row=1, col=1,
+                    )
+            except (ValueError, TypeError):
+                pass
 
     # Set x-axis moving bar
     fig.update_xaxes(

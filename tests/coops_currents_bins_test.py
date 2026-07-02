@@ -143,6 +143,19 @@ def test_retrieve_currents_returns_per_bin(
 
     rtc._depth_cache.clear()
     rtc._depth_cache['8454000'] = bins_payload
+    rtc._station_info_cache.clear()
+    rtc._station_info_cache['8454000'] = {'height_from_bottom': 0.5}
+    # Orientation is sourced from the deployments endpoint, not from
+    # per-bin records (issue #141). Pre-populate the cache to avoid the
+    # extra HTTP call and pin the mounting type.
+    rtc._station_deployment_cache.clear()
+    rtc._station_deployment_cache['8454000'] = {
+        'orientation': 'up',
+        'sensor_depth': 12.5,
+        'measured_depth': 13.0,
+        'height_from_bottom': 0.5,
+        'deployments': [{'real_time_bin': 1}],
+    }
 
     fake_urls = {
         'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
@@ -172,7 +185,9 @@ def test_retrieve_currents_returns_per_bin(
     assert result[1].attrs['depth'] == -2.0
     assert result[2].attrs['depth'] == -4.0
     assert result[3].attrs['depth'] == -6.0
+    # Orientation propagates from the deployments endpoint.
     assert result[1].attrs['orientation'] == 'up'
+    assert result[1].attrs['mounting_type'] == 'up'
     assert result[1].attrs['bin'] == 1
     # Speed converted cm/s -> m/s
     assert result[1]['OBS'].iloc[0] == pytest.approx(0.50)
@@ -219,6 +234,268 @@ def test_retrieve_currents_legacy_fallback_when_bins_missing(
     assert isinstance(result, dict)
     assert list(result.keys()) == [1]  # synthetic key for legacy fallback
     assert result[1].attrs['depth'] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Side-looking (PICS) ADCPs — issue #114
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def side_bins_payload():
+    """48 bin records, all with depth=None — mirrors cb1401."""
+    return {
+        'nbr_of_bins': 48,
+        'bin_size': 4.0,
+        'center_bin_1_dist': 5.0,
+        'units': 'metric',
+        'real_time_bin': 1,
+        'bins': [
+            {'num': i, 'depth': None,
+             'distance': 5.0 + (i - 1) * 4.0,
+             'qc_flag': 0, 'orientation': 'side', 'ping_int': 6}
+            for i in range(1, 49)
+        ],
+    }
+
+
+def _side_deployment_payload(orientation='side', sensor_depth=6.7,
+                             real_time_bin=1):
+    """Mimic the real ``stations/{id}/deployments.json`` payload shape.
+
+    Top-level fields hold orientation/sensor_depth; the nested
+    ``deployments`` list carries real_time_bin (often null in real
+    payloads).
+    """
+    payload = {
+        'units': 'meters',
+        'orientation': orientation,
+        'measured_depth': 17.0,
+        'height_from_bottom': 10.3,
+        'deployments': [{
+            'id': '8454000',
+            'lat': 36.98, 'lng': -76.44,
+            'real_time_bin': real_time_bin,
+        }],
+    }
+    if sensor_depth is not None:
+        payload['sensor_depth'] = sensor_depth
+    return payload
+
+
+def test_side_looking_adcp_collapses_to_single_bin(
+    retrieve_input, side_bins_payload, logger, caplog
+):
+    """orientation=side + sensor_depth=6.7 → 1 virtual station at 6.7 m."""
+    import importlib
+    rtc = importlib.import_module(
+        'ofs_skill.obs_retrieval.retrieve_t_and_c_station')
+
+    rtc._depth_cache.clear()
+    rtc._station_info_cache.clear()
+    rtc._station_deployment_cache.clear()
+    rtc._depth_cache['8454000'] = side_bins_payload
+    rtc._station_info_cache['8454000'] = {
+        'height_from_bottom': 10.3,
+        'deployments': {'self': 'https://api.example/.../deployments.json'},
+    }
+    rtc._station_deployment_cache['8454000'] = _side_deployment_payload(
+        orientation='side', sensor_depth=6.7, real_time_bin=1)
+
+    fake_urls = {
+        'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
+        'co_ops_api_base_url': 'https://api.example/api/prod',
+    }
+
+    class _StubUtils:
+        def read_config_section(self, section, _logger):
+            return fake_urls
+
+    side_payload = {'data': [
+        {'t': '2025-01-01 00:00', 's': '20', 'd': '180', 'b': '1'},
+        {'t': '2025-01-01 00:06', 's': '22', 'd': '181', 'b': '1'},
+    ]}
+
+    with patch.object(rtc.utils, 'Utils', return_value=_StubUtils()), \
+            patch.object(rtc, '_get_session') as mock_session, \
+            caplog.at_level(logging.WARNING):
+        mock_session.return_value.get.return_value = _FakeResponse(
+            side_payload)
+        result = rtc.retrieve_t_and_c_station(retrieve_input, logger)
+
+    assert isinstance(result, dict)
+    assert list(result.keys()) == [1]
+    df = result[1]
+    assert df.attrs['depth'] == 6.7
+    assert df.attrs['orientation'] == 'side'
+    assert df.attrs['depth_unknown'] is False
+    assert df.attrs['bin'] == 1
+    assert df['DEP01'].iloc[0] == pytest.approx(6.7)
+    # The 'no depth' warning must NOT be emitted for side-looking stations.
+    assert not any(
+        'returned no depth' in rec.getMessage()
+        for rec in caplog.records)
+
+
+def test_side_looking_adcp_real_time_bin_null_unfiltered_call(
+    retrieve_input, side_bins_payload, logger
+):
+    """Production cb1401 case: ``deployments[0].real_time_bin: null`` but
+    ``bins.json`` top-level still carries ``real_time_bin``.
+
+    Side branch should pick that up, fetch the named bin via
+    ``&bin=N``, and label the result by that same bin number — which
+    matches the dissemination bin published on the PORTS website.
+    Compare against the misleading default-to-bin-1 behaviour the
+    earlier #114 fix attempted.
+    """
+    import importlib
+    rtc = importlib.import_module(
+        'ofs_skill.obs_retrieval.retrieve_t_and_c_station')
+
+    rtc._depth_cache.clear()
+    rtc._station_info_cache.clear()
+    rtc._station_deployment_cache.clear()
+    rtc._depth_cache['8454000'] = side_bins_payload
+    rtc._station_info_cache['8454000'] = {
+        'deployments': {'self': 'https://api.example/.../deployments.json'},
+    }
+    rtc._station_deployment_cache['8454000'] = _side_deployment_payload(
+        orientation='side', sensor_depth=6.7, real_time_bin=None)
+
+    fake_urls = {
+        'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
+        'co_ops_api_base_url': 'https://api.example/api/prod',
+    }
+
+    class _StubUtils:
+        def read_config_section(self, section, _logger):
+            return fake_urls
+
+    captured_urls: list = []
+
+    def _router(url, timeout=120):
+        captured_urls.append(url)
+        return _FakeResponse({'data': [
+            {'t': '2025-01-01 00:00', 's': '20', 'd': '180', 'b': '1'},
+        ]})
+
+    with patch.object(rtc.utils, 'Utils', return_value=_StubUtils()), \
+            patch.object(rtc, '_get_session') as mock_session:
+        mock_session.return_value.get.side_effect = _router
+        result = rtc.retrieve_t_and_c_station(retrieve_input, logger)
+
+    assert isinstance(result, dict)
+    # bins.json's top-level real_time_bin (1) wins over deployments[0]
+    # (null). Side branch fetches that bin specifically.
+    assert list(result.keys()) == [1]
+    df = result[1]
+    assert df.attrs['depth'] == 6.7
+    assert df.attrs['orientation'] == 'side'
+    assert df.attrs['bin'] == 1
+    datagetter_calls = [u for u in captured_urls if 'datagetter' in u]
+    assert datagetter_calls, 'no datagetter URL was hit'
+    for url in datagetter_calls:
+        assert 'bin=1' in url, (
+            f'expected bin=1 in datagetter call, got: {url}')
+
+
+def test_upward_looking_adcp_still_fans_out(
+    retrieve_input, bins_payload, currents_payloads_by_bin, logger
+):
+    """Regression: orientation=up with per-bin depths populated must
+    still produce one virtual station per bin (issue #114 must not
+    regress the issue #87 fan-out behavior)."""
+    import importlib
+    import re
+    rtc = importlib.import_module(
+        'ofs_skill.obs_retrieval.retrieve_t_and_c_station')
+
+    rtc._depth_cache.clear()
+    rtc._station_info_cache.clear()
+    rtc._station_deployment_cache.clear()
+    rtc._depth_cache['8454000'] = bins_payload
+    rtc._station_deployment_cache['8454000'] = {
+        'orientation': 'up',
+        'sensor_depth': None,
+        'deployments': [{'real_time_bin': None}],
+    }
+
+    fake_urls = {
+        'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
+        'co_ops_api_base_url': 'https://api.example/api/prod',
+    }
+
+    class _StubUtils:
+        def read_config_section(self, section, _logger):
+            return fake_urls
+
+    def _router(url, timeout=120):
+        m = re.search(r'[?&]bin=(\d+)', url)
+        if not m:
+            return _FakeResponse({'data': []})
+        bn = int(m.group(1))
+        return _FakeResponse(currents_payloads_by_bin.get(bn, {'data': []}))
+
+    with patch.object(rtc.utils, 'Utils', return_value=_StubUtils()), \
+            patch.object(rtc, '_get_session') as mock_session:
+        mock_session.return_value.get.side_effect = _router
+        result = rtc.retrieve_t_and_c_station(retrieve_input, logger)
+
+    assert isinstance(result, dict)
+    # orientation='up' must NOT trigger collapse — full fan-out preserved.
+    assert set(result.keys()) == {1, 2, 3}
+    assert result[1].attrs['orientation'] == 'up'
+    assert result[1].attrs['depth'] == -2.0
+    assert result[2].attrs['depth'] == -4.0
+    assert result[3].attrs['depth'] == -6.0
+
+
+def test_side_looking_adcp_missing_sensor_depth_falls_back(
+    retrieve_input, side_bins_payload, logger
+):
+    """orientation=side without ``sensor_depth`` → resolve depth from
+    ``measured_depth - height_from_bottom`` (geometrically equivalent
+    for a side-looking install), depth_unknown=False.
+    For cb1401-shaped fixture: 17.0 - 10.3 = 6.7 m."""
+    import importlib
+    rtc = importlib.import_module(
+        'ofs_skill.obs_retrieval.retrieve_t_and_c_station')
+
+    rtc._depth_cache.clear()
+    rtc._station_info_cache.clear()
+    rtc._station_deployment_cache.clear()
+    rtc._depth_cache['8454000'] = side_bins_payload
+    rtc._station_info_cache['8454000'] = {
+        'deployments': {'self': 'https://api.example/.../deployments.json'},
+    }
+    rtc._station_deployment_cache['8454000'] = _side_deployment_payload(
+        orientation='side', sensor_depth=None, real_time_bin=1)
+
+    fake_urls = {
+        'co_ops_mdapi_base_url': 'https://api.example/mdapi/prod',
+        'co_ops_api_base_url': 'https://api.example/api/prod',
+    }
+
+    class _StubUtils:
+        def read_config_section(self, section, _logger):
+            return fake_urls
+
+    side_payload = {'data': [
+        {'t': '2025-01-01 00:00', 's': '20', 'd': '180', 'b': '1'},
+    ]}
+
+    with patch.object(rtc.utils, 'Utils', return_value=_StubUtils()), \
+            patch.object(rtc, '_get_session') as mock_session:
+        mock_session.return_value.get.return_value = _FakeResponse(
+            side_payload)
+        result = rtc.retrieve_t_and_c_station(retrieve_input, logger)
+
+    assert isinstance(result, dict)
+    assert list(result.keys()) == [1]
+    df = result[1]
+    assert df.attrs['depth'] == pytest.approx(6.7)
+    assert df.attrs['depth_unknown'] is False
+    assert df.attrs['orientation'] == 'side'
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +625,9 @@ def test_split_virtual_currents_id_roundtrips():
 # get_title — bin-aware line
 # ---------------------------------------------------------------------------
 
-def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
+def test_get_title_includes_bin_line_for_virtual_id(
+    bins_payload, logger, tmp_path,
+):
     import importlib
 
     from ofs_skill.visualization import plotting_functions as pf
@@ -358,11 +637,25 @@ def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
     rtc._depth_cache.clear()
     rtc._depth_cache['8454000'] = bins_payload
 
+    # Drop any cached parses from earlier tests so the file we write
+    # below is the one that gets read.
+    pf._OBS_CTL_CACHE.clear()
+    pf._MODEL_CTL_CACHE.clear()
+
+    # An obs station.ctl with the new 7th token (mounting symbol). The
+    # title formatter prefers the CTL over the MDAPI fallback so this
+    # is the path that exercises the issue #141 fix.
+    ctl = tmp_path / 'cbofs_cu_station.ctl'
+    ctl.write_text(
+        '8454000_b02 8454000_b02_cu_cbofs_CO-OPS "Providence (bin 02)"\n'
+        '  41.807 -71.401 0.0  -4.00  0.0  0.50  up\n'
+    )
+
     prop = SimpleNamespace(
         start_date_full='20250101-00:00:00',
         end_date_full='20250102-00:00:00',
         ofs='cbofs',
-        control_files_path='/does/not/exist',  # no model ctl → obs-only
+        control_files_path=str(tmp_path),
     )
     # station_id per get_title: (station_number, station_name, source)
     station_id = (
@@ -373,8 +666,7 @@ def test_get_title_includes_bin_line_for_virtual_id(bins_payload, logger):
     title = pf.get_title(prop, '12345', station_id, 'cu', logger)
     assert 'Bin&nbsp;02' in title
     assert 'Obs&nbsp;depth&nbsp;4.0' in title
-    # orientation='up' in bins_payload renders as the upward-looking label
-    # emitted by _build_adcp_type_line on its own line.
+    # The new CTL 7th token drives the upward-looking label.
     assert 'Upward-Looking ADCP' in title
     # No model ctl file -> model depth should not appear
     assert 'Model&nbsp;depth' not in title

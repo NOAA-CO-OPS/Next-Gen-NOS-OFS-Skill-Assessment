@@ -68,7 +68,7 @@ def get_model_source(ofs: str) -> str:
                        'lsofs', 'sfbofs', 'sscofs'):
         return 'fvcom'
 
-    elif ofs_lower in ('stofs_3d_atl', 'stofs_3d_pac', 'loofs2'):
+    elif ofs_lower in ('stofs_3d_atl', 'stofs_3d_pac', 'loofs2', 'secofs'):
         return 'schism'
     
     elif ofs_lower in ('stofs_2d_glo'):

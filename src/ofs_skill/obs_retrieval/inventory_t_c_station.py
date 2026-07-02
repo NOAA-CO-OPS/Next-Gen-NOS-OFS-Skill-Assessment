@@ -116,6 +116,7 @@ def inventory_t_c_station(
         ('water_temperature', 'watertemp', 'has_temp'),
         ('salinity', 'physocean', 'has_salt'),
         ('currents', 'currents', 'has_cu'),
+        ('currents', 'historiccurrents', 'has_cu')
     ]
 
     for variable, station_type, var_col in variable_config:

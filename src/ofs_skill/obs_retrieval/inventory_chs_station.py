@@ -77,7 +77,7 @@ def inventory_chs_station(
 
     inventory_chs = pd.DataFrame(
         {
-            'ID': data['id'],
+            'ID': data['code'],
             'X': data['longitude'],
             'Y': data['latitude'],
             'Source': 'CHS',

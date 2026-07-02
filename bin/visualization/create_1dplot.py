@@ -66,10 +66,12 @@ Remarks:
 import argparse
 import copy
 import gc
+import glob
 import logging
 import logging.config
 import os
 import sys
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -80,7 +82,6 @@ import pandas as pd
 from ofs_skill.model_processing import (
     check_model_files,
     get_fcst_dates,
-    get_fcst_hours,
     model_properties,
     parse_ofs_ctlfile,
     read_vdatum_from_bucket,
@@ -89,12 +90,142 @@ from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment.get_skill import get_skill
-from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector
+from ofs_skill.visualization import create_gui, plotting_scalar, plotting_vector, summary_barplots
 
 warnings.filterwarnings('ignore')
 
 def parameter_validation(prop, logger):
     """ Parameter validation """
+
+# Ordered (keyword, label) lookups for filename classification. Order
+# matters: more specific keywords (e.g. 'water_level_hw', 'forecast_a')
+# must precede their broader prefixes.
+_VARIABLE_KEYWORDS = (
+    ('water_level_hw', 'Water Level high tide'),
+    ('water_level_lw', 'Water Level low tide'),
+    ('water_level', 'Water Level'),
+    ('temperature', 'Temperature'),
+    ('currents_dir', 'Current direction'),
+    ('currents', 'Current speed'),
+    ('salinity', 'Salinity'),
+)
+
+_CAST_KEYWORDS = (
+    ('nowcast', 'Nowcast'),
+    ('forecast_a', 'Forecast (A)'),
+    ('forecast_b', 'Forecast (B)'),
+    ('forecast', 'Forecast'),
+    ('hindcast', 'Hindcast'),
+)
+
+
+def get_variable_from_filename(filename):
+    """Determine the variable type based on keywords in the filename."""
+    name = filename.lower()
+    for keyword, label in _VARIABLE_KEYWORDS:
+        if keyword in name:
+            return label
+    return 'Other'
+
+
+def get_forecast_type_from_filename(filename):
+    """Determine the cast type (nowcast/forecast_a/forecast_b/hindcast)
+    from keywords in the filename."""
+    name = filename.lower()
+    for keyword, label in _CAST_KEYWORDS:
+        if keyword in name:
+            return label
+    return 'Unknown'
+
+
+def combine_files_by_pattern(directory_path, output_filename,
+                             search_string='', whichcasts=None, logger=None):
+    """Combine per-variable skill-stat CSVs into one aggregate table.
+
+    Searches ``directory_path`` for CSV files whose name contains
+    ``search_string`` (typically the OFS name), tags each row with the source
+    filename, variable, and cast type, concatenates them, and writes the
+    result to ``output_filename`` inside ``directory_path``.
+
+    Args:
+        directory_path: Directory holding the individual skill-stat CSVs.
+        output_filename: Name of the combined CSV to write (in
+            ``directory_path``).
+        search_string: Substring the candidate filenames must contain.
+        whichcasts: Optional iterable of cast names (e.g.
+            ``['nowcast', 'forecast_b']``). When provided, only files whose
+            name contains one of these casts are included, so stale files
+            from other casts are not swept in.
+        logger: Optional logger; falls back to the module logger.
+
+    Returns:
+        The combined ``pandas.DataFrame``, or ``None`` if no files matched.
+    """
+    log = logger or logging.getLogger(__name__)
+
+    # Match the search string anywhere in the basename. glob.escape guards
+    # against any glob metacharacters in the OFS name.
+    matched_files = glob.glob(
+        os.path.join(directory_path, f'*{glob.escape(search_string)}*'))
+
+    # Keep only individual skill tables for the requested cast(s): drop the
+    # aggregate output itself, 2D tables, and previously combined files so
+    # re-runs stay idempotent, then (optionally) restrict to the casts the
+    # current run produced so stale files from other casts aren't folded in.
+    casts = [c.lower() for c in whichcasts] if whichcasts else None
+
+    def _wanted(path):
+        base = os.path.basename(path).lower()
+        if ('combined' in base or 'skill_2d' in base
+                or base.endswith('_all_stations.csv')):
+            return False
+        return casts is None or any(c in base for c in casts)
+
+    dataframes = []
+    skipped = 0
+    for file in filter(_wanted, matched_files):
+        try:
+            df = pd.read_csv(file)
+            filename = os.path.basename(file)
+
+            # Add metadata columns
+            df['source_file'] = filename
+            df['variable'] = get_variable_from_filename(filename)
+            df['type'] = get_forecast_type_from_filename(filename)
+
+            dataframes.append(df)
+            log.info('Aggregating %s -> %s (%s)', filename,
+                     df['variable'].iloc[0], df['type'].iloc[0])
+        except (OSError, ValueError, pd.errors.ParserError) as err:
+            skipped += 1
+            log.warning('Skipping unreadable skill file %s: %s', file, err)
+
+    if not dataframes:
+        log.warning("No skill files matching '*%s*' found in '%s'.",
+                    search_string, directory_path)
+        return None
+
+    # Combine all DataFrames into one, ignoring the original indices.
+    combined_df = pd.concat(dataframes, ignore_index=True)
+
+    # Drop stale duplicate rows (same station, variable, and cast) that can
+    # linger from earlier runs; keep one copy per station/variable/cast.
+    dedup_keys = [c for c in ('ID', 'variable', 'type')
+                  if c in combined_df.columns]
+    if dedup_keys:
+        n_before = len(combined_df)
+        combined_df = combined_df.drop_duplicates(
+            subset=dedup_keys, keep='last').reset_index(drop=True)
+        if n_before != len(combined_df):
+            log.info('Dropped %d duplicate skill row(s) during aggregation.',
+                     n_before - len(combined_df))
+
+    combined_df.to_csv(
+        os.path.join(directory_path, output_filename), index=False)
+    log.info("Combined %d skill file(s) into '%s'%s.", len(dataframes),
+             output_filename, f' ({skipped} skipped)' if skipped else '')
+    return combined_df
+
 
 def ofs_ctlfile_read(prop, name_var, logger):
     '''
@@ -321,6 +452,29 @@ def _process_station_plot(
     return station_id_val
 
 
+def _emit_summary_barplots(prop, var_info, logger):
+    """Generate per-whichcast station summary bar plots after the
+    per-station plots for this variable have been written.  Failures
+    are logged but never propagated -- a buggy summary plot must not
+    abort the rest of the run.
+    """
+    saved_whichcast = getattr(prop, 'whichcast', None)
+    try:
+        for whichcast in getattr(prop, 'whichcasts', [saved_whichcast]):
+            if whichcast is None:
+                continue
+            prop.whichcast = whichcast
+            try:
+                summary_barplots.make_summary_bars(prop, var_info, logger)
+            except Exception:
+                logger.exception(
+                    'Summary bar plot failed for %s/%s/%s',
+                    prop.ofs, var_info[0], whichcast)
+    finally:
+        if saved_whichcast is not None:
+            prop.whichcast = saved_whichcast
+
+
 def _ensure_paired_data_exists(read_ofs_ctl_file, prop, var_info, logger):
     """
     Pre-check for missing paired data files and call get_skill()
@@ -397,7 +551,13 @@ def create_1dplot_2nd_part(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for i in range(num_stations):
-                prop_copy = copy.copy(prop)
+                # Deepcopy in the main thread before submit so each worker
+                # receives a fully isolated snapshot. A previous shallow
+                # copy here left the inner deepcopy at _process_station_plot
+                # racing on shared attribute references — on NECOFS-shaped
+                # runs that produced torn start_date_full/end_date_full and
+                # collapsed plots to one data point (issue #104).
+                prop_copy = copy.deepcopy(prop)
                 futures[executor.submit(
                     _process_station_plot, i, read_ofs_ctl_file,
                     read_station_ctl_file, prop_copy, var_info, logger
@@ -513,6 +673,7 @@ def _plot_variable_for_cycle(variable, prop, logger):
     if read_ofs_ctl_file is not None:
         create_1dplot_2nd_part(
             read_ofs_ctl_file, prop, var_info, logger)
+        _emit_summary_barplots(prop, var_info, logger)
 
 
 def create_1dplot(prop, logger):
@@ -547,7 +708,14 @@ def create_1dplot(prop, logger):
                        ['datum_list']).split(' ')
     conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     prop.static_plots = conf_settings['static_plots']
-
+    use_custom_files = conf_settings.get('use_custom_filenames', 'False').lower() in ('true', '1', 'yes')
+    if use_custom_files:
+        pause_seconds = 5
+        logger.warning('HEADS UP: You are using custom model input file names! '
+                       'If you want to disable this option, update your conf '
+                       'file and restart. Pausing %d seconds...', pause_seconds)
+        time.sleep(pause_seconds)
+        logger.info('Continuing with custom file names...')
 
     # Parse incoming arguments stored in prop from string to a list
     prop.whichcasts = parse_arguments_to_list(prop.whichcasts, logger)
@@ -661,7 +829,7 @@ def create_1dplot(prop, logger):
         logger.info('Specified datum %s available for model conversion!',
                 prop.datum)
     except KeyError:
-        if (prop.ofs.lower() not in ['loofs','lmhofs','leofs','lsofs'] and
+        if (prop.ofs.lower() not in ['loofs','lmhofs','leofs','lsofs','loofs2'] and
             'stofs' not in prop.ofs.lower()):
             logger.warning('Datum %s is NOT available for %s! '
                          'Switching to MLLW...', prop.datum, prop.ofs)
@@ -712,10 +880,10 @@ def create_1dplot(prop, logger):
 
     # Hindcast validation -- LOOFS2 only! Also, LOOFS2 cannot use nowcast or
     # forecast yet.
-    if prop.ofs == 'loofs2':
+    if prop.ofs in ['loofs2']:
         prop.whichcasts = ['hindcast']
-    if 'hindcast' in prop.whichcasts and prop.ofs != 'loofs2':
-        logger.warning('Hindcast can only be used with loofs2! Switching to '
+    if 'hindcast' in prop.whichcasts and prop.ofs not in ['loofs2','necofs']:
+        logger.warning('Hindcast can only be used with loofs2 or necofs! Switching to '
                        'nowcast + forecast_b...')
         prop.whichcasts = ['nowcast', 'forecast_b']
 
@@ -785,6 +953,12 @@ def create_1dplot(prop, logger):
         dir_params['om_dir'])
     os.makedirs(prop.om_files, exist_ok=True)
 
+    # Path to save plotly maps
+    prop.plotly_maps = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'],
+        dir_params['visual_maps'])
+    os.makedirs(prop.plotly_maps, exist_ok=True)
+
     # Before starting, let's check if all necessary model files are
     # available. If not, program will exit. Or, if exception, program will
     # continue onwards but not before shouting a warning at you :)
@@ -831,6 +1005,7 @@ def create_1dplot(prop, logger):
             create_1dplot_2nd_part(
                 read_ofs_ctl_file, p, var_info,
                 logger)
+            _emit_summary_barplots(p, var_info, logger)
 
     # --- Forecast cycle parallelism for forecast_a mode ---
     parallel_config = get_parallel_config(logger)
@@ -882,6 +1057,16 @@ def create_1dplot(prop, logger):
         # the model is loaded once and shared.
         for variable in prop.var_list:
             _plot_variable(variable, prop)
+
+    # Aggregate every per-variable skill table for this OFS into a single
+    # consolidated file. Runs once here, after all variables and casts have
+    # been processed, so the combined table is complete and written only once.
+    combine_files_by_pattern(
+        prop.data_skill_stats_path,
+        f'skill_{prop.ofs}_all_stations.csv',
+        search_string=prop.ofs,
+        whichcasts=getattr(prop, 'whichcasts', None),
+        logger=logger)
 
     return logger
 

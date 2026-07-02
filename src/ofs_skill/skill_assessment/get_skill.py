@@ -6,6 +6,7 @@
 
 
 import copy
+import gc
 import logging
 import logging.config
 import os
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
@@ -56,11 +58,29 @@ def _get_valid_cached_model(prop):
 
 
 def _set_cached_model(prop, dataset):
-    """Stamp the dataset with the current key when caching."""
+    """Stamp the dataset with the current key when caching.
+
+    If a different dataset was previously cached on this prop (e.g. the
+    previous whichcast's model on a multi-whichcast call), close it and
+    drop the local reference so its file handles and any eagerly-loaded
+    coord buffers are released before the new dataset accumulates on top
+    of it. Without this, a second whichcast loaded into the same Python
+    process holds both datasets' state simultaneously across the cache
+    swap, which on a memory-contested host (shared 64 GB box, etc.)
+    is enough to trigger the kernel OOM killer mid-extraction.
+    """
     if dataset is None:
         return
+    old = getattr(prop, '_cached_model', None)
     prop._cached_model = dataset
     prop._cached_model_key = _cache_key(prop)
+    if old is not None and old is not dataset:
+        try:
+            old.close()
+        except Exception:
+            pass
+        del old
+        gc.collect()
 
 
 def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
@@ -208,11 +228,13 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                 result = get_node_ofs(prop, logger,
                                       model_dataset=cached)
                 _set_cached_model(prop, result)
-
-            ofs_df = pd.read_csv(prd_path,
-                sep=r'\s+',
-                header=None,
-                )
+            try:
+                ofs_df = pd.read_csv(prd_path,
+                    sep=r'\s+',
+                    header=None,
+                    )
+            except EmptyDataError:
+                return None
 
         if (
             ofs_df is not None
@@ -335,7 +357,7 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
         logger.info(f'{filename} is created successfully')
 
         # Water-level extrema (HW/LW) independent detection + ±3h pairing
-        if name_var == 'wl':
+        if name_var == 'wl' and prop.ofs[0] != 'l':
             mod_extrema = extract_water_level_extrema(
                 np.asarray(series_df['DateTime']),
                 np.asarray(series_df['OFS']), 4, logger
@@ -460,7 +482,10 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
         row[0]: idx for idx, row in enumerate(read_station_ctl_file[0])
     }
 
-    parallel_config = get_parallel_config(logger)
+    parallel_config = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     max_workers = parallel_config['skill_workers']
 
     def _append_entry(target_dict, entry):
@@ -500,16 +525,16 @@ def name_convent(variable):
     Set variable names so they correspond to names used in model output data
     """
     name_var = []
-    if variable == 'water_level':
+    if 'water_level' in variable:
         name_var = 'wl'
 
-    elif variable == 'water_temperature':
+    elif 'water_temperature' in variable:
         name_var = 'temp'
 
-    elif variable == 'salinity':
+    elif 'salinity' in variable:
         name_var = 'salt'
 
-    elif variable == 'currents':
+    elif 'currents' in variable:
         name_var = 'cu'
 
     return name_var
@@ -680,6 +705,12 @@ def get_skill(prop, logger):
         prop.path, dir_params['data_dir'], dir_params['visual_dir'], )
     os.makedirs(prop.visuals_1d_station_path, exist_ok=True)
 
+    # Path to save plotly maps
+    prop.plotly_maps = os.path.join(
+        prop.path, dir_params['data_dir'], dir_params['visual_dir'],
+        dir_params['visual_maps'])
+    os.makedirs(prop.plotly_maps, exist_ok=True)
+
     # This outer loop is used to download all data for all variables
     # Inside this loop there is another loop that will go over each line
     # in the station ctl file and will try to download the data from TandC,
@@ -779,7 +810,10 @@ def get_skill(prop, logger):
                     break
         return cached_model
 
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
 
     def _skill_for_variable(variable, p):
         """Process skill assessment for a single variable."""
@@ -879,9 +913,9 @@ def get_skill(prop, logger):
                     and len(skill_result.get('skill')) != 0
                 ):
 
-                    #Make overview maps and save them
+                    # Make overview maps and save them
                     make_skill_maps(skill_result,
-                                    prop, name_var,
+                                    prop, variable, name_var,
                                     logger)
                     tabledatum = prop.datum if name_var == 'wl' else None
 
@@ -961,9 +995,16 @@ def get_skill(prop, logger):
                         variable,
                     )
         else:
-            logger.error(
-                'Fail to create summary skill table for OFS: %s and '
-                'variable: %s',
+            # No model control file means none of the observation stations
+            # matched a model output location -- e.g. STOFS currents, where
+            # the stations/points product carries water-level (tide-gauge)
+            # stations but no ADCP velocity stations to match the CO-OPS
+            # current meters against. This is a data-coverage outcome, not
+            # a processing failure, so report it as a warning rather than
+            # an error.
+            logger.warning(
+                'No summary skill table for OFS %s variable %s: no model '
+                'output stations matched the observation stations.',
                 p.ofs,
                 variable,
             )

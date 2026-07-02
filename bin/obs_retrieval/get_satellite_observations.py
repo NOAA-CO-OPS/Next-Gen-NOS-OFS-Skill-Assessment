@@ -62,7 +62,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import URLError
 
 import geopandas as gpd
 import regionmask
@@ -70,6 +70,72 @@ import xarray as xr
 
 from ofs_skill.model_processing import model_properties
 from ofs_skill.obs_retrieval import utils
+
+# Healthy raw GOES/SPoRT hourly SST files are ~8 MB. Truncated downloads
+# observed in the wild land at ~48 KB. 1 MB is comfortably above the
+# pathological band and well below any legitimate file.
+_RAW_SAT_MIN_BYTES = 1 * 1024 * 1024
+# Upper bound — defends against a misbehaving upstream serving an
+# unbounded response (HTML error page, gzip bomb, mirror serving a
+# different giant product). SPoRT global L4 raw is documented at
+# ~30–100 MB; GOES L3C is ~8 MB. 200 MB gives 2x headroom over the
+# largest plausible legitimate product while keeping disk-fill
+# blast radius small.
+_RAW_SAT_MAX_BYTES = 200 * 1024 * 1024
+# Socket-level (per-read) timeout used by urlopen. Long enough to
+# tolerate a slow connection, short enough to abort a stalled read.
+_DOWNLOAD_TIMEOUT_SECONDS = 60
+# Wall-clock cap for an entire single-file download. The socket
+# timeout above only fires when a read blocks; a slow-loris upstream
+# trickling bytes every <60s can otherwise dribble up to
+# _RAW_SAT_MAX_BYTES across many minutes. This total cap converts
+# that pathological case into a deterministic abort. Set generously
+# above normal completion times (seconds for ~8 MB on a healthy link).
+_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 300
+# Streaming chunk size for download writes — matches the
+# shutil.copyfileobj default and balances syscall overhead against
+# how often the cumulative-size and wall-clock checks are evaluated.
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# Trimmed per-hour file (most variables dropped) is smaller; threshold
+# tuned to flag obviously-empty writes without rejecting legitimate output.
+_TRIMMED_SAT_MIN_BYTES = 50 * 1024
+# Concat cache short-circuit threshold — heuristic for "this looks like a
+# real, multi-hour concat we already produced". Matches the historical
+# 1 MB cache-skip threshold so existing caches stay valid.
+_CONCAT_CACHE_MIN_KB = 1000
+# Concat post-write verify — only meant to detect phantom-path returns
+# (zero-byte or near-empty writes). A legitimate single-hour concat may
+# fall well under the cache threshold; this lower bound lets a 1-hour
+# smoke test pass while still catching the bug we set out to fix.
+_CONCAT_VERIFY_MIN_KB = 50
+# Masked OFS-clipped output threshold, matches existing freshness check.
+_MASKED_MIN_KB = 50
+
+
+def _silence_hdf5_errors():
+    """
+    Disable HDF5's automatic stderr printer on the calling thread.
+
+    netCDF4's ``Dataset(path, mode='w')`` (driving ``xr.Dataset.to_netcdf``)
+    probes whether ``path`` already exists as HDF5 before writing. On a
+    first-time write the probe raises ENOENT inside the HDF5 C library,
+    which prints a multi-line ``HDF5-DIAG`` trace to stderr. The probe
+    failure is non-fatal — the write succeeds — but the trace is alarming
+    and obscures real log lines under the parallel download path. HDF5's
+    error-printer state is thread-local, so the disable must be applied
+    on every thread that drives netCDF4 writes (main + each pool worker).
+    Best-effort: silently no-ops if libhdf5 cannot be opened.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+        soname = ctypes.util.find_library('hdf5') or 'libhdf5.so'
+        ctypes.CDLL(soname).H5Eset_auto2(ctypes.c_int64(0), None, None)
+    except (OSError, AttributeError):
+        pass
+
+
+_silence_hdf5_errors()
 
 
 def hours_range(start_date, end_date):
@@ -627,6 +693,80 @@ def _should_download(sat_fname, sat_type):
         return sat_fname.find('SPoRT') > -1
 
 
+def _safe_remove(path, logger):
+    """Best-effort file removal; never raises."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError as ex:
+        logger.warning('Failed to remove %s: %s', path, ex)
+
+
+def _download_with_limits(url, dest, logger):
+    """
+    Download ``url`` to ``dest`` with three independent bounds:
+
+    1. Per-read socket timeout (``_DOWNLOAD_TIMEOUT_SECONDS``) so a
+       blocked recv aborts.
+    2. Cumulative byte cap (``_RAW_SAT_MAX_BYTES``) so an unbounded
+       response cannot fill the disk.
+    3. Wall-clock cap (``_DOWNLOAD_TOTAL_TIMEOUT_SECONDS``) so a
+       slow-loris upstream that trickles bytes within the per-read
+       timeout still aborts in bounded time.
+
+    Replaces ``urllib.request.urlretrieve`` (which has no timeout
+    kwarg and no streaming size limit). Streams the response in
+    fixed-size chunks and cleans up the partial file on any failure
+    path.
+
+    Returns True on success, False on any failure (logged at
+    WARNING). The ``(URLError, OSError)`` catch covers all expected
+    network/filesystem errors; the caller treats False as "skip this
+    hour." Unexpected exceptions (e.g. ``MemoryError``,
+    ``KeyboardInterrupt``) propagate.
+    """
+    bytes_written = 0
+    deadline = time.monotonic() + _DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+    try:
+        with urllib.request.urlopen(
+            url, timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+        ) as response, open(dest, 'wb') as out:
+            while True:
+                if time.monotonic() > deadline:
+                    logger.warning(
+                        'Download for %s exceeded %d-second total '
+                        'wall-clock budget (read %d bytes); aborting',
+                        url, _DOWNLOAD_TOTAL_TIMEOUT_SECONDS,
+                        bytes_written,
+                    )
+                    # Close before unlink: required on Windows, where
+                    # os.remove on an open file raises PermissionError.
+                    out.close()
+                    _safe_remove(dest, logger)
+                    return False
+                chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > _RAW_SAT_MAX_BYTES:
+                    logger.warning(
+                        'Download for %s exceeded %d-byte cap '
+                        '(read %d bytes); aborting',
+                        url, _RAW_SAT_MAX_BYTES, bytes_written,
+                    )
+                    # Close before unlink: required on Windows, where
+                    # os.remove on an open file raises PermissionError.
+                    out.close()
+                    _safe_remove(dest, logger)
+                    return False
+                out.write(chunk)
+        return True
+    except (URLError, OSError) as ex:
+        logger.warning('Download failed for %s: %s', url, ex)
+        _safe_remove(dest, logger)
+        return False
+
+
 def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
     """
     Download, trim, and save a single satellite file.
@@ -635,8 +775,12 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
     the parallel ThreadPoolExecutor path in ``get_sat()``.
 
     Returns the cleaned output path on success, or None on skip/failure.
+    Per-hour failures (network errors, undersized downloads, undersized
+    cached files) return None so the caller drops the hour and continues
+    — the missing hour shows up as a gap in the concat output rather
+    than aborting the run.
     """
-    sat_fname = os.path.join(Path.cwd(), Path(obs2d_dir))
+    sat_fname = obs2d_dir
 
     subdir = _resolve_sat_subdir(sat_dat)
     if subdir is not None:
@@ -655,21 +799,44 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
 
     # --- File already exists on disk ---
     if os.path.exists(sat_fname):
-        logger.info('%s exists', sat_fname)
-        if _should_download(sat_fname, sat_type):
-            return sat_fname
-        return None
-
-    # --- Need to download ---
-    try:
         if not _should_download(sat_fname, sat_type):
             return None
+        cached_size = os.path.getsize(sat_fname)
+        if cached_size >= _TRIMMED_SAT_MIN_BYTES:
+            logger.info('%s exists', sat_fname)
+            return sat_fname
+        # Cached file is corrupt/truncated — discard and re-download below.
+        logger.warning(
+            'Cached file %s is undersized (%d bytes < %d); '
+            'removing and re-downloading',
+            sat_fname, cached_size, _TRIMMED_SAT_MIN_BYTES,
+        )
+        _safe_remove(sat_fname, logger)
 
-        logger.info('Downloading satellite data: %s', sat_dat)
+    if not _should_download(sat_fname, sat_type):
+        return None
 
-        raw_path = obs2d_dir + r'/' + f'{sat_dat}'.split('/')[-1]
-        urllib.request.urlretrieve(sat_dat, raw_path)
+    logger.info('Downloading satellite data: %s', sat_dat)
 
+    raw_path = os.path.join(obs2d_dir, f'{sat_dat}'.split('/')[-1])
+
+    # --- Network fetch (timeout + size cap; cleanup on any failure) ---
+    if not _download_with_limits(sat_dat, raw_path, logger):
+        return None
+
+    # --- Validate raw download size before trying to parse it ---
+    if (not os.path.exists(raw_path)
+            or os.path.getsize(raw_path) < _RAW_SAT_MIN_BYTES):
+        actual = os.path.getsize(raw_path) if os.path.exists(raw_path) else 0
+        logger.warning(
+            'Skipping undersized download for %s: %d bytes < %d',
+            sat_dat, actual, _RAW_SAT_MIN_BYTES,
+        )
+        _safe_remove(raw_path, logger)
+        return None
+
+    # --- Parse + trim ---
+    try:
         drop_variables = [
             'quality_level',
             'l2p_flags',
@@ -689,42 +856,55 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
             engine='netcdf4',
             decode_times=False,
         )
-
         data_set.to_netcdf(sat_fname, mode='w')
         data_set.close()
-        os.remove(raw_path)
-
-        return sat_fname
-
-    except (ValueError, HTTPError, Exception) as ex:
+    except (ValueError, OSError, RuntimeError) as ex:
         if 'G16' in sat_dat:
-            g16date = datetime.strptime(
-                sat_fname.split('-')[0][-14:-1],
-                '%Y%m%d%H%M%S',
-            )
-            g16end = datetime.strptime(
-                '20250407210000', '%Y%m%d%H%M%S')
-            if g16date > g16end:
-                error_message = (
-                    f'Error: {str(ex)}. '
-                    f'Oops! GOES-16 does not exist for '
-                    f'{sat_fname.split("-")[0][-14:-1]}. '
-                    f'It is replaced by GOES-19.'
+            try:
+                g16date = datetime.strptime(
+                    sat_fname.split('-')[0][-14:-1],
+                    '%Y%m%d%H%M%S',
                 )
-                logger.error(error_message)
-            else:
-                error_message = (
-                    f'Error: {str(ex)}. '
-                    f'Failed downloading files {sat_dat}!!'
+                g16end = datetime.strptime(
+                    '20250407210000', '%Y%m%d%H%M%S')
+                if g16date > g16end:
+                    logger.error(
+                        'Error: %s. Oops! GOES-16 does not exist for %s. '
+                        'It is replaced by GOES-19.',
+                        ex, sat_fname.split('-')[0][-14:-1],
+                    )
+                else:
+                    logger.error(
+                        'Error: %s. Failed downloading files %s!!',
+                        ex, sat_dat,
+                    )
+            except ValueError:
+                logger.error(
+                    'Error: %s. Failed downloading files %s!!',
+                    ex, sat_dat,
                 )
-                logger.error(error_message)
         else:
-            error_message = (
-                f'Error: {str(ex)}. '
-                f'Failed downloading files {sat_dat}!!'
+            logger.error(
+                'Error: %s. Failed downloading files %s!!', ex, sat_dat,
             )
-            logger.error(error_message)
+        _safe_remove(raw_path, logger)
+        _safe_remove(sat_fname, logger)
         return None
+
+    _safe_remove(raw_path, logger)
+
+    # --- Validate trimmed output before declaring success ---
+    if (not os.path.exists(sat_fname)
+            or os.path.getsize(sat_fname) < _TRIMMED_SAT_MIN_BYTES):
+        actual = os.path.getsize(sat_fname) if os.path.exists(sat_fname) else 0
+        logger.warning(
+            'Trimmed file %s is undersized (%d bytes < %d); discarding',
+            sat_fname, actual, _TRIMMED_SAT_MIN_BYTES,
+        )
+        _safe_remove(sat_fname, logger)
+        return None
+
+    return sat_fname
 
 
 def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
@@ -746,7 +926,9 @@ def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
     list_of_files = []
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(
+        max_workers=max_workers, initializer=_silence_hdf5_errors,
+    ) as executor:
         futures = {
             executor.submit(
                 _download_single_file, url, obs2d_dir, logger, sat_type,
@@ -777,15 +959,41 @@ def get_sat(list_of_urls, obs2d_dir, logger, sat_type):
     return list_of_files
 
 
+def _purge_undersized_sat_files(directory, min_bytes, logger):
+    """
+    Sweep ``directory`` for trimmed per-hour SAT files smaller than
+    ``min_bytes`` and remove them. Best-effort — failures are logged
+    and do not raise. Used as a safety net for caches populated by
+    pre-fix runs that predate the download-time size validation.
+    """
+    if not directory or not os.path.isdir(directory):
+        return
+    for filename in os.listdir(directory):
+        if not filename.endswith('_sst.nc'):
+            continue
+        file_path = os.path.join(directory, filename)
+        try:
+            if (os.path.isfile(file_path)
+                    and os.path.getsize(file_path) < min_bytes):
+                logger.warning(
+                    'Purging undersized cached SAT file: %s', file_path,
+                )
+                os.remove(file_path)
+        except OSError as ex:
+            logger.warning('Failed to inspect/remove %s: %s', file_path, ex)
+
+
 def concat_sat(list_of_files, obs2d_dir, logger, prop1):
     """
     Concatenates the satellite files on
     list_of_files into once single file,
     deletes the files in list_of_files
+
+    Concat output is the only artifact downstream stages depend on, so
+    write failures here abort the run rather than continuing with a gap.
     """
     try:
         save_path = (
-            Path(__file__).parent.parent.parent /
             Path(obs2d_dir) /
             str(
                 f'{list_of_files[0]}'.split(
@@ -809,61 +1017,110 @@ def concat_sat(list_of_files, obs2d_dir, logger, prop1):
         sys.exit(-1)
 
     logger.info(f'Checking for concatenated file: {save_path}')
-    if os.path.exists(save_path) and os.path.getsize(save_path)/1024 > 1000:
+    if (os.path.exists(save_path)
+            and os.path.getsize(save_path) / 1024 > _CONCAT_CACHE_MIN_KB):
         logger.info('Valid concatenated file found - skipping concatenation')
-        # if os.path.getsize(save_path)/1024 > 1000:
-        #   logger.info(f"{save_path} is valid - skipping concatenation ")
-    else:
-        try:
-            logger.info('No global concatenated file found ')
-            logger.info('Begining concatenating of the satellite data ... ')
-            nc_list = []
+        return str(save_path)
 
-            for file in list_of_files:
-                if os.path.exists(file):
-                    nc_list.append(
-                        xr.open_dataset(
-                            file,
-                            chunks='auto',
-                            decode_times=False,
-                            lock=False,
-                        ),
-                    )
-            nc_item = xr.concat(
-                nc_list,
-                dim='time',
-                data_vars='minimal',
-            )
+    # Sweep any leftover undersized per-hour caches from pre-fix runs
+    # so they don't pollute this concat.
+    sat_subdir = os.path.dirname(list_of_files[0])
+    _purge_undersized_sat_files(sat_subdir, _TRIMMED_SAT_MIN_BYTES, logger)
 
-            logger.info('Concatenation complete!')
-        except Exception as ex:
-            logger.error(f'Error happened at Concatenation: {str(ex)}')
-            sys.exit(-1)
+    try:
+        logger.info('No global concatenated file found ')
+        logger.info('Begining concatenating of the satellite data ... ')
+        nc_list = []
 
-        # nc_item = xr.concat([xr.open_dataset(i) for i in list_of_files],
-        #                     dim="time",
-        #                     data_vars="minimal"
-        #                    )
+        for file in list_of_files:
+            if os.path.exists(file):
+                nc_list.append(
+                    xr.open_dataset(
+                        file,
+                        chunks='auto',
+                        decode_times=False,
+                        lock=False,
+                    ),
+                )
+        nc_item = xr.concat(
+            nc_list,
+            dim='time',
+            data_vars='minimal',
+        )
 
-        try:
-            logger.info(f'Writing concatenated file to {save_path} ... ')
-            nc_item.to_netcdf(
-                save_path,
-                mode='w',
-                format='NETCDF4',
-                engine='netcdf4',
-                # encoding={"chunksizes": 1000},
-                # computer=False
-            )
+        logger.info('Concatenation complete!')
+    except Exception as ex:
+        logger.error(f'Error happened at Concatenation: {str(ex)}')
+        sys.exit(-1)
 
-            logger.info('Finished writing the concatenated satellite file ')
-        except MemoryError as ex:
-            logger.error(
-                f'Error happened at saving file {save_path} -- {str(ex)}')
-            sys.exit(-1)
-        except KeyboardInterrupt:
-            logger.error('Keyboard interupt by user, abandoning save ... ')
+    try:
+        logger.info(f'Writing concatenated file to {save_path} ... ')
+        nc_item.to_netcdf(
+            save_path,
+            mode='w',
+            format='NETCDF4',
+            engine='netcdf4',
+        )
+
+        logger.info('Finished writing the concatenated satellite file ')
+    except MemoryError as ex:
+        logger.error(
+            f'Error happened at saving file {save_path} -- {str(ex)}')
+        sys.exit(-1)
+    except (OSError, RuntimeError) as ex:
+        logger.error(
+            f'Error happened at saving file {save_path} -- {str(ex)}')
+        sys.exit(-1)
+    except KeyboardInterrupt:
+        logger.error('Keyboard interrupt by user, abandoning save ... ')
+        # Re-raise so the caller doesn't proceed with a phantom path.
+        raise
+
+    # Verify the write actually produced a usable file. If the file is
+    # missing or undersized despite no exception, downstream masksat
+    # would only surface this as a cryptic HDF5 trace.
+    if (not os.path.exists(save_path)
+            or os.path.getsize(save_path) / 1024 < _CONCAT_VERIFY_MIN_KB):
+        actual = (
+            os.path.getsize(save_path) / 1024 if os.path.exists(save_path) else 0
+        )
+        logger.error(
+            'Concat write completed but %s is missing or undersized '
+            '(%.1f KiB < %d KiB)', save_path, actual, _CONCAT_VERIFY_MIN_KB,
+        )
+        sys.exit(-1)
+
     return str(save_path)
+
+
+def _masked_file_is_fresh(masked_sat_path):
+    """
+    True iff ``masked_sat_path`` exists, is younger than 1 hour, and is
+    larger than ``_MASKED_MIN_KB``. Drives the decision to skip vs.
+    rebuild the OFS-clipped output.
+    """
+    if not os.path.exists(masked_sat_path):
+        return False
+    age_seconds = time.time() - os.path.getmtime(masked_sat_path)
+    if age_seconds >= 3600:
+        return False
+    return os.path.getsize(masked_sat_path) / 1024 > _MASKED_MIN_KB
+
+
+def _verify_masked_output(path, logger):
+    """
+    Verify a masked OFS-clipped output landed on disk and is at least
+    ``_MASKED_MIN_KB``. Aborts the run on failure — masked outputs are
+    consumed by downstream skill assessment, so silent corruption here
+    surfaces as confusing errors much later.
+    """
+    if not os.path.exists(path) or os.path.getsize(path) / 1024 < _MASKED_MIN_KB:
+        actual = os.path.getsize(path) / 1024 if os.path.exists(path) else 0
+        logger.error(
+            'Masked output %s missing or undersized (%.1f KiB < %d KiB). Abort!',
+            path, actual, _MASKED_MIN_KB,
+        )
+        sys.exit(-1)
 
 
 def masksat_by_ofs(sat_path, shape_file):
@@ -955,8 +1212,13 @@ def parameter_dir_validation(prop, dir_params, logger):
         )
         logger.error(error_message)
         sys.exit(-1)
+    # Resolve once to absolute so download / concat / mask stages all
+    # agree on the directory regardless of cwd. Resolving an already-
+    # absolute path is a no-op, preserving orchestration callers that
+    # pass an absolute prop.path.
+    resolved_prop_path = str(Path(prop.path).resolve())
     prop.data_observations_2d_satellite_path = os.path.join(
-        prop.path,
+        resolved_prop_path,
         dir_params['data_dir'],
         dir_params['observations_dir'],
         dir_params['2d_satellite_dir'],
@@ -1078,6 +1340,25 @@ def get_satellite(prop, logger):
         )
 
         logger.info('Satellite data downloaded')
+
+        # Coverage summary — flags silent partial concats so downstream
+        # skill metrics aren't computed on biased subsamples without a
+        # warning. Counts by sat_type so a SPoRT outage doesn't get
+        # masked by GOES success (or vice versa).
+        n_hours_requested = len(hours)
+        n_goes_urls = len([u for u in list_of_urls if 'ABI_G' in u])
+        n_sport_urls = len([u for u in list_of_urls if 'SPoRT' in u])
+        coverage_log = logger.info
+        if (n_goes_urls and len(list_of_files_goes) < n_goes_urls) or \
+                (n_sport_urls and len(list_of_files_sport) < n_sport_urls):
+            coverage_log = logger.warning
+        coverage_log(
+            'Satellite hour-coverage summary: requested %d hours; '
+            'GOES %d/%d files retrieved; SPoRT %d/%d files retrieved',
+            n_hours_requested,
+            len(list_of_files_goes), n_goes_urls,
+            len(list_of_files_sport), n_sport_urls,
+        )
     except ValueError as ex:
         error_message = f'Error: {str(ex)}. Failed downloading files. Abort!'
         logger.error(error_message)
@@ -1112,30 +1393,28 @@ def get_satellite(prop, logger):
             shape_file = f'{prop.ofs_extents_path}/{prop.ofs}.shp'
 
             masked_sat_path = (
-                Path(__file__).parent.parent.parent /
                 Path(prop.data_observations_2d_satellite_path) /
                 str(prop.ofs + '.nc')
             ).resolve()
 
-            if os.path.exists(masked_sat_path):
-                file_age = time.time() - os.path.getmtime(masked_sat_path)
-                if (file_age < 3600 and
-                    os.path.getsize(masked_sat_path)/1024 > 50):
-                    logger.info(
-                        'Recent valid masked file found - skipping clipping')
-
+            if _masked_file_is_fresh(masked_sat_path):
+                logger.info(
+                    'Recent valid masked file found - skipping clipping')
             else:
-                logger.info('No recent masked file found ')
+                logger.info(
+                    'No fresh masked file found — rebuilding clipped output')
                 logger.info('Begin clipping satellite data for %s', prop.ofs)
 
                 if len(concated_sat_goes) > 0:
                     masked_sat_goes = masksat_by_ofs(
                         concated_sat_goes, shape_file)
 
-                    masked_sat_goes.to_netcdf(
-                        f'{prop.data_observations_2d_satellite_path}/'
-                        f'{args.ofs}.nc', mode='w',
+                    goes_out = os.path.join(
+                        prop.data_observations_2d_satellite_path,
+                        f'{prop.ofs}.nc',
                     )
+                    masked_sat_goes.to_netcdf(goes_out, mode='w')
+                    _verify_masked_output(goes_out, logger)
 
                 # Temporarily commented out 6/11/25 to avoid filling up server
                 # disk space
@@ -1145,10 +1424,12 @@ def get_satellite(prop, logger):
                         shape_file,
                     )
 
-                    masked_sat_sport.to_netcdf(
-                        f'{prop.data_observations_2d_satellite_path}/'
-                        f'{args.ofs}_sport.nc', mode='w',
+                    sport_out = os.path.join(
+                        prop.data_observations_2d_satellite_path,
+                        f'{prop.ofs}_sport.nc',
                     )
+                    masked_sat_sport.to_netcdf(sport_out, mode='w')
+                    _verify_masked_output(sport_out, logger)
 
                 logger.info(
                     'Finished clipping satellite data for %s', prop.ofs)

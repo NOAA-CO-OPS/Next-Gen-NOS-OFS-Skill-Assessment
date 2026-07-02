@@ -210,7 +210,7 @@ def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
 
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
-    datum_shift, retrieve_input, logger, config_file=None,
+    datum_shift, retrieve_input, logger, control_files_path, config_file=None,
 ):
     """Apply datum shift to water_level timeseries, with CO-OPS multi-datum fallback.
 
@@ -264,7 +264,7 @@ def _apply_datum_shift(
                     retrieve_input.variable = variable
                     retrieve_input.datum = all_datums[dat]
                     timeseries = retrieve_t_and_c_station(
-                        retrieve_input, logger,
+                        retrieve_input, logger, control_files_path,
                         config_file=config_file,
                     )
                     if (timeseries is not None and
@@ -345,7 +345,7 @@ def _format_timeseries(timeseries, variable, start_date_full, end_date_full):
 def _fetch_and_format_station(
     station_info, station_metadata, variable, name_var, datum, datum_list,
     start_date, end_date, start_date_full, end_date_full, ofs,
-    data_observations_1d_station_path, logger, config_file=None,
+    data_observations_1d_station_path, logger, control_files_path, config_file=None,
 ):
     """Fetch observation data for a single station, format it, and write .obs file.
 
@@ -386,6 +386,8 @@ def _fetch_and_format_station(
     try:
         station_id = station_info[0]
         source = station_info[3]
+        datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
+                           ['datum_list']).split(' ')
 
         # Each worker gets its own RetrieveProperties — critical for
         # thread safety since the object carries mutable request state.
@@ -402,15 +404,39 @@ def _fetch_and_format_station(
                     _split_virtual_currents_id(station_id)
                     if variable == 'currents' else (str(station_id), None)
                 )
+                # Find the retrieval datum: pick the first station-native
+                # datum (from ``station_metadata``) that is also one of the
+                # configured CO-OPS-servable datums in ``datum_list``. The
+                # observations are pulled at this native datum and a
+                # downstream shift re-references them to the requested datum.
+                datum_set = set(datum_list)
+                # First native datum present in the configured set, else None.
+                common_value = next(
+                    (x for x in station_metadata if x in datum_set), None)
+                if common_value == 'NAVD88':
+                    common_value = 'NAVD'
+                if common_value == 'IGLD85':
+                    common_value = 'IGLD'
+                if common_value is None:
+                    # No station-native datum matched the configured set;
+                    # fall back to the originally-requested datum.
+                    logger.info(
+                        'No native datum for station %s matched the '
+                        'configured datum_list; falling back to requested '
+                        'datum %s', station_id, datum)
+                    common_value = datum
+
                 retrieve_input.station = parent_id
                 retrieve_input.start_date = start_date
                 retrieve_input.end_date = end_date
                 retrieve_input.variable = variable
-                retrieve_input.datum = datum
+                retrieve_input.datum = common_value
 
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger,
-                    config_file=config_file)
+                    control_files_path,
+                    config_file=config_file,
+                    )
 
                 if variable == 'currents' and isinstance(timeseries, dict):
                     # Pick out the requested bin. When no bin suffix was
@@ -418,6 +444,7 @@ def _fetch_and_format_station(
                     # available bin so the pipeline keeps producing data.
                     if bin_num is not None and bin_num in timeseries:
                         timeseries = timeseries[bin_num]
+                        logger.info('Picked currents bin successfully!')
                     elif timeseries:
                         fallback_key = sorted(timeseries.keys())[0]
                         logger.warning(
@@ -444,7 +471,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -473,7 +500,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -502,7 +529,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -531,7 +558,7 @@ def _fetch_and_format_station(
                     timeseries = _apply_datum_shift(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
-                        retrieve_input, logger, config_file=config_file,
+                        retrieve_input, logger, control_files_path, config_file=config_file,
                     )
 
                 formatted_series = _format_timeseries(
@@ -721,7 +748,7 @@ def _process_variable_obs(
             )
 
         # Read parallel config for worker counts
-        parallel_cfg = get_parallel_config(logger)
+        parallel_cfg = get_parallel_config(logger, config_file=config_file)
 
         # Currents retrieval now issues one HTTP call per ADCP bin per
         # station, so it is orders of magnitude more request-dense than
@@ -781,24 +808,32 @@ def _process_variable_obs(
             ) as executor:
                 futures = {}
                 for station_info, station_metadata in station_pairs:
-                    future = executor.submit(
-                        _fetch_and_format_station,
-                        station_info,
-                        station_metadata,
-                        variable,
-                        name_var,
-                        effective_datum,
-                        datum_list,
-                        start_date,
-                        end_date,
-                        start_date_full,
-                        end_date_full,
-                        ofs,
+                    obs_path = os.path.join(
                         data_observations_1d_station_path,
-                        logger,
-                        config_file,
+                        f'{station_info[0]}_{ofs}_{name_var}_station.obs',
                     )
-                    futures[future] = station_info[0]
+                    if not os.path.isfile(obs_path):
+                        future = executor.submit(
+                            _fetch_and_format_station,
+                            station_info,
+                            station_metadata,
+                            variable,
+                            name_var,
+                            effective_datum,
+                            datum_list,
+                            start_date,
+                            end_date,
+                            start_date_full,
+                            end_date_full,
+                            ofs,
+                            data_observations_1d_station_path,
+                            logger,
+                            control_files_path,
+                            config_file,
+                        )
+                        futures[future] = station_info[0]
+                    else:
+                        logger.info('Reusing existing %s', obs_path)
 
                 for future in as_completed(futures):
                     sid = futures[future]
@@ -918,7 +953,10 @@ def get_station_observations(prop,logger):
     # USGS, and NDBC based on the station data source
 
     # Read parallel config once to decide variable-level dispatch strategy
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger,
+        config_file=getattr(prop, 'config_file', None),
+    )
     use_parallel_variables = parallel_cfg.get('parallel_variables', False)
 
     if use_parallel_variables:

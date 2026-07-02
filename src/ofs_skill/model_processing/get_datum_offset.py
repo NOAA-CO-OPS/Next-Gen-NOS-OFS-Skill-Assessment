@@ -33,17 +33,38 @@ Created: Fri Jun 6 09:11:51 2025
 """
 
 import os
+from datetime import datetime
 from logging import Logger
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 import numpy as np
 import pandas as pd
 import s3fs
 import xarray as xr
-from coastalmodeling_vdatum import vdatum
 
+from ofs_skill.obs_retrieval import utils, vdatum_resilient
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
-from ofs_skill.obs_retrieval import utils
+
+# SECOFS model-zero/datum transition date. The MLLW corrections file ships
+# two correction columns; dates after this cutoff use Correction2, dates on or
+# before it use Correction1. The secofs_vdatums.nc file is stamped this date.
+SECOFS_MODELZERO_TRANSITION = '04/30/2026'
+
+
+def _node_value(model: xr.Dataset, var_name: str, node: int) -> float:
+    """Read a single station's value for a static model coord var.
+
+    Handles both the legacy ``data_vars='all'`` shape (where the var was
+    replicated to ``(time, station)`` during multi-file concat) and the
+    current ``data_vars='minimal'`` shape (where it stays ``(station,)``).
+    Static coords are time-invariant by construction, so reading the
+    first time row is equivalent to reading the only row.
+    """
+    da = model[var_name]
+    dims = getattr(da, 'dims', ())
+    if dims and dims[0] in ('time', 'ocean_time'):
+        return float(np.asarray(da[0, node]))
+    return float(np.asarray(da[node]))
 
 
 def is_number(n: Any) -> bool:
@@ -241,7 +262,7 @@ def report_datums(prop: Any, datum_offsets: list[list[Any]], logger: Logger) -> 
                 if datum_offsets[1][i] == -9993:
                     reason_str = reason_str + ' Error finding model XY location (field file);'
                 if datum_offsets[1][i] == -9994:
-                    reason_str = reason_str + ' WCOFS MSL to model-0 conversion file not found;'
+                    reason_str = reason_str + ' Datum conversion file not found;'
                 reason.append(reason_str.rstrip(';').lstrip(' '))
 
         # Make datums report dataframe
@@ -323,8 +344,10 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
             logger.warning('vdatum file not found on S3 bucket, trying '
                            'local fallback...')
             try:
-                dir_params = utils.Utils().read_config_section('directories',
-                                                               logger)
+                _conf = getattr(prop, 'config_file', None)
+                dir_params = utils.Utils(
+                    config_file=_conf
+                ).read_config_section('directories', logger)
                 local_vdatum = dir_params.get('local_vdatum')
                 if not local_vdatum:
                     logger.warning(
@@ -386,7 +409,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         - -9991: Target datum unavailable in vdatum file
         - -9992: Error extracting offset for fields file
         - -9993: Error extracting offset for stations file
-        - -9994: WCOFS MSL conversion file not found
+        - -9994: Conversion file not found
         - -9995: STOFS-2D-Global, as expected, has no file to return.
                  This should never actually be returned in get_datum_offset,
                  but is here just in case.
@@ -441,9 +464,10 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         return 0
 
     # If not STOFS, read the correct vdatum file from NODD S3 on-the-fly
-    # if prop.ofs not in ('stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac', 'loofs2'): # would be safer?
+    logger.info('Doing datum conversion for %s station %s!', prop.ofs,
+                id_number)
     vdatums: Any = None
-    if 'stofs' not in prop.ofs and 'loofs2' not in prop.ofs:
+    if prop.ofs not in ['secofs', 'loofs2'] and 'stofs' not in prop.ofs:
         vdatums = read_vdatum_from_bucket(prop, logger)
         if isinstance(vdatums, int):
             logger.warning(
@@ -452,8 +476,54 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 'applied. Water level results should be viewed with '
                 'caution.', prop.ofs)
             return vdatums
-    else:
-        logger.info('Doing datum conversion for %s!', prop.ofs)
+    # Here we handle secofs, which has a vdatum file on the co-ops server, or
+    # or locally in ./src/. Once the vdatum file is on the NODD bucket, this section
+    # can be removed.
+    # Order of operations:
+        # 1. Check for corrections text file
+        # 2. If file is not available, or there is no matching station ID in it,
+        # then use the Vdatum file
+        # 3. If file is not available, return file not found error code
+    elif prop.ofs == 'secofs':
+        dir_params = utils.Utils(
+            getattr(prop, 'config_file', None)).read_config_section(
+                'directories', logger)
+        path = dir_params.get('local_vdatum')
+        if not path:
+            logger.error('No local_vdatum path configured in ofs_dps.conf. '
+                         'Cannot do SECOFS datum conversion.')
+            return -9994
+        if prop.datum.lower() == 'mllw':
+            try:
+                vdatums = pd.read_csv(path, sep='\t')
+                # Find ID number in dataframe
+                if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
+                    > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
+                    corr_col = 'Correction2'
+                else:
+                    corr_col = 'Correction1'
+                wl_corr = float(vdatums[vdatums['ID']==int(id_number)][corr_col])*-1
+                return wl_corr
+            except (FileNotFoundError, TypeError, UnicodeDecodeError, ValueError):
+                filename = 'secofs_vdatums.nc'
+                head, tail = os.path.split(path)
+                path = os.path.join(head, filename)
+                try:
+                    vdatums = xr.open_dataset(path)
+                except FileNotFoundError:
+                    logger.error('Error finding SECOFS vdatum file -- datum conversion '
+                                  'is not possible.')
+                    return -9994
+        else:
+            filename = 'secofs_vdatums.nc'
+            head, tail = os.path.split(path)
+            path = os.path.join(head, filename)
+            try:
+                vdatums = xr.open_dataset(path)
+            except FileNotFoundError:
+                logger.error('Error finding SECOFS vdatum file -- datum conversion '
+                              'is not possible.')
+                return -9994
 
     # Set water levels to user-specified datum
     if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
@@ -465,6 +535,25 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 else:
                     datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
                     datum_field = (-datum_field1 + datum_field2)
+            except Exception as e_x:
+                logger.error(f'Datum conversion error: {e_x}')
+                return -9991
+
+        # Deal with SECOFS separately
+        elif prop.ofs == 'secofs':
+            try:
+                # Use the directly-populated xgeoid20b->msl field rather than
+                # reconstructing it from navd88tomsl - navd88toxgeoid20b. Both
+                # of those variables carry a -999999.0 fill at ~12.5% of nodes,
+                # where the subtraction cancels to exactly 0.0 (an invalid
+                # offset that passes the >-999 guard).
+                datum_field1 = vdatums['xgeoid20btomsl']
+                if prop.datum.lower() == 'xgeoid20b':
+                    # Model-zero is xgeoid20b, so the offset to xgeoid20b is 0.
+                    datum_field = xr.zeros_like(datum_field1)
+                else:
+                    datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
+                    datum_field = datum_field1 - datum_field2
             except Exception as e_x:
                 logger.error(f'Datum conversion error: {e_x}')
                 return -9991
@@ -487,7 +576,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 return -9991
         elif 'stofs' in prop.ofs:
             logger.info('Still doing datum conversion for STOFS!')
-        else:  # Not SSCOFS
+        else:  # Not SSCOFS or STOFS or SECOFS or GLOFS
             try:
                 datum_field = vdatums[f'{prop.datum.lower()}tomsl']
                 if prop.ofs == 'wcofs':
@@ -502,7 +591,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 logger.error('Wrong netcdf datum variable name!')
                 logger.error(f'Error: {e_x}')
                 return -9991
-    elif prop.ofs != 'loofs2':
+    elif prop.ofs in ['leofs', 'lmhofs', 'loofs', 'lsofs',]:
         try:
             datum_field = vdatums[f'{prop.datum.lower()}tolwd']
         except Exception as e_x:
@@ -515,8 +604,8 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         try:
             if prop.model_source == 'roms':
                 datum_offset = float(datum_field[
-                    int(np.array(model['Jpos'][0, node])),
-                    int(np.array(model['Ipos'][0, node]))]
+                    int(_node_value(model, 'Jpos', node)),
+                    int(_node_value(model, 'Ipos', node))]
                     )
             elif prop.model_source == 'fvcom':
                 # Gotta search with lat/lon here...
@@ -526,12 +615,37 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 if 'necofs' in prop.ofs:
                     lon_adjustment = 0
                 target = np.around(
-                    np.array([[model['lon'][0, node] - lon_adjustment],
-                              [model['lat'][0, node]]]), 3)
+                    np.array([[_node_value(model, 'lon', node) - lon_adjustment],
+                              [_node_value(model, 'lat', node)]]), 3)
                 moddistances = np.linalg.norm(vlonlat - target,
                                               axis=0)
                 datum_offset = float(datum_field[int(
                     np.argmin(moddistances))])
+            elif prop.ofs == 'secofs':
+                # Gotta search with lat/lon here...
+                vlonlat = np.around(np.array([vdatums[
+                    'longitude'], vdatums['latitude']]), 3)
+                target = np.around(
+                    np.array([[model['lon'][0, node]],
+                              [model['lat'][0, node]]]), 3)
+                moddistances = np.linalg.norm(vlonlat - target,
+                                              axis=0)
+                # The nearest node by distance may carry a fill value in
+                # datum_field. datum_field = xgeoid20btomsl - {datum}tomsl,
+                # so a -999999 fill in either source surfaces as a large
+                # magnitude of EITHER sign (e.g. xgeoid - (-999999) = +999999).
+                # Mask on absolute magnitude so positive fills are caught too,
+                # and the nearest VALID node is chosen instead.
+                datum_vals = np.array(datum_field)
+                invalid = np.isnan(datum_vals) | (np.abs(datum_vals) >= 999)
+                if invalid.all():
+                    logger.error('No valid SECOFS datum node found near '
+                                 'station %s. Returning -9999.', id_number)
+                    datum_offset = -9999
+                else:
+                    moddistances = np.where(invalid, np.inf, moddistances)
+                    datum_offset = float(datum_field[int(
+                        np.argmin(moddistances))])
             elif prop.model_source == 'schism':
                 if prop.ofs == 'stofs_3d_atl':
                     nativedatum = 'navd88'
@@ -541,25 +655,25 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     nativedatum = 'LWD'
                 dummyval = 10.0
                 # account for the mistake in stofs-3d-atl files
-                if prop.ofs == 'stofs_3d_atl' and model['x'][0,node]> 0:
-                    _,_,z = vdatum.convert(
+                if prop.ofs == 'stofs_3d_atl' and _node_value(model, 'x', node) > 0:
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['x'][0,node],
-                                        model['y'][0,node],
+                                        _node_value(model, 'x', node),
+                                        _node_value(model, 'y', node),
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                 elif prop.ofs == 'stofs_3d_pac':
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node]-360,
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node) - 360,
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
 
                 elif prop.ofs == 'loofs2':
@@ -568,24 +682,24 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                         # (LWD is 74.2 m below IGLD85 datum zero)
                         z = dummyval - 74.2
                     else:
-                        _,_,z = vdatum.convert(
+                        _,_,z = vdatum_resilient.convert(
                                             nativedatum,
                                             prop.datum.lower(),
-                                            model['lat'][0,node],
-                                            model['lon'][0,node],
+                                            _node_value(model, 'lat', node),
+                                            _node_value(model, 'lon', node),
                                             dummyval, #use dummy value
-                                            online=True,
-                                            epoch=None
+                                            epoch=None,
+                                            logger=logger,
                                             )
                 else:
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node],
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node),
                                         dummyval, #use dummy value
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                 datum_offset = float(round(z-dummyval, 2))
 
@@ -593,14 +707,14 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 if prop.ofs == 'stofs_2d_glo':
                     nativedatum = 'lmsl'
                     dummyval = 10.0
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                                         nativedatum,
                                         prop.datum.lower(),
-                                        model['y'][0,node],
-                                        model['x'][0,node],
+                                        _node_value(model, 'y', node),
+                                        _node_value(model, 'x', node),
                                         dummyval,
-                                        online=True,
-                                        epoch=None
+                                        epoch=None,
+                                        logger=logger,
                                         )
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC station. This is probably because the station location is outside of the coastalmodeling_vdatum tool coverage area. Check if coordinates are correct. Returning -9992.')
@@ -631,28 +745,28 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 elif prop.ofs == 'loofs2':
                     nativedatum = 'LWD'
                 dummyval = 10.0
-                _,_,z = vdatum.convert(
+                _,_,z = vdatum_resilient.convert(
                                     nativedatum,
                                     prop.datum.lower(),
                                     model['SCHISM_hgrid_node_y'][node],
                                     model['SCHISM_hgrid_node_x'][node],
                                     dummyval, #use dummy value
-                                    online=True,
-                                    epoch=None
+                                    epoch=None,
+                                    logger=logger,
                                     )
                 datum_offset = round(z-dummyval,2)
             if prop.model_source == 'adcirc':
                 if prop.ofs == 'stofs_2d_glo':
                     nativedatum = 'lmsl'
                     dummyval = 10.0
-                    _,_,z = vdatum.convert(
+                    _,_,z = vdatum_resilient.convert(
                         nativedatum,
                         prop.datum.lower(),
-                        model['y'][0,node],
-                        model['x'][0,node],
+                        _node_value(model, 'y', node),
+                        _node_value(model, 'x', node),
                         dummyval,
-                        online=True,
-                        epoch=None
+                        epoch=None,
+                        logger=logger,
                     )
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC node. This is probably because the node location is outside of the coastalmodeling_vdatum tool coverage area. Check if the coordinates are correct. Returning -9993.')
@@ -673,7 +787,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         logger.error('Did not find datum offset for %s. Returning -9999.9',
                      str(id_number))
         datum_offset = -9999
-    if prop.ofs in ['lmhofs', 'loofs', 'lsofs'] and datum_offset > -999:
+    if prop.ofs in ['lmhofs', 'loofs', 'lsofs', 'secofs'] and datum_offset > -999:
         datum_offset = datum_offset * -1  # Switch sign for GLOFS, except leofs
 
     return datum_offset

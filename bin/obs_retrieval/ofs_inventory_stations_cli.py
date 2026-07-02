@@ -77,11 +77,8 @@ Remarks:
 """
 # Libraries:
 import argparse
-from pathlib import Path
-
 
 from ofs_skill.obs_retrieval.ofs_inventory_stations import ofs_inventory_stations
-
 
 # Execution:
 if __name__ == '__main__':
@@ -123,8 +120,8 @@ if __name__ == '__main__':
         '-so',
         '--Station_Owner',
         required=False,
-        default = 'co-ops,ndbc,usgs',
-        help="'CO-OPS','NDBC','USGS',", )
+        default = 'co-ops,ndbc,usgs,chs',
+        help="'CO-OPS','NDBC','USGS', 'CHS'", )
     parser.add_argument(
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')

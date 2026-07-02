@@ -1,5 +1,6 @@
 **NOTE: Development of this package happens in [this fork](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment), which gets merged to the main branch for every release**
 
+[![CI](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/actions/workflows/ci.yml/badge.svg)](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/actions/workflows/ci.yml)
 
 # The Next Gen NOS Ocean Forecast Model Skill Assessment and Processing Software - Prototype
 # 1. Overview
