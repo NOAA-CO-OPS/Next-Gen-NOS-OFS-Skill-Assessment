@@ -167,6 +167,55 @@ def test_prime_failure_releases_lock(monkeypatch, caplog):
         [r.message for r in caplog.records]
 
 
+def test_convert_rejects_unknown_datum_without_calling_vdatum(monkeypatch):
+    """An out-of-vocabulary datum (e.g. CHS 'igld', missing the '85') must
+    raise a clear ValueError up front, never reaching vdatum.convert where
+    the dependency's precedence bug would raise a cryptic UnboundLocalError."""
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS', set())
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert') as mock_convert:
+        with pytest.raises(ValueError, match='Unsupported vertical datum'):
+            vdatum_resilient.convert('igld', 'mllw', 45.0, -65.0, 10.0,
+                                     station_id='5cebf1e0')
+    mock_convert.assert_not_called()
+
+
+def test_convert_raises_valueerror_for_inwocab_pair_with_no_path(monkeypatch):
+    """An in-vocabulary pair with no conversion pipeline (Great-Lakes datum
+    to a tidal datum) makes the dependency raise UnboundLocalError. The
+    wrapper must translate that into a clean ValueError without retrying."""
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS',
+                        {('igld85', 'mllw')})
+    sleeps = []
+    monkeypatch.setattr(vdatum_resilient, '_sleep_with_backoff',
+                        lambda attempt: sleeps.append(attempt))
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert',
+            side_effect=UnboundLocalError(
+                "cannot access local variable 'h_g'")) as mock_convert:
+        with pytest.raises(ValueError, match='No vertical datum conversion'):
+            vdatum_resilient.convert('igld85', 'mllw', 45.0, -65.0, 10.0)
+    # Deterministic failure -> exactly one attempt, no backoff, no offline.
+    assert mock_convert.call_count == 1
+    assert sleeps == []
+
+
+def test_prime_swallows_unbound_local_error(monkeypatch):
+    """If the prime call hits the dependency's UnboundLocalError, the pair is
+    still marked primed (lock released) and the real call surfaces the clean
+    ValueError rather than the raw UnboundLocalError leaking from prime."""
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS', set())
+    monkeypatch.setattr(vdatum_resilient, '_sleep_with_backoff',
+                        lambda attempt: None)
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert',
+            side_effect=UnboundLocalError(
+                "cannot access local variable 'h_g'")):
+        with pytest.raises(ValueError, match='No vertical datum conversion'):
+            vdatum_resilient.convert('igld85', 'mllw', 45.0, -65.0, 10.0)
+    assert ('igld85', 'mllw') in vdatum_resilient._PRIMED_PAIRS
+
+
 def test_module_import_enables_pyproj_network():
     """Importing the module should leave pyproj network globally enabled so
     that worker threads spawned later inherit network=True."""
