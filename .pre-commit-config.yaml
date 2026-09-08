@@ -1,3 +1,7 @@
+default_install_hook_types: [pre-commit, pre-push]
+default_language_version:
+    python: python3.11
+
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -8,6 +12,7 @@ repos:
     -   id: debug-statements
     -   id: double-quote-string-fixer
     -   id: name-tests-test
+        exclude: ^tests/helpers/
     -   id: requirements-txt-fixer
 
 -   repo: https://github.com/asottile/setup-cfg-fmt
@@ -19,18 +24,13 @@ repos:
     rev: v3.20.0
     hooks:
     -   id: pyupgrade
-        args: [--py39-plus]
+        args: [--py311-plus]
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
   rev: v0.7.0
   hooks:
     - id: ruff
-      args: [
-        "--fix",
-        "--line-length=100",
-        "--target-version=py39",
-      "--extend-select=I,UP"
-      ]
+      args: ["--fix"]
 
 -   repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
@@ -45,3 +45,15 @@ repos:
         additional_dependencies:
         -   types-requests>=2.31.0
         -   types-python-dateutil>=2.9.0
+
+-   repo: local
+    hooks:
+    -   id: ci-local
+        name: ci-local (fast pre-push)
+        # Runs in the ambient shell env; ci-local.sh preflights that the
+        # dev env (ofs_skill importable) is active and says how to fix it.
+        entry: bash scripts/ci-local.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

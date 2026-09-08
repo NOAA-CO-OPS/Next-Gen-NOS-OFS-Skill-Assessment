@@ -18,52 +18,26 @@ def format_scalar(
     end_date_full: str,
     lookback_hours: int = 24,
 ) -> list[str]:
-    """
-    Format scalar observation data (water level, temperature, salinity).
+    """Format scalar observations into fixed-width ``.obs`` lines.
 
-    Converts pandas DataFrame to fixed-width formatted strings suitable
-    for model-observation pairing.
+    Args:
+        timeseries: DataFrame with ``DateTime`` and ``OBS`` columns.
+        start_date_full: Window start (``YYYYMMDD-HH:MM:SS`` style used
+            by the pipeline).
+        end_date_full: Window end.
+        lookback_hours: Extra hours before ``start_date_full`` to include
+            (default 24; use ``0`` to disable).
 
-    Parameters
-    ----------
-    timeseries : pd.DataFrame
-        DataFrame with 'DateTime' and 'OBS' columns
-    start_date_full : str
-        Start date in format 'YYYYMMDD-HH:MM:SS'
-    end_date_full : str
-        End date in format 'YYYYMMDD-HH:MM:SS'
-    lookback_hours : int, optional
-        Number of hours before start_date to include in the output.
-        Default is 24 hours. When used in nowcast+forecast_a mode,
-        the caller can pass 24 to ensure overlap between casts.
-        Set to 0 to disable the lookback.
+    Returns:
+        List of fixed-width strings ready to write to an ``.obs`` file.
+        Each line is::
 
-    Returns
-    -------
-    List[str]
-        List of formatted strings, one per observation
+            julian_date year month day hour minute value
+            {:13.8f}    {:4d} {:2d}  {:2d} {:2d}  {:2d}   {:9.4f}
 
-    Examples
-    --------
-    >>> df = pd.DataFrame({
-    ...     'DateTime': pd.date_range('2025-01-01', periods=3, freq='H'),
-    ...     'OBS': [1.23, 1.45, 1.67]
-    ... })
-    >>> formatted = format_scalar(df, '20250101-00:00:00', '20250101-02:00:00')
-    >>> print(formatted[0])
-    2460676.50000000 2025  1  1  0  0    1.2300
-
-    Notes
-    -----
-    Output format (fixed-width columns):
-        julian_date year month day hour minute value
-
-    - julian_date: Julian date (float, 13.8 format)
-    - year: 4-digit year
-    - month, day, hour, minute: 2-digit integers
-    - value: Observation value (9.4 format)
-
-    Missing data (values < -999 or > 999) are converted to NaN.
+    Note:
+        Missing data is filtered before formatting: ``OBS`` values below
+        ``-999`` or above ``999`` are converted to ``NaN``.
     """
     # Parse date range
     start_dt_full = datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
@@ -76,9 +50,12 @@ def format_scalar(
     )
     timeseries = timeseries.loc[mask].copy()
 
-    # Calculate Julian date
+    # Calculate Julian date. Round at the precision the fixed-width
+    # writer emits (8 decimals): the historical round(4) quantized to an
+    # 8.64 s grid, which made strictly 6-minute series show elapsed-day
+    # steps wobbling between 0.0041 and 0.0043 (issue #200).
     julian = pd.array(timeseries['DateTime']).to_julian_date()
-    julian = julian.round(4)
+    julian = julian.round(8)
 
     # Extract date components
     year = pd.to_datetime(timeseries['DateTime']).dt.strftime('%Y').to_numpy()
@@ -109,51 +86,31 @@ def format_vector(
     end_date_full: str,
     lookback_hours: int = 24,
 ) -> list[str]:
-    """
-    Format vector observation data (currents).
+    """Format current observations into fixed-width ``.obs`` lines.
 
-    Converts current speed and direction to u/v components and formats
-    as fixed-width strings.
+    Converts speed/direction to ``u``/``v`` (meteorological convention:
+    clockwise from North) and emits one fixed-width string per timestep.
 
-    Parameters
-    ----------
-    timeseries : pd.DataFrame
-        DataFrame with 'DateTime', 'OBS' (speed), and 'DIR' (direction) columns
-    start_date_full : str
-        Start date in format 'YYYYMMDD-HH:MM:SS'
-    end_date_full : str
-        End date in format 'YYYYMMDD-HH:MM:SS'
-    lookback_hours : int, optional
-        Number of hours before start_date to include in the output.
-        Default is 24 hours. When used in nowcast+forecast_a mode,
-        the caller can pass 24 to ensure overlap between casts.
-        Set to 0 to disable the lookback.
+    Args:
+        timeseries: DataFrame with ``DateTime``, ``OBS`` (speed), ``DIR``.
+        start_date_full: Window start (``YYYYMMDD-HH:MM:SS``).
+        end_date_full: Window end.
+        lookback_hours: Extra hours before start (default 24; ``0`` disables).
 
-    Returns
-    -------
-    List[str]
-        List of formatted strings, one per observation
+    Returns:
+        List of fixed-width strings ready to write to an ``.obs`` file.
+        Each line is::
 
-    Examples
-    --------
-    >>> df = pd.DataFrame({
-    ...     'DateTime': pd.date_range('2025-01-01', periods=2, freq='H'),
-    ...     'OBS': [0.5, 0.6],  # m/s
-    ...     'DIR': [90, 180]     # degrees clockwise from North
-    ... })
-    >>> formatted = format_vector(df, '20250101-00:00:00', '20250101-01:00:00')
+            julian_date year month day hour minute speed direction u v
+            {:13.8f}    {:4d} {:2d}  {:2d} {:2d}  {:2d}   {:9.4f} {:9.4f} {:9.4f} {:9.4f}
 
-    Notes
-    -----
-    Output format:
-        julian_date year month day hour minute speed direction u v
+        where ``u = speed * sin(radians(direction))`` and
+        ``v = speed * cos(radians(direction))``.
 
-    Direction convention:
-    - Clockwise from North (meteorological convention)
-    - u = speed * sin(direction)
-    - v = speed * cos(direction)
-
-    Missing data (values < -999 or > 999) are converted to NaN.
+    Note:
+        Missing data is filtered before formatting: ``OBS`` (speed) and
+        ``DIR`` values below ``-999`` or above ``999`` are converted to
+        ``NaN``.
     """
     # Parse date range
     start_dt_full = datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
@@ -166,9 +123,12 @@ def format_vector(
     )
     timeseries = timeseries.loc[mask].copy()
 
-    # Calculate Julian date
+    # Calculate Julian date. Round at the precision the fixed-width
+    # writer emits (8 decimals): the historical round(4) quantized to an
+    # 8.64 s grid, which made strictly 6-minute series show elapsed-day
+    # steps wobbling between 0.0041 and 0.0043 (issue #200).
     julian = pd.array(timeseries['DateTime']).to_julian_date()
-    julian = julian.round(4)
+    julian = julian.round(8)
 
     # Extract date components
     year = pd.to_datetime(timeseries['DateTime']).dt.strftime('%Y').to_numpy()
@@ -207,10 +167,28 @@ def format_vector(
 
 # Legacy function names for backward compatibility
 def scalar(timeseries: pd.DataFrame, start_date_full: str, end_date_full: str) -> list[str]:
-    """Legacy function name - use format_scalar() instead."""
+    """Alias for :func:`format_scalar` (legacy name).
+
+    Args:
+        timeseries: DataFrame with ``DateTime`` and ``OBS``.
+        start_date_full: Window start.
+        end_date_full: Window end.
+
+    Returns:
+        Fixed-width observation lines from :func:`format_scalar`.
+    """
     return format_scalar(timeseries, start_date_full, end_date_full)
 
 
 def vector(timeseries: pd.DataFrame, start_date_full: str, end_date_full: str) -> list[str]:
-    """Legacy function name - use format_vector() instead."""
+    """Alias for :func:`format_vector` (legacy name).
+
+    Args:
+        timeseries: DataFrame with ``DateTime``, ``OBS``, ``DIR``.
+        start_date_full: Window start.
+        end_date_full: Window end.
+
+    Returns:
+        Fixed-width observation lines from :func:`format_vector`.
+    """
     return format_vector(timeseries, start_date_full, end_date_full)

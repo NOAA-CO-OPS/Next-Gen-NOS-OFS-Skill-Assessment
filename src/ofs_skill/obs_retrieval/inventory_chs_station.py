@@ -9,7 +9,6 @@ Created on Wed Feb  4 16:58:00 2026
 """
 
 from logging import Logger
-from typing import Optional
 
 import pandas as pd
 from searvey._chs_api import get_chs_stations
@@ -21,7 +20,7 @@ def inventory_chs_station(
     lon1: float,
     lon2: float,
     logger: Logger
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """
     Create inventory of all CHS stations within geographic bounds.
 

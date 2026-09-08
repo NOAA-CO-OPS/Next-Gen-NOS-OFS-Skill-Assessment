@@ -51,7 +51,7 @@ import logging.config
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import geopandas as gpd
@@ -502,7 +502,7 @@ def process_files(
     static_plots : bool
         If True, generate static cartopy PNG quiver maps alongside JSON/txt.
     """
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
 
     explicit_window = start_time is not None and end_time is not None
 
@@ -510,7 +510,7 @@ def process_files(
         start_dt = start_time
         end_dt = end_time
     elif date_obj.date() == today:
-        end_dt = (datetime.now(timezone.utc) - NRT_DELAY).replace(
+        end_dt = (datetime.now(UTC) - NRT_DELAY).replace(
             minute=0, second=0, microsecond=0
         )
         start_dt = end_dt - timedelta(hours=24)

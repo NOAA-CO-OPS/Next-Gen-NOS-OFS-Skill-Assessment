@@ -8,9 +8,11 @@ observation time series. Please see each routine for detailed info.
 @author: PWL
 Last updated: 8/12/25
 """
+
 from __future__ import annotations
 
 import copy
+import glob
 import os
 import sys
 from datetime import datetime, timedelta
@@ -22,11 +24,12 @@ from ofs_skill.model_processing import do_horizon_skill_utils, get_fcst_cycle
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.skill_assessment.get_skill import name_convent, ofs_ctlfile_extract
+from ofs_skill.utils.file_headers import series_rows_to_skip
 from ofs_skill.visualization import plot_forecast_hours
 
 
 def make_horizon_series(prop, logger):
-    '''
+    """
     This function repeatedly calls get_node_ofs.py to load and write each model
     forecast cycle within the date range. It calls the get_horizon_filenames
     function to return a list of filenames/model cycles to load. This function
@@ -41,31 +44,37 @@ def make_horizon_series(prop, logger):
     -------
     NOTHING. Calls get_node_ofs.py which writes CSVs to file.
 
-    '''
+    """
     # First make dummy copy of prop to manipulate in here
     prop11 = copy.deepcopy(prop)
 
     # First get all hours & dates between start and end dates
     try:
         start_datedt = datetime.strptime(
-            prop.start_date_full, '%Y%m%d-%H:%M:%S',
+            prop.start_date_full,
+            '%Y%m%d-%H:%M:%S',
         )
         end_datedt = datetime.strptime(
-            prop.end_date_full, '%Y%m%d-%H:%M:%S',
+            prop.end_date_full,
+            '%Y%m%d-%H:%M:%S',
         )
     except ValueError:
         try:
             start_datedt = datetime.strptime(
-                prop.start_date_full, '%Y-%m-%dT%H:%M:%SZ',
+                prop.start_date_full,
+                '%Y-%m-%dT%H:%M:%SZ',
             )
             end_datedt = datetime.strptime(
-                prop.end_date_full, '%Y-%m-%dT%H:%M:%SZ',
+                prop.end_date_full,
+                '%Y-%m-%dT%H:%M:%SZ',
             )
         except ValueError:
             logger.error('Incorrect date format!')
             sys.exit(-1)
     filenames = do_horizon_skill_utils.get_horizon_filenames(
-        prop.ofs, start_datedt, end_datedt,
+        prop.ofs,
+        start_datedt,
+        end_datedt,
         logger,
     )
 
@@ -73,29 +82,36 @@ def make_horizon_series(prop, logger):
     datecycles = []
     for i, filename in enumerate(filenames):
         datecycles.append(
-            filename.split('.')[2] + '-' +
-            filename.split('.')[1][1:3] + 'hr-forecast',
+            filename.split('.')[2] + '-' + filename.split('.')[1][1:3] + 'hr-forecast',
         )
 
     # Assign relevant things to prop11
     prop11.datecycles = datecycles
     prop11.whichcast = 'forecast_a'
+    # Shared in-memory accumulator for per-station model-cycle series. Each
+    # get_node_ofs call stashes its cycle here (see
+    # do_horizon_skill_utils.accumulate_cycle) instead of re-reading and
+    # re-merging the growing per-station CSV every cycle. We initialize it
+    # up front so that any shallow copies get_node_ofs makes for parallel
+    # station/variable dispatch share the same dict reference and append into
+    # the same store.
+    prop11._horizon_accumulator = {}
     fcstlength, _ = get_fcst_cycle.get_fcst_hours(prop.ofs)
     for i, filename in enumerate(filenames):
         if 'nowcast' in str(filename.split('.')):
             continue  # Skip any nowcasts
         start_date = filename.split('.')[2]
-        prop11.start_date_full = \
-            start_date[0:4] + '-' + start_date[4:6] + '-' +\
-            start_date[6:8] + 'T00:00:00Z'
+        prop11.start_date_full = (
+            start_date[0:4] + '-' + start_date[4:6] + '-' + start_date[6:8] + 'T00:00:00Z'
+        )
         prop11.end_date_full = datetime.strftime(
             (
-                datetime.strptime(prop11.start_date_full,
-                                  '%Y-%m-%dT%H:%M:%SZ') +
-                timedelta(hours=fcstlength)
-            ), '%Y-%m-%dT%H:%M:%SZ',
+                datetime.strptime(prop11.start_date_full, '%Y-%m-%dT%H:%M:%SZ')
+                + timedelta(hours=fcstlength)
+            ),
+            '%Y-%m-%dT%H:%M:%SZ',
         )
-        prop11.forecast_hr = filename.split('.')[1][1:3]+'z'
+        prop11.forecast_hr = filename.split('.')[1][1:3] + 'z'
         try:
             logger.info(
                 'Running get_node for %s...',
@@ -104,16 +120,29 @@ def make_horizon_series(prop, logger):
             # Call get node
             get_node_ofs(prop11, logger)
             logger.info(
-                'Forecast cycles are %s percent '
-                'complete!\n',
-                str(np.round(((i+1)/len(filenames))*100, decimals=2)),
+                'Forecast cycles are %s percent ' 'complete!\n',
+                str(np.round(((i + 1) / len(filenames)) * 100, decimals=2)),
             )
         except Exception as e_x:
             logger.error(
-                'Error making horizon series! '
-                'Passing to next horizon. '
-                'Error: %s', e_x,
+                'Error making horizon series! ' 'Passing to next horizon. ' 'Error: %s',
+                e_x,
             )
+
+    # Merge all accumulated cycles per station and write the horizon CSVs in a
+    # single pass (one merge + write per station). This replaces the old
+    # per-cycle read-merge-write loop that scaled quadratically on disk I/O.
+    try:
+        n_written = do_horizon_skill_utils.flush_horizon_series(prop11, logger)
+        logger.info(
+            'Flushed %s forecast horizon station CSV(s) to disk.',
+            str(n_written),
+        )
+    except Exception as e_x:
+        logger.error(
+            'Error flushing accumulated forecast horizon series to CSV! ' 'Error: %s',
+            e_x,
+        )
 
     logger.info(
         'Done loading and saving model forecast horizon series! '
@@ -122,7 +151,7 @@ def make_horizon_series(prop, logger):
 
 
 def merge_obs_series_scalar(prop, logger):
-    '''
+    """
     Hefty function here that pairs (merges) observation data for each station
     to the existing dataframe of all model cycle time series for the same
     station. Most syntax was adapted from
@@ -142,9 +171,31 @@ def merge_obs_series_scalar(prop, logger):
     series.
     Calls horizon_skill & make_flag_images which write plots and/or tables.
 
-    '''
-    doextraplots = False  # First decide if you want to make plots of all model
-    # cycle time series, and scorecard plots
+    """
+    # Whether to also make the model-cycle time-series plots and the
+    # central-frequency scorecards. Opt-in via the 'horizon_extra_plots'
+    # setting in the conf (surfaced onto prop by create_1dplot); defaults to
+    # False so a standard run only produces the RMSE / CF bar plots.
+    doextraplots = bool(getattr(prop, 'horizon_extra_plots', False))
+
+    # The scorecard CF tables (and their companion N sample-size tables) are
+    # built by appending one station row at a time (make_table). Any tables
+    # left over from a previous run would duplicate or stale rows, so clear
+    # them up front.
+    stale_patterns = [
+        f'{prop.ofs}_*_modelcycles_cf.csv',
+        f'{prop.ofs}_*_horizonbins_cf.csv',
+        f'{prop.ofs}_*_modelcycles_n.csv',
+        f'{prop.ofs}_*_horizonbins_n.csv',
+    ]
+    stale_files = []
+    for pat in stale_patterns:
+        stale_files += glob.glob(os.path.join(prop.data_horizon_1d_pair_path, pat))
+    for stale in stale_files:
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
 
     # Try converting start/end dates to datetime
     try:
@@ -158,8 +209,8 @@ def merge_obs_series_scalar(prop, logger):
         )
     except ValueError:
         logger.error(
-            'Wrong date format in merge_obs for %s! Trying '
-            'different format...', prop.start_date_full,
+            'Wrong date format in merge_obs for %s! Trying ' 'different format...',
+            prop.start_date_full,
         )
         try:
             datetime_start = datetime.strptime(
@@ -185,23 +236,27 @@ def merge_obs_series_scalar(prop, logger):
         # Read ctl files
         name_var = name_convent(variable)
         ctl_path = os.path.join(
-            prop.control_files_path, str(
-                prop.ofs+'_' +
-                name_var+'_station.ctl',
+            prop.control_files_path,
+            str(
+                prop.ofs + '_' + name_var + '_station.ctl',
             ),
         )
-        read_station_ctl_file = \
-            station_ctl_file_extract(ctl_path)
-        ctl_path = os.path.join(prop.control_files_path,
-                            str(prop.ofs+'_'+name_var+'_model_station.ctl'))
+        read_station_ctl_file = station_ctl_file_extract(ctl_path)
+        ctl_path = os.path.join(
+            prop.control_files_path, str(prop.ofs + '_' + name_var + '_model_station.ctl')
+        )
         if prop.ofsfiletype == 'fields':
-            ctl_path = os.path.join(prop.control_files_path,
-                                str(prop.ofs+'_'+name_var+'_model.ctl'))
+            ctl_path = os.path.join(
+                prop.control_files_path, str(prop.ofs + '_' + name_var + '_model.ctl')
+            )
         if read_station_ctl_file is None or os.path.isfile(ctl_path) is False:
             continue
 
         read_ofs_ctl_file = ofs_ctlfile_extract(
-            prop, name_var, logger,)
+            prop,
+            name_var,
+            logger,
+        )
         if read_ofs_ctl_file is not None:
             # Loop through stations
             for i in range(0, len(read_ofs_ctl_file[4])):
@@ -209,8 +264,7 @@ def merge_obs_series_scalar(prop, logger):
                 obs_path = os.path.join(
                     prop.data_observations_1d_station_path,
                     str(
-                        read_ofs_ctl_file[4][i]+'_'+prop.ofs+'_'+name_var +
-                        '_station.obs',
+                        read_ofs_ctl_file[4][i] + '_' + prop.ofs + '_' + name_var + '_station.obs',
                     ),
                 )
                 # Open .obs file
@@ -218,8 +272,9 @@ def merge_obs_series_scalar(prop, logger):
                     if os.path.getsize(obs_path) > 0:
                         obs_df = pd.read_csv(
                             obs_path,
-                            delim_whitespace=True,
+                            sep=r'\s+',
                             header=None,
+                            skiprows=series_rows_to_skip(obs_path),
                         )
                     else:
                         logger.error(
@@ -231,10 +286,7 @@ def merge_obs_series_scalar(prop, logger):
                         )
                         continue
                 # Open CSV file with model time series
-                filename = (
-                    f'{prop.ofs}_{read_ofs_ctl_file[4][i]}_'
-                    f'{name_var}_fcst_horizons.csv'
-                )
+                filename = f'{prop.ofs}_{read_ofs_ctl_file[4][i]}_' f'{name_var}_fcst_horizons.csv'
                 filepath = os.path.join(
                     prop.data_horizon_1d_node_path,
                     filename,
@@ -281,7 +333,8 @@ def merge_obs_series_scalar(prop, logger):
                     except Exception as e_x:
                         logger.error(
                             'Error prepping obs series for merging to '
-                            'forecast horizon CSV! Error: %s', e_x,
+                            'forecast horizon CSV! Error: %s',
+                            e_x,
                         )
                     try:
                         ofs_df = ofs_df.sort_values(by='DateTime')
@@ -297,7 +350,8 @@ def merge_obs_series_scalar(prop, logger):
                     except Exception as e_x:
                         logger.error(
                             'Error prepping model series for merging to '
-                            'forecast horizon CSV! Error: %s', e_x,
+                            'forecast horizon CSV! Error: %s',
+                            e_x,
                         )
                     try:
                         paired = pd.merge(
@@ -306,24 +360,23 @@ def merge_obs_series_scalar(prop, logger):
                             on=['DateTime'],
                             how='left',
                         )
-                        paired = paired.loc[(
-                            paired['DateTime'] >=
-                            datetime_start
-                        )
-                            & (paired['DateTime'] <= datetime_end)]
+                        paired = paired.loc[
+                            (paired['DateTime'] >= datetime_start)
+                            & (paired['DateTime'] <= datetime_end)
+                        ]
                         paired['OBS'] = paired['OBS'].fillna(np.nan)
                         paired.to_csv(filepath, index=False)
                     except Exception as e_x:
                         logger.error(
-                            'Error during obs-model merge in horizon '
-                            'series! Error: %s', e_x,
+                            'Error during obs-model merge in horizon ' 'series! Error: %s',
+                            e_x,
                         )
                     # Do stats
                     try:
-                        obs_row = [y[0] for y in read_station_ctl_file[0]].\
-                            index(read_ofs_ctl_file[4][i])
-                        if read_station_ctl_file[0][obs_row][0] != \
-                                read_ofs_ctl_file[4][i]:
+                        obs_row = [y[0] for y in read_station_ctl_file[0]].index(
+                            read_ofs_ctl_file[4][i]
+                        )
+                        if read_station_ctl_file[0][obs_row][0] != read_ofs_ctl_file[4][i]:
                             raise Exception
                     except Exception:
                         logger.error(
@@ -337,8 +390,7 @@ def merge_obs_series_scalar(prop, logger):
                         read_ofs_ctl_file[1][i],  # node
                         read_ofs_ctl_file[-1][i],  # station id
                         read_station_ctl_file[0][obs_row][2],  # station name
-                        read_station_ctl_file[0][obs_row][1].
-                        split('_')[-1],  # station owner
+                        read_station_ctl_file[0][obs_row][1].split('_')[-1],  # station owner
                         read_ofs_ctl_file[-1],
                         doextraplots,
                         variable,
@@ -346,13 +398,14 @@ def merge_obs_series_scalar(prop, logger):
                     horizon_skill(prop, paired, info, logger)
                 else:
                     logger.info(
-                        'There is no forecast horizon CSV file for obs '
-                        'station %s.', read_station_ctl_file[0][i][0],
+                        'There is no forecast horizon CSV file for obs ' 'station %s.',
+                        read_station_ctl_file[0][i][0],
                     )
                     continue
         logger.info(
             'Forecast horizon skill: completed merging obs & model '
-            'cycles and all plotting for %s.', variable,
+            'cycles and all plotting for %s.',
+            variable,
         )
     # Finally make the flag images/matrices
     if doextraplots:
@@ -360,7 +413,7 @@ def merge_obs_series_scalar(prop, logger):
 
 
 def horizon_skill(prop, df, info, logger):
-    '''
+    """
     Here we reshape the massive dataframe that has paired observations and
     model cycle time series for each station, and add 6-hour forecast horizon
     bins. The forecast cycles are extracted from the model cycle column
@@ -393,36 +446,39 @@ def horizon_skill(prop, df, info, logger):
     -------
     NOTHING.
     Calls plotting functions that write plots to file.
-    '''
+    """
 
     # Get number of columns that have horizon series
     fcstlength, _ = get_fcst_cycle.get_fcst_hours(prop.ofs)
     forecast_cols = [col for col in df.columns if 'forecast' in col]
-    bins = np.arange(0, fcstlength+6, 6)
+    bins = np.arange(0, fcstlength + 6, 6)
     for fcst_col in forecast_cols:
-        col_time = fcst_col.split('-')[0] + '-' + \
-            fcst_col.split('-')[1][0:2] + ':00:00'
-        time_diff = (
-            df['DateTime'] - datetime.strptime(
-                col_time, '%Y%m%d-%H:%M:%S',
-            )
+        col_time = fcst_col.split('-')[0] + '-' + fcst_col.split('-')[1][0:2] + ':00:00'
+        time_diff = df['DateTime'] - datetime.strptime(
+            col_time,
+            '%Y%m%d-%H:%M:%S',
         )
         df['horizon_category'] = np.floor(
-            time_diff.dt.total_seconds()/3600,
+            time_diff.dt.total_seconds() / 3600,
         ).astype('int')
         df['hour_bins'] = df['horizon_category']
-        for j in range(len(bins)-1):
+        for j in range(len(bins) - 1):
             df.loc[
-                (df['horizon_category'] >= bins[j]) &
-                (df['horizon_category'] < bins[j+1]), 'hour_bins',
-            ] = \
-                bins[j+1]
+                (df['horizon_category'] >= bins[j]) & (df['horizon_category'] < bins[j + 1]),
+                'hour_bins',
+            ] = bins[j + 1]
         df['model_cycle'] = fcst_col
         # Make new dataframe with model, obs, and horizon category
-        df_temp = df[[
-            'DateTime', 'model_cycle', 'horizon_category', 'hour_bins',
-            'OBS', fcst_col,
-        ]]
+        df_temp = df[
+            [
+                'DateTime',
+                'model_cycle',
+                'horizon_category',
+                'hour_bins',
+                'OBS',
+                fcst_col,
+            ]
+        ]
         df_temp = df_temp.rename(columns={fcst_col: 'OFS'})
         if fcst_col == forecast_cols[0]:
             df_all = df_temp
@@ -430,10 +486,9 @@ def horizon_skill(prop, df, info, logger):
             df_all = pd.concat([df_all, df_temp])
 
     # Now bin errors by hour after loop is finished
-    df_all = df_all[(df_all['horizon_category'] <= fcstlength) &
-                    (df_all['horizon_category'] >= 0)]
+    df_all = df_all[(df_all['horizon_category'] <= fcstlength) & (df_all['horizon_category'] >= 0)]
     df_all['error'] = df_all['OFS'] - df_all['OBS']
-    df_all['square_error'] = (df_all['OFS'] - df_all['OBS'])**2
+    df_all['square_error'] = (df_all['OFS'] - df_all['OBS']) ** 2
 
     # Save df_all to CSV
     # filename=f"{prop.ofs}_{info[0]}_{info[2]}_fcsthorizons_pair.csv"
@@ -446,8 +501,7 @@ def horizon_skill(prop, df, info, logger):
     for fcst_col in forecast_cols:
         forecast_cols_dt.append(
             datetime.strptime(
-                fcst_col.split('-')[0] +
-                fcst_col.split('-')[1][0:2],
+                fcst_col.split('-')[0] + fcst_col.split('-')[1][0:2],
                 '%Y%m%d%H',
             ),
         )
@@ -461,6 +515,9 @@ def horizon_skill(prop, df, info, logger):
     plot_forecast_hours.make_horizonbin_freq_plots(df_all, info, prop, logger)
     if info[6]:
         plot_forecast_hours.make_timeseries_plots(
-            df_all, forecast_cols_sort,
-            info, prop, logger,
+            df_all,
+            forecast_cols_sort,
+            info,
+            prop,
+            logger,
         )

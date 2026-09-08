@@ -46,7 +46,6 @@ import re
 from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
-from typing import Optional
 
 # Shared regex + helper for the ``{parent}_b{NN}`` virtual-ID format used
 # throughout the per-bin currents pipeline. Lives here rather than in each
@@ -54,7 +53,7 @@ from typing import Optional
 VIRTUAL_CURRENTS_ID_RE = re.compile(r'^(.+)_b(\d+)$')
 
 
-def split_virtual_currents_id(station_id: str) -> tuple[str, Optional[int]]:
+def split_virtual_currents_id(station_id: str) -> tuple[str, int | None]:
     """Split a CO-OPS currents virtual ID ``{parent}_b{NN}`` into parts.
 
     Returns ``(parent_id, bin_num)`` for virtual IDs and ``(sid, None)``
@@ -74,12 +73,12 @@ def split_virtual_currents_id(station_id: str) -> tuple[str, Optional[int]]:
 class BinSpec:
     """Per-bin override spec from the user CSV."""
     bin: int
-    depth: Optional[float] = None
-    orientation: Optional[str] = None
-    name: Optional[str] = None
+    depth: float | None = None
+    orientation: str | None = None
+    name: str | None = None
 
 
-def _clean(value: Optional[str]) -> Optional[str]:
+def _clean(value: str | None) -> str | None:
     # Strip CR/LF and swap " -> ' so a hostile or typo'd cell cannot
     # split the 2-lines-per-station CTL record or close a quoted label.
     if value is None:
@@ -89,7 +88,7 @@ def _clean(value: Optional[str]) -> Optional[str]:
 
 
 def load_currents_bins_csv(
-    path: Optional[str], logger: Logger,
+    path: str | None, logger: Logger,
 ) -> dict[str, list[BinSpec]]:
     """Load the currents-bins override CSV into ``{station_id: [BinSpec]}``.
 
@@ -148,7 +147,7 @@ def load_currents_bins_csv(
                 continue
 
             depth_raw = _clean(raw.get('depth'))
-            depth: Optional[float] = None
+            depth: float | None = None
             if depth_raw is not None:
                 try:
                     depth = float(depth_raw)
@@ -181,7 +180,7 @@ def load_currents_bins_csv(
 
 def bin_spec_lookup(
     overrides: dict[str, list[BinSpec]], station_id: str,
-) -> Optional[dict[int, BinSpec]]:
+) -> dict[int, BinSpec] | None:
     """Convenience: ``{bin_num: BinSpec}`` for a parent station, or None.
 
     ``None`` signals "no CSV entries for this station — keep default

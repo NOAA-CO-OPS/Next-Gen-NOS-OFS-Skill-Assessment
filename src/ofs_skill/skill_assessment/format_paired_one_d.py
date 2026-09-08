@@ -6,11 +6,29 @@ time series and creates paired datasets for skill assessment.
 """
 
 from datetime import datetime, timedelta
+from enum import Enum
 from logging import Logger
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+
+class PairingStatus(str, Enum):
+    """Sentinel outcomes returned by the pairing functions.
+
+    Members are ``str`` subclasses so that plain string comparisons and
+    string-typed handling elsewhere in the codebase keep working, while
+    call sites that want type safety can compare against the enum members
+    and let a type checker verify exhaustiveness.
+    """
+
+    #: A series was built but obs and model never share a valid timestamp.
+    NO_TEMPORAL_OVERLAP = 'NoTemporalOverlap'
+
+
+# Return type shared by the pairing functions: either the paired result
+# tuple, or a PairingStatus sentinel explaining why no pairing was produced.
+PairedResult = tuple[list[list], pd.DataFrame] | PairingStatus
 
 
 def paired_scalar(
@@ -20,7 +38,7 @@ def paired_scalar(
     end_date_full: str,
     logger: Logger,
     lookback_hours: int = 6,
-) -> Optional[tuple[list[list], pd.DataFrame]]:
+) -> PairedResult | None:
     """
     Create paired time series for scalar variables.
 
@@ -50,11 +68,14 @@ def paired_scalar(
 
     Returns
     -------
-    Optional[Tuple[List[List], pd.DataFrame]]
-        Tuple containing:
+    Optional[PairedResult]
+        On success, a tuple containing:
         - formatted_series: List of lists with paired data
         - paired: DataFrame with paired observations and model data
-        Returns None if no valid paired data is found
+        Returns ``PairingStatus.NO_TEMPORAL_OVERLAP`` when both series
+        exist but share no valid timestamp in the requested window, and
+        ``None`` for the remaining no-valid-paired-data cases (e.g. the
+        obs or model series is entirely NaN).
     """
     try:
         datetime.strptime(start_date_full, '%Y%m%d-%H:%M:%S')
@@ -125,12 +146,16 @@ def paired_scalar(
         .reset_index()
     )
 
-    # Third we concat the observations to the ofs, group so same times
-    # are combined, drop nan, reindex
+    # Third we merge the observations onto the ofs series. Merge on
+    # DateTime alone (as paired_vector does): the numbered date columns are redundant with
+    # DateTime, and using the float julian column [0] as a merge key
+    # made pairing silently fail whenever the obs and model files were
+    # written with different julian rounding (e.g. a cached series from
+    # before the issue #200 precision fix meeting a fresh one).
     paired = pd.merge(
             paired_ofs,
-            paired_obs[['DateTime', 'OBS', 0, 1, 2, 3, 4, 5]],
-            on=['DateTime', 0, 1, 2, 3, 4, 5],
+            paired_obs[['DateTime', 'OBS']],
+            on=['DateTime'],
             how='left'
     )
 
@@ -154,12 +179,14 @@ def paired_scalar(
         logger.error('No valid paired OBS/OFS data after dropping NaN - returning None')
         logger.error('OBS range: %s to %s', paired['OBS'].min(), paired['OBS'].max())
         logger.error('OFS range: %s to %s', paired['OFS'].min(), paired['OFS'].max())
-        return None
+        # Distinct sentinel so the caller can attribute this drop to the
+        # specific "no overlapping valid timestamps" cause (keep + warn per
+        # issue #200) rather than lumping it in with missing-file failures.
+        return PairingStatus.NO_TEMPORAL_OVERLAP
 
     paired = paired.reset_index()
 
-    # Then we create the speed bias, mask for start and end time and
-    # create julian
+    # Then we create the bias and mask for start and end time
     paired['BIAS'] = paired['OFS'] - paired['OBS']
 
     # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
@@ -227,7 +254,7 @@ def paired_vector(
     end_date_full: str,
     logger: Logger,
     lookback_hours: int = 6,
-) -> Optional[tuple[list[list], pd.DataFrame]]:
+) -> tuple[list[list], pd.DataFrame] | None:
     """
     Create paired time series for vector variables.
 
@@ -346,8 +373,7 @@ def paired_vector(
         .reset_index()
     )
 
-    # Third we concat the observations to the ofs, group so same times
-    # are combined, drop nan, reindex
+    # Third we merge the observations onto the ofs series on DateTime
     paired = pd.merge(
         paired_ofs,
         paired_obs[['DateTime', 'OBS', 'OBS_DIR', 'OBS_U', 'OBS_V']],
@@ -357,8 +383,7 @@ def paired_vector(
 
     paired = paired.reset_index()
 
-    # Then we create the speed bias, mask for start and end time and
-    # create julian
+    # Then we create the speed bias and mask for start and end time
     paired['SPD_BIAS'] = paired['OFS'] - paired['OBS']
     # Lookback ensures overlap between consecutive casts (e.g., nowcast + forecast_a)
     paired = paired.loc[
@@ -373,28 +398,15 @@ def paired_vector(
             )
         )
     ]
-    julian = (
-        pd.array(paired['DateTime']).to_julian_date()
-        - pd.Timestamp(
-            datetime.strptime(
-                str(datetime.strptime(start_date_full,
-                                      '%Y%m%d-%H:%M:%S').year), '%Y'
-            )
-        ).to_julian_date()
-    )
-
     # Here we create the numpy arrays that will be used in the paired
     # timeseries file
 
     # This is the direction bias
+    ofs_dir = paired['OFS_DIR'].to_numpy()
+    obs_dir = paired['OBS_DIR'].to_numpy()
     dir_bias = []
-    for j in range(len(julian)):
-        dir_bias.append(
-            get_distance_angle(
-                paired['OFS_DIR'].to_numpy()[j],
-                paired['OBS_DIR'].to_numpy()[j]
-            )
-        )
+    for j in range(len(paired)):
+        dir_bias.append(get_distance_angle(ofs_dir[j], obs_dir[j]))
     paired['DIR_BIAS'] = dir_bias
     # Finally, we write the file and return the results
     paired = paired.drop(columns=['index', 'DateTime', 'OBS_U', 'OBS_V',

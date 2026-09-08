@@ -25,7 +25,6 @@ Date          Author             Description
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 import pandas as pd
 
@@ -52,6 +51,8 @@ from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
     retrieve_t_and_c_station,
 )
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
+from ofs_skill.utils import cache_manifest
+from ofs_skill.utils.file_headers import OBS_CTL_HEADER
 
 _COOPS_MAX_WORKERS = 6
 _COOPS_CURRENTS_MAX_WORKERS = 2
@@ -94,7 +95,7 @@ def _get_chs_uuid(identifier: str, logger) -> str:
 
 
 def _extract_chs_metadata(
-    station_id: str, logger, target_datum: Optional[str] = None
+    station_id: str, logger, target_datum: str | None = None
 ) -> dict:
     """Retrieves and parses CHS station metadata via explicit schema paths."""
     url = f'{CHS_SINE_BASE_URL}/stations/{station_id}/metadata'
@@ -174,6 +175,21 @@ def _normalize_vdatum_name(name: str) -> str:
     if str(name).upper() == 'IGLD':
         return 'IGLD85'
     return name
+
+
+def _ctl_availability_probe_enabled(config_file, logger) -> bool:
+    """Read the ``[settings] ctl_availability_probe`` escape hatch.
+
+    Defaults to True (probe enabled) when the key or section is absent.
+    False restores the full-download currents scan at ctl-file creation
+    — kept as an operator escape hatch because the probe trades the
+    exhaustive per-bin window downloads for short availability samples.
+    """
+    settings_params = utils.Utils(config_file).read_config_section(
+        'settings', logger
+    )
+    raw = settings_params.get('ctl_availability_probe', 'True')
+    return str(raw).strip().lower() in ('true', '1', 'yes')
 
 
 def _emit_coops_currents_entries(
@@ -274,6 +290,7 @@ def _process_coops_station(
     bin_overrides=None,
     config_file=None,
     control_files_path=None,
+    availability_probe=False,
 ):
     """Process a single CO-OPS station."""
     try:
@@ -294,6 +311,7 @@ def _process_coops_station(
             only_bins=only_bins,
             config_file=config_file,
             control_files_path=control_files_path,
+            availability_probe=(availability_probe and variable == 'currents'),
         )
         if variable == 'water_level':
             datum_found = None
@@ -475,6 +493,7 @@ def _process_usgs_station(
         retrieve_input.start_date = start_date
         retrieve_input.end_date = end_date
         retrieve_input.variable = variable
+        retrieve_input.datum = datum
         timeseries = retrieve_usgs_station(retrieve_input, logger)
         if isinstance(timeseries, pd.DataFrame) is False:
             logger.info(
@@ -486,7 +505,7 @@ def _process_usgs_station(
             )
 
             if variable == 'water_level':
-                ts_datum = str(timeseries['Datum'][1])
+                ts_datum = str(timeseries['Datum'].iloc[0])
                 ts_datum_upper = ts_datum.upper()
 
                 ofs_base_offsets = {
@@ -543,7 +562,7 @@ def _process_usgs_station(
                         f'{str(id_number)}_{name_var}_'
                         f'{ofs}_USGS "{name}"\n  {y_value:.3f} '
                         f'{x_value:.3f} '
-                        f'{zdiff}  0.0  {str(timeseries["Datum"][1])}\n'
+                        f'{zdiff}  0.0  {ts_datum}\n'
                     )
                 ]
 
@@ -553,7 +572,7 @@ def _process_usgs_station(
                         f'{str(id_number)} {str(id_number)}_'
                         f'{name_var}_{ofs}_USGS "{name}"\n  '
                         f'{y_value:.3f} {x_value:.3f} 0.0  '
-                        f'{timeseries["DEP01"][1]:.2f}  0.0\n'
+                        f'{timeseries["DEP01"].iloc[0]:.2f}  0.0\n'
                     )
                 ]
             elif variable == 'currents':
@@ -562,7 +581,7 @@ def _process_usgs_station(
                         f'{str(id_number)} {str(id_number)}_'
                         f'{name_var}_{ofs}_USGS "{name}"\n  '
                         f'{y_value:.3f} {x_value:.3f} 0.0  '
-                        f'{timeseries["DEP01"][1]:.2f}  0.0  0.00\n'
+                        f'{timeseries["DEP01"].iloc[0]:.2f}  0.0  0.00\n'
                     )
                 ]
     except Exception as ex:
@@ -827,6 +846,7 @@ def _process_variable(
     logger,
     currents_bins_overrides=None,
     config_file=None,
+    availability_probe=False,
 ):
     """Process all stations for a single variable. Writes .ctl file."""
     var_name_map = {
@@ -887,6 +907,7 @@ def _process_variable(
                         station_overrides,
                         config_file=config_file,
                         control_files_path=control_files_path,
+                        availability_probe=availability_probe,
                     )
                 )
 
@@ -977,22 +998,54 @@ def _process_variable(
                     ctl_file.extend(result)
 
     try:
-        with open(
-            r'' + f'{control_files_path}/{ofs}_{name_var}_station.ctl',
-            'w',
-            encoding='utf-8',
-        ) as output:
-            for i in ctl_file:
-                output.write(str(i))
-            logger.info(
-                '%s_%s_station.ctl created successfully!', ofs, name_var
-            )
+        if ctl_file:
+            with open(
+                r'' + f'{control_files_path}/{ofs}_{name_var}_station.ctl',
+                'w',
+                encoding='utf-8',
+            ) as output:
+                output.write(OBS_CTL_HEADER)
+                for i in ctl_file:
+                    output.write(str(i))
+                logger.info(
+                    '%s_%s_station.ctl created successfully!', ofs, name_var
+                )
     except Exception as ex:
         logger.error(
             'Saving station failed: {ex}. Please check the directory path: %s.',
             control_files_path,
         )
         raise Exception('Saving station failed.') from ex
+
+
+def record_inventory_if_populated(inventory, inventory_path,
+                                  inventory_signature, control_files_path,
+                                  logger):
+    """Stamp the inventory's run signature, but only if it holds stations.
+
+    Returns True when the signature was recorded.
+
+    A build that comes back with zero rows must not be certified. One
+    provider outage during the single run that rebuilds an inventory is
+    enough to produce a header-only file, and stamping it tells every later
+    run with the same parameters that the empty station set is correct --
+    along with the 0-byte station ctls built from it. The user sees the run
+    fail, but the only way out is deleting ``control_files/`` by hand, which
+    is the manual step the manifest exists to remove.
+
+    Leaving it unstamped costs one rebuild on the next run and is
+    self-healing, which is the right trade.
+    """
+    if inventory is None or getattr(inventory, 'empty', False):
+        if logger is not None:
+            logger.warning(
+                'Inventory %s has no station rows, so it is not being '
+                'recorded as fresh -- the next run will rebuild it rather '
+                'than reuse an empty station set.', inventory_path)
+        return False
+    cache_manifest.record_artifact(
+        inventory_path, inventory_signature, control_files_path, logger)
+    return True
 
 
 def write_obs_ctlfile(
@@ -1007,7 +1060,26 @@ def write_obs_ctlfile(
     currents_bins_csv=None,
     config_file=None,
 ):
-    """Main entry point to loop over inventories and write observation CTL files."""
+    """Build observation inventories and write station control (CTL) files.
+
+    Loops providers/variables, applies optional ADCP bin overrides, and
+    writes CTL files used by later model extraction and skill pairing.
+
+    Args:
+        start_date: Assessment start (ISO or pipeline date string).
+        end_date: Assessment end.
+        datum: Vertical datum for water levels.
+        path: Working directory root.
+        ofs: OFS identifier.
+        stationowner: Station-provider selection (e.g. list of owners).
+        var_list: Variables to inventory (water level, temp, salt, currents).
+        logger: Logger instance.
+        currents_bins_csv: Optional CSV path for ADCP bin overrides.
+        config_file: Optional path to ``ofs_dps.conf``.
+
+    Returns:
+        None. Side effects: inventory/CTL files under ``control_files``.
+    """
     dir_params = utils.Utils(config_file).read_config_section('directories', logger)
 
     currents_bins_overrides = load_currents_bins_csv(currents_bins_csv, logger)
@@ -1027,6 +1099,18 @@ def write_obs_ctlfile(
         dir_params['1d_station_dir'],
     )
     os.makedirs(data_observations_1d_station_path, exist_ok=True)
+
+    # The station inventory depends on the OFS, the assessment window, and
+    # the station-owner selection, none of which are encoded in its
+    # filename. Delete an inventory left from a run with different
+    # parameters so the reader below rebuilds it instead of reusing the
+    # wrong station set (issue: stale cache reuse across runs).
+    inventory_path = f'{control_files_path}/inventory_all_{ofs}.csv'
+    inventory_signature = cache_manifest.inventory_signature(
+        ofs, start_date, end_date, stationowner, currents_bins_csv)
+    cache_manifest.ensure_fresh(
+        inventory_path, inventory_signature, control_files_path,
+        'inventory', logger)
 
     try:
         dtypes = {
@@ -1091,6 +1175,12 @@ def write_obs_ctlfile(
             logger.error(f'Error when creating inventory files: {ex}')
             raise Exception('Error when creating inventory files') from ex
 
+    # Record the signature for the (possibly freshly built) inventory so a
+    # same-parameter rerun reuses it and a changed-parameter run rebuilds it.
+    record_inventory_if_populated(
+        inventory, inventory_path, inventory_signature, control_files_path,
+        logger)
+
     logger.info('Downloading data from the Inventory file!')
 
     if datum.lower() == 'igld85':
@@ -1113,6 +1203,13 @@ def write_obs_ctlfile(
 
     reset_run_counters()
 
+    availability_probe = _ctl_availability_probe_enabled(config_file, logger)
+    if not availability_probe:
+        logger.info(
+            'ctl_availability_probe=False: CO-OPS currents ctl scan will '
+            'download the full window for every bin.'
+        )
+
     with ThreadPoolExecutor(max_workers=len(var_list)) as executor:
         futures = []
         for variable in var_list:
@@ -1132,6 +1229,7 @@ def write_obs_ctlfile(
                     logger,
                     currents_bins_overrides,
                     config_file,
+                    availability_probe=availability_probe,
                 )
             )
 

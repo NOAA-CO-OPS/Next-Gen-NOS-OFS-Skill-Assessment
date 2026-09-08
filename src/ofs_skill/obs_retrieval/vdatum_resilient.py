@@ -29,13 +29,20 @@ The wrapper preserves ``vdatum.convert``'s return shape: ``(lat, lon, z)``.
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import os
 import random
-import threading
+import tempfile
+
+#import threading
 import time
 
 import pyproj
 import pyproj.exceptions
 from coastalmodeling_vdatum import vdatum
+
+_PRIME_LOCK = multiprocessing.Lock()
+
 
 _logger = logging.getLogger(__name__)
 
@@ -72,7 +79,7 @@ SUPPORTED_DATUMS = frozenset({
 # ``_PRIMED_PAIRS``; on first use of a pair, the holding thread runs a
 # single throwaway ``vdatum.convert`` to populate PROJ's grid cache so
 # later concurrent calls don't race for the same uninitialized URL grid.
-_PRIME_LOCK = threading.Lock()
+#_PRIME_LOCK = threading.Lock()
 _PRIMED_PAIRS: set[tuple[str, str]] = set()
 # Coordinates that lie inside both MLLW <-> NAVD88 and xgeoid20b <-> *
 # coverage areas; primarily used so the prime call returns a finite
@@ -87,46 +94,39 @@ def _sleep_with_backoff(attempt: int) -> None:
                   _RETRY_BASE_SECONDS * (2 ** attempt))
     time.sleep(random.uniform(0, backoff))
 
+def _ensure_proj_user_directory() -> None:
+    """Ensure each process gets an isolated temporary PROJ writable directory if not set."""
+    if "PROJ_USER_WRITABLE_DIRECTORY" not in os.environ:
+        tmp_dir = tempfile.mkdtemp(prefix="proj_user_dir_")
+        os.environ["PROJ_USER_WRITABLE_DIRECTORY"] = tmp_dir
+
 
 def _prime_pair(vd_from: str, vd_to: str,
                 logger: logging.Logger) -> None:
-    """Single-threaded grid-cache warm-up for one datum pair.
-
-    PROJ's SQLite cache is not safe for concurrent first-time fetches of
-    the same URL grid.  Holding a process-wide lock on the first call
-    for each (vd_from, vd_to) pair guarantees that exactly one thread
-    populates the cache while all others block, after which they all
-    proceed with a warm cache and no longer race.
-    """
     pair = (vd_from, vd_to)
     if pair in _PRIMED_PAIRS:
         return
     with _PRIME_LOCK:
         if pair in _PRIMED_PAIRS:
             return
+        
+        # Ensure PROJ uses a process-isolated user writable directory
+        if "PROJ_USER_WRITABLE_DIRECTORY" not in os.environ:
+            os.environ["PROJ_USER_WRITABLE_DIRECTORY"] = tempfile.mkdtemp(prefix="proj_prime_")
+            
         try:
             vdatum.convert(vd_from, vd_to,
                            _PRIME_LAT, _PRIME_LON, 0.0,
                            online=True)
             _PRIMED_PAIRS.add(pair)
-            logger.debug('Primed PROJ grid cache for %s->%s',
-                         vd_from, vd_to)
+            logger.debug('Primed PROJ grid cache for %s->%s', vd_from, vd_to)
         except pyproj.exceptions.ProjError as exc:
-            # Don't trap forever -- still mark the pair as primed so
-            # later callers can attempt their own retry path. They will
-            # hit the same network failure but at least the lock is
-            # released for everyone.
             _PRIMED_PAIRS.add(pair)
             logger.warning(
                 'PROJ grid prime failed for %s->%s; subsequent calls '
                 'will retry on their own. Underlying error: %s',
                 vd_from, vd_to, exc)
         except UnboundLocalError:
-            # The datum pair is in-vocabulary but has no conversion
-            # pipeline (e.g. a Great-Lakes datum to a tidal datum). The
-            # underlying vdatum.convert leaves its grid variables unbound
-            # and raises UnboundLocalError. Mark primed and let the real
-            # call surface a clean error to the caller.
             _PRIMED_PAIRS.add(pair)
 
 
@@ -171,12 +171,11 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
 
     for attempt in range(_RETRY_ATTEMPTS):
         try:
-            return vdatum.convert(vd_from, vd_to, lat, lon, z,
-                                  online=True, epoch=epoch)
+            # Wrap conversion in process lock to prevent concurrent SQLite/TIFF writes
+            with _PRIME_LOCK:
+                return vdatum.convert(vd_from, vd_to, lat, lon, z,
+                                       online=True, epoch=epoch)
         except UnboundLocalError as exc:
-            # In-vocabulary pair with no conversion pipeline (e.g. a
-            # Great-Lakes datum to a tidal datum). This is deterministic,
-            # so don't retry -- raise a clear error for the caller.
             raise ValueError(
                 f'No vertical datum conversion path from {vd_from!r} to '
                 f'{vd_to!r}.') from exc
@@ -192,15 +191,15 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
             if attempt < _RETRY_ATTEMPTS - 1:
                 _sleep_with_backoff(attempt)
 
-    # One last attempt with online=False -- the grid may already be in
-    # PROJ's user-writable cache from a prior successful fetch.
+    # Fallback path with online=False
     try:
         log.warning(
             'vdatum.convert online=True exhausted; falling back to '
             'online=False (cached grids only)%s',
             f' for station {station_id}' if station_id else '')
-        return vdatum.convert(vd_from, vd_to, lat, lon, z,
-                              online=False, epoch=epoch)
+        with _PRIME_LOCK:
+            return vdatum.convert(vd_from, vd_to, lat, lon, z,
+                                  online=False, epoch=epoch)
     except pyproj.exceptions.ProjError as exc:
         log.error(
             'vdatum.convert permanently failed for %s->%s%s. Set '

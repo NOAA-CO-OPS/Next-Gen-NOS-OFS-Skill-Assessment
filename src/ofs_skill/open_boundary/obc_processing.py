@@ -121,7 +121,7 @@ def parameter_validation(prop, logger):
         prop.path = Path(dir_params['home'])
 
     # prop.path validation
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     if not os.path.exists(ofs_extents_path):
         error_message = (
             f'ofs_extents/ folder is not found. '

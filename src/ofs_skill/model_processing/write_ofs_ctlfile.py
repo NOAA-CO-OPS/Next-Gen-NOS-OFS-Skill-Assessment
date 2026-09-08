@@ -36,7 +36,12 @@ import numpy as np
 
 import ofs_skill.model_processing.indexing as indexing
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.obs_retrieval.currents_bins_override import (
+    split_virtual_currents_id,
+)
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
+from ofs_skill.utils import cache_manifest
+from ofs_skill.utils.file_headers import MODEL_CTL_HEADER, OBS_CTL_HEADER
 
 # Public alias for the shape-normalising static-coord helper. Keeps the
 # ctl writer source 1:1 with the indexing layer (both call sites need the
@@ -77,6 +82,14 @@ def _model_bathymetry_at_node(
             # Station-file FVCOM: ``z`` has shape (siglay, node, time) or
             # similar. Take the deepest layer as the bathy proxy.
             if 'h' in model:
+                # Normalise legacy time-replicated layouts the same way
+                # the depth indexer does, so both read the same value.
+                try:
+                    h_1d = _static_coord_1d(model, 'h')
+                    if h_1d.ndim == 1:
+                        return float(abs(h_1d[int(node_idx)]))
+                except (KeyError, ValueError, TypeError):
+                    pass
                 h = np.asarray(model['h'])
                 h = np.squeeze(h)
                 if h.ndim >= 2:
@@ -133,6 +146,163 @@ def _model_bathymetry_at_node(
         'Bathymetry lookup: no handler matched model_source=%r; '
         'returning 0.0', model_source)
     return 0.0
+
+
+# Slack applied before declaring an obs bin depth to be below the model
+# seabed, absorbing float noise in the bathymetry lookup. Kept small on
+# purpose: a bin a few centimeters past the model bottom is still a
+# legitimate near-bottom comparison and is handled by the
+# keep-one-bottom-bin policy, not by this tolerance.
+_BIN_BELOW_BOTTOM_TOL_M = 0.01
+
+
+def _drop_bins_below_model_bottom(
+    prop: Any,
+    extract: Any,
+    station_id: list,
+    list_of_nearest_node: Any,
+    list_of_nearest_layer: Any,
+    list_of_depths: Any,
+    model: Any,
+    logger: Logger,
+) -> set[int]:
+    """Return indices of redundant ADCP bins that lie below the model seabed.
+
+    The CO-OPS metadata API occasionally reports ADCP bin depths deeper
+    than the model water column at the matched node (issue #200). The
+    vertical nearest-layer search clamps every such bin to the bottom
+    model layer, which would emit several model-ctl lines identical
+    except for the virtual-bin ID — the same model series compared
+    against several different obs bins, duplicating ``mod_water_depth``
+    rows in the skill CSVs.
+
+    Policy: per (parent station, node), bins reported deeper than the
+    model's static water depth (bathymetry) are dropped, except the
+    shallowest of them is kept when no other bin was already assigned
+    the same (clamped-to-bottom) model layer. Only bins outside the
+    static model water column are ever eligible for dropping:
+    in-column bins that share a model layer — e.g. near-bottom bins
+    between the deepest layer midpoint and the seabed — are always
+    kept, since layer sharing is ordinary vertical-resolution
+    behaviour and stays visible through the per-bin obs depths. The
+    threshold deliberately ignores the free surface: a bin below the
+    static seabed duplicates the kept bottom comparison regardless of
+    tide stage. Every drop is logged at WARNING and recorded on
+    ``prop.station_ledger`` when one is attached.
+
+    The caller removes the returned indices from the parallel
+    station/node/layer/depth lists before the ctl lines are written;
+    the obs ctl file keeps the full bin list untouched.
+    """
+    coord_rows = extract[-1]
+    n_stations = len(station_id)
+    if not (len(coord_rows) == len(list_of_nearest_node)
+            == len(list_of_nearest_layer) == len(list_of_depths)
+            == n_stations):
+        logger.warning(
+            'Below-bottom ADCP bin pruning skipped: obs ctl coord rows '
+            'and node/layer/depth lists are misaligned (%d stations, '
+            '%d coord rows, %d nodes, %d layers, %d depths).',
+            n_stations, len(coord_rows), len(list_of_nearest_node),
+            len(list_of_nearest_layer), len(list_of_depths))
+        return set()
+
+    groups: dict[tuple[str, int], list[int]] = {}
+    for i, sid in enumerate(station_id):
+        node = list_of_nearest_node[i]
+        try:
+            if node is None or np.isnan(node):
+                continue
+        except (TypeError, ValueError):
+            continue
+        # The node matchers emit -1 (not only NaN) for "no node found";
+        # a negative index would silently wrap to the last node's
+        # bathymetry, so reject it here.
+        node_int = int(node)
+        if node_int < 0:
+            continue
+        parent, bin_num = split_virtual_currents_id(str(sid))
+        if bin_num is None:
+            # Non-virtual ID (NDBC / USGS / CHS, or user input
+            # locations) — pruning does not apply.
+            continue
+        groups.setdefault((parent, node_int), []).append(i)
+
+    drop: set[int] = set()
+    bathy_cache: dict[int, float] = {}
+    ledger = getattr(prop, 'station_ledger', None)
+    for (parent, node), members in groups.items():
+        # Coord token [3] is the water depth on every obs ctl line
+        # width (5-token scalar, 6/7-token currents).
+        depths: dict[int, float] = {}
+        for i in members:
+            try:
+                depths[i] = float(coord_rows[i][3])
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not depths:
+            continue
+        if node not in bathy_cache:
+            bathy_cache[node] = _model_bathymetry_at_node(
+                node, model, prop.model_source, logger)
+        water_depth = bathy_cache[node]
+        if water_depth <= 0:
+            # Bathymetry unknown at this node — cannot judge, keep all.
+            continue
+        too_deep = sorted(
+            (i for i, depth in depths.items()
+             if depth > water_depth + _BIN_BELOW_BOTTOM_TOL_M),
+            key=lambda i: depths[i])
+        if not too_deep:
+            continue
+        # Layers already represented by any other bin of this group —
+        # built from all members (a bin whose depth token failed to
+        # parse still occupies its assigned layer).
+        in_column_layers = {list_of_nearest_layer[i]
+                            for i in members if i not in too_deep}
+        kept = None
+        if list_of_nearest_layer[too_deep[0]] not in in_column_layers:
+            kept = too_deep[0]
+        group_drops = [i for i in too_deep if i != kept]
+        if not group_drops:
+            # Reachable only when too_deep == [kept], so ``kept`` is
+            # never None here; the guard restates that for mypy, which
+            # cannot infer it from the comprehension above.
+            if kept is not None:
+                logger.warning(
+                    'Station %s: ADCP bin %s reported depth %.2f m exceeds '
+                    'the model water depth %.2f m at node %s; keeping it as '
+                    'the bottom-layer comparison.',
+                    parent, station_id[kept], depths[kept], water_depth, node)
+            continue
+        drop.update(group_drops)
+        dropped_desc = ', '.join(
+            f'{station_id[i]} ({depths[i]:.2f} m)' for i in group_drops)
+        if kept is not None:
+            logger.warning(
+                'Station %s: ADCP bin(s) %s lie below the model water '
+                'depth %.2f m at node %s; keeping %s (%.2f m) as the '
+                'single bottom-layer comparison and dropping the rest '
+                'from the model ctl file.',
+                parent, dropped_desc, water_depth, node,
+                station_id[kept], depths[kept])
+        else:
+            logger.warning(
+                'Station %s: ADCP bin(s) %s lie below the model water '
+                'depth %.2f m at node %s and duplicate a bottom-layer '
+                'comparison already covered by an in-column bin; '
+                'dropped from the model ctl file.',
+                parent, dropped_desc, water_depth, node)
+        if ledger is not None:
+            for i in group_drops:
+                ledger.drop(
+                    str(station_id[i]), stage='depth_match',
+                    reason=(
+                        f'bin depth {depths[i]:.2f} m exceeds model '
+                        f'water depth {water_depth:.2f} m at node '
+                        f'{node}; bottom model layer already compared '
+                        'once'))
+    return drop
 
 
 def _resolve_side_looking_depths(
@@ -214,6 +384,11 @@ def _resolve_side_looking_depths(
     if updated and control_file_path:
         try:
             with open(control_file_path, 'w', encoding='utf-8') as fh:
+                # Re-emit the header the original writer produced —
+                # station_ctl_file_extract strips it, so a rewrite
+                # without it would silently revert the file to the
+                # legacy headerless format.
+                fh.write(OBS_CTL_HEADER)
                 for info, coords in zip(info_rows, coord_rows):
                     fh.write(
                         f'{info[0]} {info[1]} "{info[2]}"\n'
@@ -275,11 +450,13 @@ def user_input_extract(prop: Any, logger: Logger) -> list[list[list[Any]]]:
 
     Examples
     --------
-    >>> station_info = user_input_extract(prop, logger)
-    >>> print(station_info[0][0])  # First station name fields
-    ['Station1', 'Station1', 'Station1', 'Station1', 'Station1']
-    >>> print(station_info[1][0])  # First station data fields
-    ['36.85', '-76.01', '5.0', 0, 'NAVD88']
+    ```python
+    station_info = user_input_extract(prop, logger)
+    print(station_info[0][0])  # First station name fields
+    # ['Station1', 'Station1', 'Station1', 'Station1', 'Station1']
+    print(station_info[1][0])  # First station data fields
+    # ['36.85', '-76.01', '5.0', 0, 'NAVD88']
+    ```
     """
     _conf = getattr(prop, 'config_file', None)
     xy_path = (utils.Utils(_conf).read_config_section('user_xy_inputs', logger)
@@ -380,6 +557,13 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
     _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
+    # Station-matching distance cutoff (km), read once from [settings] so the
+    # same value drives both the great-circle match test and the pre-filter
+    # box inside index_nearest_station.
+    station_match_max_dist = utils.get_station_match_max_dist(
+        logger, config_file=_conf
+    )
+
     prop.model_path = os.path.join(
         dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir']
     )
@@ -400,6 +584,22 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
 
         elif variable == 'currents':
             name_var = 'cu'
+
+        # The model ctl encodes the station/node pairing for THIS run's
+        # window + options; its filename does not. Delete a ctl left from a
+        # run with different parameters so it is rebuilt (issue: stale cache
+        # reuse across runs). ``model_ctl_path`` is the file this iteration
+        # would read/write.
+        if prop.ofsfiletype == 'fields':
+            model_ctl_path = (f'{prop.control_files_path}/{prop.ofs}_'
+                              f'{name_var}_model.ctl')
+        else:
+            model_ctl_path = (f'{prop.control_files_path}/{prop.ofs}_'
+                              f'{name_var}_model_station.ctl')
+        ctl_signature = cache_manifest.run_signature(prop, variable=variable)
+        cache_manifest.ensure_fresh(
+            model_ctl_path, ctl_signature, prop.control_files_path,
+            'model ctl', logger)
 
         if (
             (os.path.isfile(
@@ -448,6 +648,10 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                 station_id = [item[0] for item in extract[0]]
 
             if extract is not None:
+                # Initialised up front so static analysis (and any
+                # future ofsfiletype value) sees a defined name; both
+                # known filetypes assign it below.
+                list_of_nearest_node = []
                 if prop.ofsfiletype == 'fields':
                     list_of_nearest_node = \
                         indexing.index_nearest_node(
@@ -467,7 +671,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         prop.model_source,
                         name_var,
                         logger,
-                        extract[0]
+                        extract[0],
+                        max_dist_km=station_match_max_dist,
                     )
 
                 # For side-looking ADCPs (``height_from_bottom`` recorded
@@ -494,6 +699,32 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         prop.ofs,
                         logger,
                     )
+
+                # Prune ADCP bins reported deeper than the model water
+                # column so the bottom model layer is compared at most
+                # once per station (issue #200). Skipped for FVCOM
+                # fields files, where currents nodes are element
+                # indices (latc/lonc) and nodal bathymetry cannot be
+                # indexed with them.
+                if (name_var == 'cu'
+                        and not prop.user_input_location
+                        and not (prop.model_source == 'fvcom'
+                                 and prop.ofsfiletype == 'fields')):
+                    below_bottom = _drop_bins_below_model_bottom(
+                        prop, extract, station_id,
+                        list_of_nearest_node, list_of_nearest_layer,
+                        list_of_depths, model, logger,
+                    )
+                    if below_bottom:
+                        keep_idx = [i for i in range(len(station_id))
+                                    if i not in below_bottom]
+                        station_id = [station_id[i] for i in keep_idx]
+                        list_of_nearest_node = [
+                            list_of_nearest_node[i] for i in keep_idx]
+                        list_of_nearest_layer = [
+                            list_of_nearest_layer[i] for i in keep_idx]
+                        list_of_depths = [
+                            list_of_depths[i] for i in keep_idx]
 
                 logger.info('Extracting data found in the Model Control File')
 
@@ -745,6 +976,11 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         'w',
                         encoding='utf-8',
                     ) as output:
+                        # Header only when there is data: an empty ctl
+                        # must stay 0 bytes so the getsize() blank-file
+                        # checks downstream keep working.
+                        if model_ctl_file:
+                            output.write(MODEL_CTL_HEADER)
                         for ctl_entry in model_ctl_file:
                             output.write(str(ctl_entry))
                 elif prop.ofsfiletype == 'stations':
@@ -754,6 +990,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         'w',
                         encoding='utf-8',
                     ) as output:
+                        if model_ctl_file:
+                            output.write(MODEL_CTL_HEADER)
                         for ctl_entry in model_ctl_file:
                             output.write(str(ctl_entry))
 
@@ -761,6 +999,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                     'Model Control File for %s created successfully',
                     variable,
                 )
+                cache_manifest.record_artifact(
+                    model_ctl_path, ctl_signature, prop.control_files_path, logger)
             else:
                 logger.info('Observation ctl file is blank for %s. '
                             'Model ctl file will also be blank', name_var)
@@ -780,6 +1020,8 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
                         encoding='utf-8',
                     ) as output:
                         pass
+                cache_manifest.record_artifact(
+                    model_ctl_path, ctl_signature, prop.control_files_path, logger)
         else:
             logger.info(
                 'Model Control File (%s_%s_model.ctl) found in %s. If you '

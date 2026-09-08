@@ -1,0 +1,123 @@
+# Scheduled / manual live API tests (not run on every PR).
+#
+# Default CI (.github/workflows/ci.yml) always uses:
+#   pytest -m "not network and not manual"
+# so this workflow is the only place live USGS (and related) network
+# tests should run. Requires repository secret API_USGS_PAT.
+#
+# After several stable weekly runs, consider adding a nightly cron, e.g.:
+#   - cron: "0 17 * * *"   # daily 17:00 UTC (same local wall time as weekly)
+
+name: Network tests
+
+on:
+  schedule:
+    # Sundays 17:00 UTC = 12:00 PM US Eastern Standard Time (EST).
+    # During EDT this is 1:00 PM Eastern. GitHub cron is UTC-only (no DST).
+    - cron: "0 17 * * 0"
+  workflow_dispatch:
+
+# Least privilege. Secrets (API_USGS_PAT) are available without extra scopes.
+permissions:
+  contents: read
+
+concurrency:
+  group: network-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  network:
+    name: Pytest (network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check USGS API secret
+        id: secret-check
+        env:
+          API_USGS_PAT: ${{ secrets.API_USGS_PAT }}
+        run: |
+          # GitHub already masks secrets.* in logs; add-mask is belt-and-suspenders
+          # if the value is ever echoed by a later step.
+          if [ -n "${API_USGS_PAT}" ]; then
+            echo "::add-mask::${API_USGS_PAT}"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual runs should fail loudly so the operator notices.
+            echo "::error::API_USGS_PAT secret is not set. Add an encrypted GitHub Actions secret (USGS Water Data API token) to run live network tests."
+            exit 1
+          else
+            # Scheduled runs skip quietly until the secret exists, instead
+            # of failing every week. Forks / missing secret never see the value.
+            echo "::warning::API_USGS_PAT secret is not set; skipping scheduled network tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up micromamba
+        if: steps.secret-check.outputs.available == 'true'
+        # Pin to full SHA (mutable tag was mamba-org/setup-micromamba@v2 / v2.0.7).
+        uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462  # v2.0.7
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+          cache-downloads: true
+          cache-environment-key: env-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
+          cache-downloads-key: downloads-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
+
+      - name: Install package (editable, no deps)
+        if: steps.secret-check.outputs.available == 'true'
+        run: pip install -e . --no-deps
+
+      - name: Run network-marked tests
+        id: pytest-network
+        if: steps.secret-check.outputs.available == 'true'
+        env:
+          PROJ_NETWORK: "ON"
+          API_USGS_PAT: ${{ secrets.API_USGS_PAT }}
+        run: |
+          echo "::add-mask::${API_USGS_PAT}"
+          START_TS="$(date -u +%s)"
+          # Coverage floor is owned by ci.yml on the offline suite — unload
+          # pytest-cov so pyproject fail_under cannot apply here.
+          # Keep errexit off for the whole step, clear EXIT/ERR traps from the
+          # micromamba login shell (bash -el), and skip xdist so a green live
+          # run cannot be flipped to failure by shell/worker teardown.
+          set +e
+          trap - EXIT ERR
+          pytest \
+            -m network \
+            -o addopts="" \
+            -p no:cov
+          STATUS=$?
+          END_TS="$(date -u +%s)"
+          echo "pytest finished with exit=${STATUS}"
+          echo "duration_sec=$((END_TS - START_TS))" >> "$GITHUB_OUTPUT"
+          echo "pytest_exit=${STATUS}" >> "$GITHUB_OUTPUT"
+          exit "${STATUS}"
+
+      - name: Workflow summary (runtime / reliability)
+        if: always()
+        env:
+          DURATION: ${{ steps.pytest-network.outputs.duration_sec }}
+          PYTEST_EXIT: ${{ steps.pytest-network.outputs.pytest_exit }}
+          SECRET_OK: ${{ steps.secret-check.outputs.available }}
+        run: |
+          {
+            echo "## Network tests"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Event | \`${{ github.event_name }}\` |"
+            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| Secret available | \`${SECRET_OK:-false}\` |"
+            echo "| Pytest exit | \`${PYTEST_EXIT:-n/a}\` |"
+            echo "| Duration (s) | \`${DURATION:-n/a}\` |"
+            echo ""
+            echo "Monitor Actions usage under the repo **Insights → Actions** page."
+            echo "Keep this weekly until stable; then consider a nightly cron (see file header)."
+          } >> "$GITHUB_STEP_SUMMARY"

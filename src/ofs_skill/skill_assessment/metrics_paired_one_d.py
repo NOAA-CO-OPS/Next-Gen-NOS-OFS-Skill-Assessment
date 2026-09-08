@@ -6,16 +6,16 @@ skill assessment metrics. The output is a list with the result for each metric.
 """
 
 import math
-import os
 import warnings
 from logging import Logger
-from typing import Any, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy.stats import ConstantInputWarning
 
 from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_data
+from ofs_skill.obs_retrieval.utils import resolve_asset_path
 from ofs_skill.skill_assessment import nos_metrics
 
 warnings.simplefilter('ignore', ConstantInputWarning)
@@ -84,60 +84,48 @@ def skill_scalar(
     station_id: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str, None]]:
-    """
-    Calculate skill metrics for scalar variables.
+) -> list[float | str | None]:
+    """Compute NOS-style skill metrics for a scalar paired series.
 
-    Computes skill assessment metrics including RMSE, correlation coefficient,
-    bias, central frequency, and outlier frequencies for scalar variables
-    (water level, temperature, salinity).
+    Includes RMSE, correlation, bias, central frequency, and outlier
+    frequencies for water level, temperature, or salinity.
 
-    Parameters
-    ----------
-    df_paired : pd.DataFrame
-        Paired observation and model data with columns ['OBS', 'OFS', 'BIAS']
-    name_var : str
-        Variable name ('wl', 'temp', or 'salt')
-    prop : Any
-        Properties object containing configuration parameters
-    logger : Logger
-        Logger instance for logging messages
+    Args:
+        df_paired: Paired data with columns ``OBS``, ``OFS``, ``BIAS``.
+        name_var: Short variable key (``wl``, ``temp``, or ``salt``).
+        station_id: Station id (used for tidal/auxiliary lookups when needed).
+        prop: Run properties / config object.
+        logger: Logger for warnings and skip reasons.
 
-    Returns
-    -------
-    List[Union[float, str]]
-        List of skill metrics:
-        [rmse, r_value, bias, bias_perc, np.nan, cf, cfpf, pof, pofpf,
-         nof, nofpf, stdev, X1]
+    Returns:
+        A 19-element metric list, in order:
+        ``[rmse, r_value, bias, bias_perc, nan, cf, cfpf, pof, pofpf,
+        nof, nofpf, mdpo, mdpopf, mdno, mdnopf, wof, wofpf, stdev, X1]``
+
         Where:
-        - rmse: Root mean squared error
-        - r_value: Pearson correlation coefficient
-        - bias: Mean bias
-        - bias_perc: Mean bias as percentage of mean observation
-        - cf: Central frequency (percentage within error threshold)
-        - cfpf: Central frequency pass/fail ('pass' if >= 90%)
-        - pof: Positive outlier frequency
-        - pofpf: Positive outlier frequency pass/fail
-        - nof: Negative outlier frequency
-        - nofpf: Negative outlier frequency pass/fail
-        - mdpo: Max duration of positive outliers
-        - mdpopf: MDPO pass/fail
-        - mdno: Max duration of negative outliers
-        - mdnopf: MDNO pass/fail
-        - wof: worst-case outlier frequency
-        - wofpf: WOF pass/fail
-        - stdev: Standard deviation of bias
-        - X1: Error threshold
 
-    Notes
-    -----
-    Some stations have constant values for the entire period. By definition,
-    correlation cannot be calculated between observations and model if one
-    of the timeseries is constant, which will trigger a warning.
+        - ``rmse``: Root mean squared error
+        - ``r_value``: Pearson correlation coefficient
+        - ``bias``: Mean bias
+        - ``bias_perc``: Mean bias as a percentage
+        - ``nan``: Unused slot for scalars; ``skill_vector`` uses it for
+            ``bias_dir`` so both share one column layout
+        - ``cf`` / ``cfpf``: Central frequency and its pass/fail flag
+        - ``pof`` / ``pofpf``: Positive outlier frequency and pass/fail
+        - ``nof`` / ``nofpf``: Negative outlier frequency and pass/fail
+        - ``mdpo`` / ``mdpopf``: Max duration of positive outliers, pass/fail
+        - ``mdno`` / ``mdnopf``: Max duration of negative outliers, pass/fail
+        - ``wof`` / ``wofpf``: Worst-case outlier frequency and pass/fail
+        - ``stdev``: Standard deviation of the bias
+        - ``X1``: Error threshold used for the outlier metrics
+
+    Note:
+        Constant series cannot yield a correlation; SciPy may warn and
+        the coefficient is reported as NaN in that case.
     """
     # Get target error range
     X1, X2 = nos_metrics.get_error_threshold(
-        name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+        name_var, resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'))
 
     # Preserve NaN-containing series for gap-sensitive duration metrics.
     # MDPO/MDNO need real gaps to break streaks; dropna hides them.
@@ -281,50 +269,44 @@ def skill_vector(
     name_var: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str, None]]:
-    """
-    Calculate skill metrics for vector variables.
+) -> list[float | str | None]:
+    """Calculate skill metrics for vector variables.
 
     Computes skill assessment metrics including RMSE, correlation coefficient,
     speed bias, direction bias, central frequency, and outlier frequencies for
     vector variables (currents).
 
-    Parameters
-    ----------
-    df_paired : pd.DataFrame
-        Paired observation and model data with columns ['OBS', 'OFS',
-        'SPD_BIAS', 'DIR_BIAS']
-    name_var : str
-        Variable name ('cu' for currents)
-    prop : Any
-        Properties object containing configuration parameters
-    logger : Logger
-        Logger instance for logging messages
+    Args:
+        df_paired: Paired observation and model data with columns
+            ``OBS``, ``OFS``, ``SPD_BIAS``, ``DIR_BIAS``.
+        name_var: Short variable key (``cu`` for currents).
+        prop: Run properties / config object.
+        logger: Logger for warnings and skip reasons.
 
-    Returns
-    -------
-    List[Union[float, str]]
-        List of skill metrics:
-        [rmse, r_value, bias, bias_perc, bias_dir, cf, cfpf, pof, pofpf,
-         nof, nofpf, stdev, X1]
+    Returns:
+        A 19-element metric list, in order:
+        ``[rmse, r_value, bias, bias_perc, bias_dir, cf, cfpf, pof, pofpf,
+        nof, nofpf, mdpo, mdpopf, mdno, mdnopf, wof, wofpf, stdev, X1]``
+
         Where:
-        - rmse: Root mean squared error of speed
-        - r_value: Pearson correlation coefficient of speed
-        - bias: Mean speed bias
-        - bias_perc: Mean speed bias as percentage
-        - bias_dir: Mean direction bias
-        - cf: Central frequency (percentage within error threshold)
-        - cfpf: Central frequency pass/fail ('pass' if >= 90%)
-        - pof: Positive outlier frequency
-        - pofpf: Positive outlier frequency pass/fail
-        - nof: Negative outlier frequency
-        - nofpf: Negative outlier frequency pass/fail
-        - stdev: Standard deviation of speed bias
-        - X1: Error threshold
+
+        - ``rmse``: Root mean squared error of speed
+        - ``r_value``: Pearson correlation coefficient of speed
+        - ``bias``: Mean speed bias
+        - ``bias_perc``: Mean speed bias as a percentage
+        - ``bias_dir``: Mean direction bias (there is no direction RMSE)
+        - ``cf`` / ``cfpf``: Central frequency and its pass/fail flag
+        - ``pof`` / ``pofpf``: Positive outlier frequency and pass/fail
+        - ``nof`` / ``nofpf``: Negative outlier frequency and pass/fail
+        - ``mdpo`` / ``mdpopf``: Max duration of positive outliers, pass/fail
+        - ``mdno`` / ``mdnopf``: Max duration of negative outliers, pass/fail
+        - ``wof`` / ``wofpf``: Worst-case outlier frequency and pass/fail
+        - ``stdev``: Standard deviation of speed bias
+        - ``X1``: Error threshold used for the outlier metrics
     """
     # Get target error range
     X1, X2 = nos_metrics.get_error_threshold(
-        name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+        name_var, resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'))
 
     # Preserve NaN-containing series for gap-sensitive duration metrics.
     df_paired_full = df_paired.copy()
@@ -441,7 +423,7 @@ def skill_vector_dir(
     name_var: str,
     prop: Any,
     logger: Logger,
-) -> list[Union[float, str, None]]:
+) -> list[float | str | None]:
     """
     Calculate skill metrics for current direction.
 
@@ -483,7 +465,7 @@ def skill_vector_dir(
     """
     # Get target error range (degrees)
     X1, X2 = nos_metrics.get_error_threshold(
-        'cu_dir', os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+        'cu_dir', resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'))
 
     # Preserve NaN-containing series for gap-sensitive duration metrics.
     df_paired_full = df_paired.copy()
@@ -597,7 +579,7 @@ def skill_extrema(
     df_paired: pd.DataFrame,
     name_var: str,
     prop: Any,
-) -> list[Union[float, str, None]]:
+) -> list[float | str | None]:
     """Calculate amplitude + timing skill metrics for water-level extrema (HW/LW).
 
     MDPO/MDNO/WOF are intentionally omitted (they are ill-defined on an
@@ -624,7 +606,7 @@ def skill_extrema(
         TCF pass/fail; ``stdev`` slot (17) carries TCF (%); slot 18 is X1.
     """
     # X1 is the amplitude threshold (m), T1 is timing threshold (hours)
-    X1, _ = nos_metrics.get_error_threshold(name_var, os.path.join(prop.path, 'conf', 'error_ranges.csv'))
+    X1, _ = nos_metrics.get_error_threshold(name_var, resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'))
     T1 = 0.5
 
     obs = df_paired['OBS']

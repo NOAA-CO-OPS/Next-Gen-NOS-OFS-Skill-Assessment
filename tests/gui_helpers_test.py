@@ -63,10 +63,14 @@ class TestQuickRunDatum:
         """Great Lakes OFSes use IGLD85 (no MLLW in fresh water)."""
         assert gui_helpers.quick_run_datum(ofs) == 'IGLD85'
 
-    @pytest.mark.parametrize('ofs', ['stofs_2d_glo', 'stofs_3d_atl', 'stofs_3d_pac'])
-    def test_stofs_returns_navd88(self, ofs):
-        """STOFS systems lack a uniform tidal datum, so use NAVD88."""
-        assert gui_helpers.quick_run_datum(ofs) == 'NAVD88'
+    def test_stofs_3d_atl_returns_navd88(self):
+        """STOFS-3D Atlantic defaults to NAVD88."""
+        assert gui_helpers.quick_run_datum('stofs_3d_atl') == 'NAVD88'
+
+    @pytest.mark.parametrize('ofs', ['stofs_3d_pac', 'stofs_2d_glo'])
+    def test_stofs_msl_models_return_msl(self, ofs):
+        """STOFS Pacific and STOFS 2D Global default to MSL."""
+        assert gui_helpers.quick_run_datum(ofs) == 'MSL'
 
     @pytest.mark.parametrize('ofs', ['cbofs', 'ngofs2', 'wcofs', 'sscofs', 'tbofs'])
     def test_tidal_coastal_returns_mllw(self, ofs):
@@ -580,6 +584,90 @@ class TestToolTip:
     def test_accepts_text(self):
         """ToolTip stores the provided help string for later display."""
         assert hasattr(gui_helpers.ToolTip, '_DELAY_MS')
+
+
+# ---------------------------------------------------------------------------
+# GuiSession (cross-GUI shared form state)
+# ---------------------------------------------------------------------------
+
+
+class TestGuiSession:
+    """Round-trip and merge behaviour for the shared GUI session file."""
+
+    @pytest.fixture
+    def session_file(self, tmp_path, monkeypatch):
+        """Redirect session persistence to a temp file."""
+        path = tmp_path / 'gui_session.json'
+        monkeypatch.setattr(gui_helpers, 'SESSION_FILE', path)
+        return path
+
+    def test_load_returns_defaults_when_file_missing(self, session_file):
+        """Missing session file yields an empty GuiSession."""
+        session = gui_helpers.load_gui_session()
+        assert session.Path == ''
+        assert session.config == 'conf/ofs_dps.conf'
+        assert session.OFS is None
+        assert session.start_date is None
+        assert session.end_date is None
+        assert session.start_hour == 0
+        assert session.end_hour == 0
+        assert session.Datum is None
+        assert not session_file.exists()
+
+    def test_save_and_load_round_trip(self, session_file):
+        """Written session fields survive a load."""
+        original = gui_helpers.GuiSession(
+            Path='/data/home',
+            config='conf/custom.conf',
+            OFS='cbofs',
+            start_date='2024-06-01',
+            end_date='2024-06-07',
+            start_hour=6,
+            end_hour=18,
+            Datum='MLLW',
+        )
+        gui_helpers.save_gui_session(original)
+        loaded = gui_helpers.load_gui_session()
+        assert loaded == original
+
+    def test_load_returns_defaults_on_invalid_json(self, session_file):
+        """Corrupt JSON should not crash; return defaults instead."""
+        session_file.write_text('{not valid json', encoding='utf-8')
+        session = gui_helpers.load_gui_session()
+        assert session.Path == ''
+        assert session.OFS is None
+
+    def test_persist_merges_into_existing_session(self, session_file):
+        """persist_gui_session_from_run updates only provided fields."""
+        gui_helpers.save_gui_session(gui_helpers.GuiSession(
+            Path='/old/home', OFS='leofs', Datum='IGLD85',
+        ))
+        merged = gui_helpers.persist_gui_session_from_run(
+            Path='/new/home',
+            OFS='cbofs',
+            StartDate_full='2024-06-01T06:00:00Z',
+            EndDate_full='2024-06-07T18:00:00Z',
+            Datum='MLLW',
+        )
+        assert merged.Path == '/new/home'
+        assert merged.OFS == 'cbofs'
+        assert merged.Datum == 'MLLW'
+        assert merged.start_date == '2024-06-01'
+        assert merged.start_hour == 6
+        assert merged.end_date == '2024-06-07'
+        assert merged.end_hour == 18
+        reloaded = gui_helpers.load_gui_session()
+        assert reloaded == merged
+
+    @pytest.mark.parametrize('iso,date_str,hour', [
+        ('2024-01-15T00:00:00Z', '2024-01-15', 0),
+        ('2024-01-15T12:00:00Z', '2024-01-15', 12),
+        (None, None, None),
+        ('bad', None, None),
+    ])
+    def test_split_iso_datetime(self, iso, date_str, hour):
+        """ISO datetime strings split into date and hour components."""
+        assert gui_helpers._split_iso_datetime(iso) == (date_str, hour)
 
 
 if __name__ == '__main__':

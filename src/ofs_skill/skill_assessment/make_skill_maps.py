@@ -21,6 +21,7 @@ import plotly
 import plotly.express as px
 import plotly.graph_objects as go
 
+from ofs_skill.obs_retrieval.utils import resolve_asset_path
 from ofs_skill.skill_assessment.nos_metrics import get_error_threshold
 
 
@@ -178,7 +179,7 @@ def make_skill_maps(
     # ========================================================
     threshold_key = 'cu_dir' if variable == 'currents_dir' else name_var
     target_error, _ = get_error_threshold(
-        threshold_key, os.path.join(prop.path, 'conf', 'error_ranges.csv'),
+        threshold_key, resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'),
     )
     actual_max_rmse = df['RMSE '].max()
     min_rmse_extent = target_error * 2

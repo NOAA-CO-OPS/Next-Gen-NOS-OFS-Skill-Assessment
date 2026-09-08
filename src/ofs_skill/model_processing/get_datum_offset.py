@@ -35,7 +35,7 @@ Created: Fri Jun 6 09:11:51 2025
 import os
 from datetime import datetime
 from logging import Logger
-from typing import Any, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -49,6 +49,26 @@ from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_ex
 # two correction columns; dates after this cutoff use Correction2, dates on or
 # before it use Correction1. The secofs_vdatums.nc file is stamped this date.
 SECOFS_MODELZERO_TRANSITION = '04/30/2026'
+
+
+def _close_quietly(obj: Any) -> None:
+    """Close an xarray dataset (or anything with ``close``) without raising.
+
+    The vdatum grid files opened here are backed by h5netcdf/h5py. If their
+    handles are left open they are finalized during interpreter shutdown,
+    after h5py's globals are gone, which prints the noisy
+    ``TypeError: bad operand type for unary ~: 'NoneType'`` tracebacks from
+    issue #94. Closing them explicitly avoids that. A ``None``, a non-dataset
+    (e.g. a pandas DataFrame or an error-code int), or a close that raises are
+    all no-ops so cleanup never masks the caller's result.
+    """
+    close = getattr(obj, 'close', None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # pragma: no cover - defensive cleanup only
+        pass
 
 
 def _node_value(model: xr.Dataset, var_name: str, node: int) -> float:
@@ -289,7 +309,7 @@ def report_datums(prop: Any, datum_offsets: list[list[Any]], logger: Logger) -> 
                      'Skipping this step. Exception: %s', e_x)
 
 
-def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]:
+def read_vdatum_from_bucket(prop: Any, logger: Logger) -> xr.Dataset | int:
     """
     Read vertical datum conversion file from the NODD S3 bucket.
 
@@ -327,10 +347,10 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> Union[xr.Dataset, int]
     ... else:
     ...     print(f"Variables: {list(vdatums.data_vars)}")
     """
-    if prop.ofs in ('stofs_2d_glo'):
+    if prop.ofs in ('stofs_2d_glo','stofs_3d_pac','stofs_3d_atl'):
         # We shouldn't actually ever need to use this value, but just in case, return a
         # code that indicates no file to read for STOFS-2D-Global.
-        logger.info('STOFS-2D-Global uses coastalmodeling_vdatum conversion instead of a vdatum file on S3.')
+        logger.info('STOFS uses coastalmodeling_vdatum conversion instead of a vdatum file on S3.')
         return -9995
     else:
         s3 = s3fs.S3FileSystem(anon=True)
@@ -425,7 +445,11 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
         * Sign is inverted except for LEOFS
     - STOFS-3D models:
         * Native datum is XGEOID20B
-        * If datum='XGEOID20B', returns 0
+        * If datum='XGEOID20B' and prop.ofsfiletype == 'fields' returns 0
+        * If datum='MSL', prop.ofs == 'stofs_3d_pac', and prop.ofsfiletype == 'stations' returns 0
+        * If datum='NAVD88', prop.ofs == 'stofs_3d_atl', and prop.ofsfiletype == 'stations' returns 0
+        * No conversion file available; coastalmodeling_vdatum
+          tool is used instead.
     - STOFS-2D-Global:
         * Native datum is LMSL
         * If datum='MSL', returns 0 (no conversion needed).
@@ -467,44 +491,57 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
     logger.info('Doing datum conversion for %s station %s!', prop.ofs,
                 id_number)
     vdatums: Any = None
-    if prop.ofs not in ['secofs', 'loofs2'] and 'stofs' not in prop.ofs:
-        vdatums = read_vdatum_from_bucket(prop, logger)
-        if isinstance(vdatums, int):
-            logger.warning(
-                'WARNING: No vdatum file could be loaded for %s (S3 and '
-                'local fallback both failed). No datum shift will be '
-                'applied. Water level results should be viewed with '
-                'caution.', prop.ofs)
-            return vdatums
-    # Here we handle secofs, which has a vdatum file on the co-ops server, or
-    # or locally in ./src/. Once the vdatum file is on the NODD bucket, this section
-    # can be removed.
-    # Order of operations:
-        # 1. Check for corrections text file
-        # 2. If file is not available, or there is no matching station ID in it,
-        # then use the Vdatum file
-        # 3. If file is not available, return file not found error code
-    elif prop.ofs == 'secofs':
-        dir_params = utils.Utils(
-            getattr(prop, 'config_file', None)).read_config_section(
-                'directories', logger)
-        path = dir_params.get('local_vdatum')
-        if not path:
-            logger.error('No local_vdatum path configured in ofs_dps.conf. '
-                         'Cannot do SECOFS datum conversion.')
-            return -9994
-        if prop.datum.lower() == 'mllw':
-            try:
-                vdatums = pd.read_csv(path, sep='\t')
-                # Find ID number in dataframe
-                if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
-                    > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
-                    corr_col = 'Correction2'
-                else:
-                    corr_col = 'Correction1'
-                wl_corr = float(vdatums[vdatums['ID']==int(id_number)][corr_col])*-1
-                return wl_corr
-            except (FileNotFoundError, TypeError, UnicodeDecodeError, ValueError):
+    ds_wcofs: Any = None
+    datum_field: Any = None
+    try:
+        if prop.ofs not in ['secofs', 'loofs2'] and 'stofs' not in prop.ofs:
+            vdatums = read_vdatum_from_bucket(prop, logger)
+            if isinstance(vdatums, int):
+                logger.warning(
+                    'WARNING: No vdatum file could be loaded for %s (S3 and '
+                    'local fallback both failed). No datum shift will be '
+                    'applied. Water level results should be viewed with '
+                    'caution.', prop.ofs)
+                return vdatums
+        # Here we handle secofs, which has a vdatum file on the co-ops server, or
+        # or locally in ./src/. Once the vdatum file is on the NODD bucket, this section
+        # can be removed.
+        # Order of operations:
+            # 1. Check for corrections text file
+            # 2. If file is not available, or there is no matching station ID in it,
+            # then use the Vdatum file
+            # 3. If file is not available, return file not found error code
+        elif prop.ofs == 'secofs':
+            dir_params = utils.Utils(
+                getattr(prop, 'config_file', None)).read_config_section(
+                    'directories', logger)
+            path = dir_params.get('local_vdatum')
+            if not path:
+                logger.error('No local_vdatum path configured in ofs_dps.conf. '
+                             'Cannot do SECOFS datum conversion.')
+                return -9994
+            if prop.datum.lower() == 'mllw':
+                try:
+                    vdatums = pd.read_csv(path, sep='\t')
+                    # Find ID number in dataframe
+                    if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
+                        > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
+                        corr_col = 'Correction2'
+                    else:
+                        corr_col = 'Correction1'
+                    wl_corr = float(vdatums[vdatums['ID']==int(id_number)][corr_col])*-1
+                    return wl_corr
+                except (FileNotFoundError, TypeError, UnicodeDecodeError, ValueError):
+                    filename = 'secofs_vdatums.nc'
+                    head, tail = os.path.split(path)
+                    path = os.path.join(head, filename)
+                    try:
+                        vdatums = xr.open_dataset(path)
+                    except FileNotFoundError:
+                        logger.error('Error finding SECOFS vdatum file -- datum conversion '
+                                      'is not possible.')
+                        return -9994
+            else:
                 filename = 'secofs_vdatums.nc'
                 head, tail = os.path.split(path)
                 path = os.path.join(head, filename)
@@ -514,91 +551,105 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     logger.error('Error finding SECOFS vdatum file -- datum conversion '
                                   'is not possible.')
                     return -9994
-        else:
-            filename = 'secofs_vdatums.nc'
-            head, tail = os.path.split(path)
-            path = os.path.join(head, filename)
-            try:
-                vdatums = xr.open_dataset(path)
-            except FileNotFoundError:
-                logger.error('Error finding SECOFS vdatum file -- datum conversion '
-                              'is not possible.')
-                return -9994
 
-    # Set water levels to user-specified datum
-    if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
-        if prop.ofs == 'necofs':
-            try:
-                datum_field1 = vdatums['navd88tomsl']
-                if prop.datum.lower() == 'navd88':
-                    datum_field = datum_field1
-                else:
-                    datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
-                    datum_field = (-datum_field1 + datum_field2)
-            except Exception as e_x:
-                logger.error(f'Datum conversion error: {e_x}')
-                return -9991
+        # Set water levels to user-specified datum
+        if prop.ofs not in ['leofs', 'lmhofs', 'loofs', 'lsofs', 'loofs2']:
+            if prop.ofs == 'necofs':
+                try:
+                    datum_field1 = vdatums['navd88tomsl']
+                    if prop.datum.lower() == 'navd88':
+                        datum_field = datum_field1
+                    else:
+                        datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
+                        datum_field = (-datum_field1 + datum_field2)
+                except Exception as e_x:
+                    logger.error(f'Datum conversion error: {e_x}')
+                    return -9991
 
-        # Deal with SECOFS separately
-        elif prop.ofs == 'secofs':
-            try:
-                # Use the directly-populated xgeoid20b->msl field rather than
-                # reconstructing it from navd88tomsl - navd88toxgeoid20b. Both
-                # of those variables carry a -999999.0 fill at ~12.5% of nodes,
-                # where the subtraction cancels to exactly 0.0 (an invalid
-                # offset that passes the >-999 guard).
-                datum_field1 = vdatums['xgeoid20btomsl']
+            # Deal with SECOFS separately
+            elif prop.ofs == 'secofs':
+                try:
+                    # Use the directly-populated xgeoid20b->msl field rather than
+                    # reconstructing it from navd88tomsl - navd88toxgeoid20b. Both
+                    # of those variables carry a -999999.0 fill at ~12.5% of nodes,
+                    # where the subtraction cancels to exactly 0.0 (an invalid
+                    # offset that passes the >-999 guard).
+                    datum_field1 = vdatums['xgeoid20btomsl']
+                    if prop.datum.lower() == 'xgeoid20b':
+                        # Model-zero is xgeoid20b, so the offset to xgeoid20b is 0.
+                        datum_field = xr.zeros_like(datum_field1)
+                    else:
+                        datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
+                        datum_field = datum_field1 - datum_field2
+                except Exception as e_x:
+                    logger.error(f'Datum conversion error: {e_x}')
+                    return -9991
+            # Deal with SSCOFS separately
+            elif prop.ofs == 'sscofs':
+                # First get from model-0 to xgeoid -- the ofs-wide offset is
+                # 0.23 m, where xgeoid is 0.23 cm above model-0.
+                # Then convert from xgeoid to other datums.
                 if prop.datum.lower() == 'xgeoid20b':
-                    # Model-zero is xgeoid20b, so the offset to xgeoid20b is 0.
-                    datum_field = xr.zeros_like(datum_field1)
-                else:
-                    datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
-                    datum_field = datum_field1 - datum_field2
-            except Exception as e_x:
-                logger.error(f'Datum conversion error: {e_x}')
-                return -9991
-        # Deal with SSCOFS separately
-        elif prop.ofs == 'sscofs':
-            # First get from model-0 to xgeoid -- the ofs-wide offset is
-            # 0.23 m, where xgeoid is 0.23 cm above model-0.
-            # Then convert from xgeoid to other datums.
-            if prop.datum.lower() == 'xgeoid20b':
-                return 0.23
+                    return 0.23
+                try:
+                    datum_field1 = vdatums['xgeoid20btomsl']
+                    if prop.datum.lower() == 'msl': #TODO -- check this
+                        datum_field = 0.23 - datum_field1
+                    else:
+                        datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
+                        datum_field = 0.23 - datum_field1 + datum_field2
+                except Exception as e_x:
+                    logger.error(f'Datum conversion error: {e_x}')
+                    return -9991
+            elif 'stofs' in prop.ofs:
+                logger.info('STOFS models do not use NetCDF vdatum grid files; '
+                            'datum conversion is calculated dynamically via VDatum API.')
+                datum_field = None
+            else:  # Not SSCOFS or STOFS or SECOFS or GLOFS
+                try:
+                    datum_field = vdatums[f'{prop.datum.lower()}tomsl']
+                    if prop.ofs == 'wcofs':
+                        file = utils.resolve_asset_path(prop.path, 'src', 'wcofs_msl.nc')
+                        try:
+                            ds_wcofs = xr.open_dataset(file)
+                        except FileNotFoundError:
+                            logger.error('WCOFS MSL2MZ conversion not found!')
+                            return -9994
+                        datum_field = datum_field + np.array(ds_wcofs['MSL2MZ'])
+                except Exception as e_x:
+                    logger.error('Wrong netcdf datum variable name!')
+                    logger.error(f'Error: {e_x}')
+                    return -9991
+        elif prop.ofs in ['leofs', 'lmhofs', 'loofs', 'lsofs',]:
             try:
-                datum_field1 = vdatums['xgeoid20btomsl']
-                if prop.datum.lower() == 'msl': #TODO -- check this
-                    datum_field = 0.23 - datum_field1
-                else:
-                    datum_field2 = vdatums[f'{prop.datum.lower()}tomsl']
-                    datum_field = 0.23 - datum_field1 + datum_field2
+                datum_field = vdatums[f'{prop.datum.lower()}tolwd']
             except Exception as e_x:
-                logger.error(f'Datum conversion error: {e_x}')
-                return -9991
-        elif 'stofs' in prop.ofs:
-            logger.info('Still doing datum conversion for STOFS!')
-        else:  # Not SSCOFS or STOFS or SECOFS or GLOFS
-            try:
-                datum_field = vdatums[f'{prop.datum.lower()}tomsl']
-                if prop.ofs == 'wcofs':
-                    file = os.path.join(prop.path, 'src', 'wcofs_msl.nc')
-                    try:
-                        ds_wcofs = xr.open_dataset(file)
-                    except FileNotFoundError:
-                        logger.error('WCOFS MSL2MZ conversion not found!')
-                        return -9994
-                    datum_field = datum_field + np.array(ds_wcofs['MSL2MZ'])
-            except Exception as e_x:
-                logger.error('Wrong netcdf datum variable name!')
+                logger.error('Wrong netcdf datum variable name for GLOFS!')
                 logger.error(f'Error: {e_x}')
                 return -9991
-    elif prop.ofs in ['leofs', 'lmhofs', 'loofs', 'lsofs',]:
-        try:
-            datum_field = vdatums[f'{prop.datum.lower()}tolwd']
-        except Exception as e_x:
-            logger.error('Wrong netcdf datum variable name for GLOFS!')
-            logger.error(f'Error: {e_x}')
-            return -9991
 
+        return _apply_datum_offset(prop, node, model, id_number, datum_field,
+                                   vdatums, logger)
+    finally:
+        # Release the vdatum grid file handles now. Left open, these
+        # h5netcdf/h5py-backed datasets are finalized during interpreter
+        # shutdown after h5py has been torn down, which prints the noisy
+        # TypeError tracebacks from issue #94. This runs per station inside
+        # the per-station / per-variable worker pools, so leaks accumulate
+        # quickly without it.
+        _close_quietly(vdatums)
+        _close_quietly(ds_wcofs)
+
+
+def _apply_datum_offset(prop: Any, node: int, model: xr.Dataset,
+                        id_number: str, datum_field: Any, vdatums: Any,
+                        logger: Logger) -> float:
+    """Resolve the final datum offset from the prepared ``datum_field``.
+
+    Split out of :func:`get_datum_offset` so the file-handle cleanup for the
+    vdatum datasets can live in a single ``finally`` in the caller while this
+    part stays a straight-line computation.
+    """
     # Do stations
     if prop.ofsfiletype == 'stations':
         try:

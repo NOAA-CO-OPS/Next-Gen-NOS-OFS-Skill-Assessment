@@ -6,6 +6,7 @@ import os
 import types
 
 import pandas as pd
+import pytest
 
 from ofs_skill.visualization import summary_barplots
 
@@ -86,6 +87,7 @@ def _write_wl_csv(prop, n=5):
     return csv_path
 
 
+@pytest.mark.integration
 def test_make_summary_bars_writes_html(tmp_path):
     _write_error_ranges(str(tmp_path))
     prop = _make_prop(tmp_path)

@@ -168,7 +168,6 @@ def main(logger, _conf=None):
                     )
                 # Figure Config
                 figheight = 500
-                yoffset = 1.01
                 plotinfo['start'] = df['DateTime'].iloc[0]
                 plotinfo['end'] = df['DateTime'].iloc[-1]
                 fig.update_layout(

@@ -23,6 +23,7 @@ import geopandas as gpd
 from ofs_skill.obs_retrieval.filter_inventory import filter_inventory
 from ofs_skill.obs_retrieval.ofs_geometry import ofs_geometry
 from ofs_skill.obs_retrieval.ofs_inventory_stations import retrieving_inventories
+from ofs_skill.obs_retrieval.utils import resolve_asset_path
 
 
 def _resolve_ofs_shapefile(ofs_name, shape_path):
@@ -58,7 +59,7 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
     logger.info('--- Starting Overlap Process ---')
 
     # --- Shapefile Setup & Loading ---
-    shape_path = os.path.join(home_path, 'ofs_extents')
+    shape_path = resolve_asset_path(home_path, 'ofs_extents')
 
     try:
         shp1_path = _resolve_ofs_shapefile(shp1, shape_path)

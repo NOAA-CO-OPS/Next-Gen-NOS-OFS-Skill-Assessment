@@ -6,7 +6,10 @@ Calculates spatial distances and finds nearest neighbors for different model typ
 (FVCOM, ROMS, SCHISM, ADCIRC).
 """
 
+from __future__ import annotations
+
 import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -26,6 +29,50 @@ def _coords_lookup_key(obs_lat: float, obs_lon: float) -> tuple:
 # ``_static_coord_1d`` normalises both shapes so call sites get the
 # native (non-time-replicated) form regardless of how intake was wired.
 _TIME_CONCAT_DIM_CANDIDATES = ('time', 'ocean_time')
+
+# Default maximum great-circle distance (km) allowed between an observation
+# station and its nearest model output location for the two to be considered a
+# match. Stations whose nearest model location exceeds this are marked ``NaN``
+# and subsequently dropped from the model control file. Proximity matters for
+# the validity of the skill comparison, so this is intentionally tight. This is
+# only the fallback: the effective value is read from the ``[settings]``
+# ``station_match_max_dist_km`` config key by ``write_ofs_ctlfile`` and passed
+# in via ``max_dist_km``.
+STATION_MATCH_MAX_DIST_KM = 4.0
+
+# Kilometres per degree of latitude (constant everywhere: R * pi / 180 with
+# R = 6371 km). Used to size the candidate pre-filter box from the km cutoff.
+_KM_PER_DEG_LAT = 111.195
+
+# Safety factor applied to the pre-filter box so it is comfortably larger than
+# the exact km cutoff. The box is only a coarse spatial index; the exact
+# great-circle distance test decides the actual match, so a slightly generous
+# box never changes results, it only widens the shortlist.
+_PREFILTER_BOX_SAFETY = 1.5
+
+
+def _prefilter_halfwidths_deg(
+    obs_lat: float, max_dist_km: float
+) -> tuple[float, float]:
+    """Return (lat_halfwidth_deg, lon_halfwidth_deg) for the candidate box.
+
+    The box is sized from the km cutoff and made latitude-aware: a degree of
+    longitude spans ``111.195 * cos(lat)`` km, so at high latitude the E-W
+    half-width in degrees must grow as ``1 / cos(lat)`` to still cover the
+    same distance on the ground. This guarantees the box is always at least
+    as large as the km cutoff (times a safety factor) in both directions,
+    regardless of latitude -- closing the high-latitude hole where a fixed
+    degree box could exclude a genuinely within-cutoff station.
+
+    ``cos(lat)`` is floored at a small epsilon so the half-width stays finite
+    at the poles (where any longitude is within range anyway).
+    """
+    reach_km = max_dist_km * _PREFILTER_BOX_SAFETY
+    lat_half = reach_km / _KM_PER_DEG_LAT
+    cos_lat = max(math.cos(math.radians(obs_lat)), 1e-6)
+    km_per_deg_lon = _KM_PER_DEG_LAT * cos_lat
+    lon_half = reach_km / km_per_deg_lon
+    return lat_half, lon_half
 
 
 def _static_coord_1d(model_netcdf: Any, name: str) -> np.ndarray:
@@ -431,6 +478,10 @@ def index_nearest_node(
 
             x_np = np.array(x_coords)
             y_np = np.array(y_coords)
+            
+            # Normalize model longitudes from [0, 360] to [-180, 180]
+            x_np = np.where(x_np > 180, x_np - 360, x_np)
+            
             for obs_p in range(len(ctl_file_extract)):
                 obs_lon = float(ctl_file_extract[obs_p][1])
                 obs_lat = float(ctl_file_extract[obs_p][0])
@@ -731,15 +782,16 @@ def index_nearest_depth(
                 # therefore, we use depth layes at time 0
                 #z_coords_1d = model_netcdf['zCoordinates'].load()
                 try:
-                    z_coords_1d = np.asarray(model_netcdf['zCoordinates'])[0,:,:]
+                    z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).values
                 except KeyError:
                     logger.warning('SECOFS field file does not have depth '
                                    'info! Taking surface value...')
                     return np.asarray(model_netcdf['salinity']).shape[1]-1, 0
-                if np.asarray(model_netcdf['temp']).shape[1] == len(z_coords_1d):
-                    # Transpose for secofs, or other OFS
-                    # where the depth and node dims are reversed
-                    z_coords_1d = z_coords_1d.T
+                if  ofs in ['secofs']:
+                    if np.asarray(model_netcdf['temp']).shape[1] == len(z_coords_1d) :
+                        # Transpose for secofs, or other OFS
+                        # where the depth and node dims are reversed
+                        z_coords_1d = z_coords_1d.T
                 node = index_min_dist[idx]
 
                 if np.isnan(node) or np.isnan(float(station_ctl_file_extract[idx][3])):
@@ -787,13 +839,17 @@ def index_nearest_depth(
                     raise NotImplementedError('ADCIRC depth indexing not yet implemented for models other than STOFS-2D-Global.')
 
     elif prop.ofsfiletype == 'stations':
-        if prop.ofs in ['stofs']:
-            return [], []
         index_min_depth = []  # type: ignore[no-redef]
         depth_value = []  # type: ignore[no-redef]
         length = len(index_min_dist)
-        if name_var == 'wl':
-            # Water level (zeta) is a 2D surface variable — no depth indexing needed
+        if name_var == 'wl' or prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+            # Water level (zeta) is a 2D surface variable — no depth
+            # indexing needed. The STOFS-3D points (stations) files are
+            # surface-only for every variable: temperature/salinity are
+            # sampled 'at water surface' and u/v are surface velocities,
+            # all on (time, station) with no vertical coordinate — so
+            # there is nothing to depth-index there either. Report the
+            # surface (layer 0, depth 0.0) for each matched station.
             for idx in range(length):
                 if ~np.isnan(index_min_dist[idx]):
                     index_min_depth.append(0)
@@ -837,6 +893,16 @@ def index_nearest_depth(
                     logger.warning('SECOFS station file does not have depth '
                                    'info! Taking surface value...')
                     depth_tracker = 1
+            else:
+                # Fail loudly instead of leaving model_depths unbound in
+                # the per-station loop below (UnboundLocalError). The
+                # surface-only STOFS-3D OFS return above and never get
+                # here; any new SCHISM OFS needs its depth layout wired
+                # in explicitly.
+                raise NotImplementedError(
+                    f'SCHISM stations depth indexing not implemented '
+                    f'for {prop.ofs}'
+                )
 
         for idx in range(0, length):
             if ~np.isnan(index_min_dist[idx]):
@@ -911,7 +977,8 @@ def index_nearest_station(
     model_source: str,
     name_var: str,
     logger: logging.Logger,
-    id_extract: list[list[str]]
+    id_extract: list[list[str]],
+    max_dist_km: float | None = None,
 ) -> list[int]:
     """
     Find the closest model station output location to observation stations.
@@ -935,6 +1002,11 @@ def index_nearest_station(
         Logger instance
     id_extract : List[List[str]]
         Observation station IDs
+    max_dist_km : float or None, optional
+        Maximum great-circle distance (km) for a station to count as matched.
+        Sourced from the ``[settings] station_match_max_dist_km`` config key
+        by the caller (``write_ofs_ctlfile``). When ``None``, falls back to
+        the module default ``STATION_MATCH_MAX_DIST_KM``.
 
     Returns
     -------
@@ -943,12 +1015,65 @@ def index_nearest_station(
 
     Notes
     -----
-    Uses a maximum distance threshold of 2 km.
-    Stations beyond this threshold are marked as NaN.
+    A station is matched only if its nearest model output location lies
+    within ``max_dist_km``. Stations beyond this threshold are marked as NaN
+    and are dropped downstream when the model control file is written.
+
+    The exact same km value drives the coarse candidate pre-filter box that
+    shortlists nearby model locations before the great-circle test runs. The
+    box is sized directly from ``max_dist_km`` (times a small safety factor)
+    and is latitude-aware: its E-W half-width in degrees grows as
+    ``1 / cos(lat)`` so the box covers the same distance on the ground at any
+    latitude. This guarantees the box is always at least as large as the km
+    cutoff -- so it never excludes a station the cutoff would have accepted,
+    even at Arctic latitudes -- while remaining a cheap spatial index that
+    does not itself decide matches.
+
+    If a ``prop.station_ledger`` attribute is present it is populated with a
+    drop record (stage ``node_match``) for every station that fails the
+    distance cutoff, and a warning is emitted when two or more observation
+    stations resolve to the same model location (a many-to-one collision
+    that can make the surviving set sensitive to the search radius).
     """
-    max_dist = 2.0  # km - cutoff for distance matching
+    max_dist = (
+        float(max_dist_km) if max_dist_km is not None
+        else STATION_MATCH_MAX_DIST_KM
+    )  # km - cutoff for distance matching AND pre-filter box sizing
+    ledger = getattr(prop, 'station_ledger', None)
     index_min_dist = []
-    min_dist = []
+    min_dist: list[float] = []
+
+    logger.info(
+        '[%s] Station matching using a %.1f km cutoff (config-driven; '
+        'pre-filter box derived from the same value)',
+        name_var, max_dist,
+    )
+
+    def _ledger_drop(obs_idx: int, reason: str) -> None:
+        """Record a ``node_match`` drop on the ledger if one is attached.
+
+        ``reason`` is a fully-formed explanation string; callers build it
+        (e.g. from a measured distance) before calling.
+        """
+        if ledger is None:
+            return
+        try:
+            sid = id_extract[obs_idx][0]
+        except (IndexError, TypeError):
+            sid = f'obs#{obs_idx}'
+        ledger.drop(sid, stage='node_match', reason=reason)
+
+    def _distance_drop_reason(dist_km: float | None) -> str:
+        """Build the drop reason for a station that failed the km cutoff."""
+        if dist_km is None:
+            return (
+                f'no model location within the {max_dist:.1f} km '
+                f'candidate box'
+            )
+        return (
+            f'nearest model location {dist_km:.2f} km away '
+            f'(> {max_dist:.1f} km cutoff)'
+        )
 
     logger.info(
         '[%s] Matching %d obs stations to model stations on %s grid '
@@ -964,7 +1089,7 @@ def index_nearest_station(
         # it stays (station,) directly. ``_static_coord_1d`` returns the
         # right shape for both, and we cast to str here regardless.
         station_names_arr = _static_coord_1d(model_netcdf, 'station_name')
-        station_names_str = station_names_arr.astype(str)
+        station_names_str: np.ndarray = station_names_arr.astype(str)
 
         for obs_p in range(length):
             match_indices = np.char.find(station_names_str, id_extract[obs_p][0])
@@ -977,6 +1102,10 @@ def index_nearest_station(
                 logger.info('Nearest station found: station %s of %s', obs_p + 1, length)
             else:
                 index_min_dist.append(np.nan)
+                _ledger_drop(
+                    obs_p,
+                    'no STOFS model station name contains the obs station ID',
+                )
                 logger.info('Nearest station NOT found: station %s of %s', obs_p + 1, length)
 
     elif model_source == 'fvcom' or model_source == 'schism':
@@ -997,12 +1126,15 @@ def index_nearest_station(
             obs_lon = float(ctl_file_extract[obs_p][1]) + 360
             obs_lat = float(ctl_file_extract[obs_p][0])
 
-            # Find nearby stations within 0.3 degree window
+            # Shortlist candidate model stations with a coarse box sized from
+            # the same km cutoff (latitude-aware) as a spatial index only; the
+            # exact km cutoff below decides the match.
+            lat_half, lon_half = _prefilter_halfwidths_deg(obs_lat, max_dist)
             nearby_nodes = np.argwhere(
-                (lon_np > obs_lon - 0.3) &
-                (lon_np < obs_lon + 0.3) &
-                (lat_np > obs_lat - 0.3) &
-                (lat_np < obs_lat + 0.3)
+                (lon_np > obs_lon - lon_half) &
+                (lon_np < obs_lon + lon_half) &
+                (lat_np > obs_lat - lat_half) &
+                (lat_np < obs_lat + lat_half)
             )
 
             if nearby_nodes.size > 0:
@@ -1022,12 +1154,14 @@ def index_nearest_station(
                 else:
                     index_min_dist.append(np.nan)
                     min_dist.append(np.nan)
+                    _ledger_drop(obs_p, _distance_drop_reason(float(np.nanmin(dist))))
                     logger.info(
                         f'Nearest station NOT found (>{max_dist}km): station {obs_p + 1}'
                     )
             else:
                 index_min_dist.append(np.nan)
                 min_dist.append(np.nan)
+                _ledger_drop(obs_p, _distance_drop_reason(None))
                 logger.info(
                     f'Nearest station NOT found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
@@ -1045,11 +1179,15 @@ def index_nearest_station(
             obs_lon = float(ctl_file_extract[obs_p][1])
             obs_lat = float(ctl_file_extract[obs_p][0])
 
+            # Latitude-aware candidate box sized from the same km cutoff, so
+            # the ROMS branch stays consistent with FVCOM/SCHISM and never
+            # excludes a within-cutoff station at high latitude.
+            lat_half, lon_half = _prefilter_halfwidths_deg(obs_lat, max_dist)
             nearby_nodes = np.argwhere(
-                (lon_flat < obs_lon + 0.1) &
-                (lon_flat > obs_lon - 0.1) &
-                (lat_flat < obs_lat + 0.1) &
-                (lat_flat > obs_lat - 0.1)
+                (lon_flat < obs_lon + lon_half) &
+                (lon_flat > obs_lon - lon_half) &
+                (lat_flat < obs_lat + lat_half) &
+                (lat_flat > obs_lat - lat_half)
             )
 
             if nearby_nodes.size > 0:
@@ -1071,18 +1209,65 @@ def index_nearest_station(
                 else:
                     index_min_dist.append(np.nan)
                     min_dist.append(np.nan)
+                    _ledger_drop(obs_p, _distance_drop_reason(float(np.nanmin(dist))))
                     logger.info(
                         f'Nearest station NOT found (>{max_dist}km): station {obs_p + 1}'
                     )
             else:
                 index_min_dist.append(np.nan)
                 min_dist.append(np.nan)
+                _ledger_drop(obs_p, _distance_drop_reason(None))
                 logger.info(
                     f'Nearest station NOT found: station {obs_p + 1} of {len(ctl_file_extract)}'
                 )
 
     matched = sum(1 for v in index_min_dist
                   if not (isinstance(v, float) and np.isnan(v)))
+
+    # Many-to-one detection: two or more obs stations resolving to the same
+    # model location is legitimate on coarse grids but is also the mechanism
+    # by which a small change in the search radius can swap which obs station
+    # "wins" a shared node -- surface it rather than letting it stay silent.
+    # Group every obs station by the model index it mapped to so a triple (or
+    # larger) collision is reported as a single group rather than a series of
+    # pairwise warnings.
+    node_to_obs: dict[int, list[int]] = {}
+    for obs_idx, node in enumerate(index_min_dist):
+        if isinstance(node, float) and np.isnan(node):
+            continue
+        node_to_obs.setdefault(int(node), []).append(obs_idx)
+
+    def _obs_id(obs_idx: int) -> str:
+        try:
+            return id_extract[obs_idx][0]
+        except (IndexError, TypeError):
+            return f'obs#{obs_idx}'
+
+    for node_int, obs_indices in node_to_obs.items():
+        if len(obs_indices) < 2:
+            continue
+        sids = [_obs_id(i) for i in obs_indices]
+        sid_list = ', '.join(sids)
+        logger.warning(
+            'Many-to-one station match: obs stations %s all map to model '
+            'location index %d. All are retained, but their skill reflects '
+            'the same model point.',
+            sid_list, node_int,
+        )
+        if ledger is not None:
+            ledger.note_stage(
+                'node_match_collision',
+                note=f'{sid_list} share model index {node_int}',
+            )
+
+    if ledger is not None:
+        ledger.note_stage(
+            'node_match',
+            count_in=len(index_min_dist),
+            count_out=matched,
+            note=f'cutoff {max_dist:.1f} km',
+        )
+
     logger.info(
         '[%s] Station-matching complete (%d matched / %d total stations)',
         name_var, matched, len(index_min_dist),

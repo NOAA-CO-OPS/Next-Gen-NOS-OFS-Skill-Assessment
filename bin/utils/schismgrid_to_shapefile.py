@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import logging.config
 import os
-import subprocess
 import sys
 from pathlib import Path
-import ocsmesh
+
 import geopandas as gpd
+import ocsmesh
 
 parent_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(parent_dir))
@@ -43,7 +43,7 @@ def create_SCHISM_mesh_extent_shapefile(mesh_path: str, shapefile_name: str):
 
     # Construct the full output directory path
     output_path_full = parent_dir/'ofs_extents'
-    
+
     # Construct the full path for the output shapefile
     output_file_path = output_path_full/shapefile_name
 

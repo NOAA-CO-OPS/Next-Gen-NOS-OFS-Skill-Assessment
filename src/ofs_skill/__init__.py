@@ -8,7 +8,7 @@ Provides tools for:
 - Visualization
 """
 
-__version__ = '1.4.0'
+__version__ = '1.7.1'
 
 # Expose commonly used functionality at package level
 from ofs_skill.model_processing.model_properties import ModelProperties

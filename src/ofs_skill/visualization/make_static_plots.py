@@ -134,6 +134,11 @@ def get_title_static(prop, node, station_id, name_var, logger):
     else:
         nwsline = ''
 
+    # Station-to-node distance, shown inline after the node ID; strip
+    # the HTML tokens for matplotlib rendering.
+    node_dist = plotting_functions.build_node_dist_fragment(
+        prop, station_id, name_var, logger,
+    ).replace('&nbsp;', ' ').replace('&lt;', '<')
     # Currents plots get the same obs/model depth + ADCP-type annotation
     # as the HTML title; strip the HTML tokens for matplotlib rendering.
     depth_line = plotting_functions._build_depth_line(
@@ -147,7 +152,7 @@ def get_title_static(prop, node, station_id, name_var, logger):
         f'{station_id[2]} station: {station_id[1]} ' \
         f'({station_id[0]})\n' \
         f'OFS: {prop.ofs.upper()}    Node ID: ' \
-        f'{node}    ' \
+        f'{node}{node_dist}    ' \
         + nwsline + depth_line + adcp_type_line + \
         f'\nFrom: {start_date}  ' \
         f'To: ' \

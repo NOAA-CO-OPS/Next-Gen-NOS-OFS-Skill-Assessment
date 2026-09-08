@@ -349,9 +349,14 @@ class TestParameterValidation:
         with pytest.raises(SystemExit):
             op.parameter_validation(prop, logger)
 
-    def test_missing_ofs_extents_exits(self, tmp_path, logger):
+    def test_missing_ofs_extents_exits(self, tmp_path, monkeypatch, logger):
         prop = self._make_prop(tmp_path)
-        # No ofs_extents dir created
+        # No ofs_extents dir created. ofs_extents/ resolves from the
+        # installation root when absent from the working directory, so
+        # point the fallback at an empty root to simulate a broken
+        # install; only then should validation abort.
+        monkeypatch.setattr(
+            op.utils, 'get_project_root', lambda: tmp_path / 'empty_root')
         with pytest.raises(SystemExit):
             op.parameter_validation(prop, logger)
 

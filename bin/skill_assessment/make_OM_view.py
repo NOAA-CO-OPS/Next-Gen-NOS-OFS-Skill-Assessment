@@ -680,7 +680,7 @@ def make_OM_view(prop, logger):
     # Parameter validation & paths
     _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     argu_list = (
         prop.path,
         prop.whichcasts,

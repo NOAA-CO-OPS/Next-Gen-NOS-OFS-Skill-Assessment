@@ -8,6 +8,8 @@
 
 This repository contains a prototype of the Next Gen NOS Ocean Forecast Model Skill Assessment and Processing Software, currently under development by NOAA's Center for Operational Oceanographic Products and Services (CO-OPS) and Office of Coast Survey (OCS) as part of the Bipartisan Infrastructure Law (BIL) Coastal and Inland Flood Inundation Mapping (CIFIM) project.
 
+**Developers:** for conda setup (`make setup`), pre-push checks (`make ci-local`), pytest markers, and CI job expectations, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 NOAA develops and maintains several [Operational Forecast Systems (OFS)](https://tidesandcurrents.noaa.gov/models.html "Operational Forecast System (OFS) NOAA main page") that provide nowcast (past 24 hours to present time) and forecast (up to 120 hours in the future) guidance of water level, current velocity, salinity, water temperature, and ice concentration. OFS are located in coastal waters around the nation, including the Great Lakes, to support critical ports, harbors, and infrastructure. Model predictions and guidance should therefore be as skillful as possible. Oceanographic output from OFSs can be used for, for example, shipping channel navigation, search and rescue, recreational boating and fishing, and tracking of storm effects.
 
 This software provides near real-time evaluation of OFS model skill by comparing model guidance to observations at specific point locations (e.g., established buoys and gauges, referred to as **1D**) and across the entire two-dimensional sea or lake surface of OFS domains using remote sensing products (referred to as **2D**). This new Python-based skill assessment software will replace the [existing Fortran-based NOS skill assessment software](https://tidesandcurrents.noaa.gov/ofs/publications/CS_Techrpt_024_SkillAss_WLsCUs_2006.pdf "Existing skill assessment details"). A map-based interface to view skill assessment results produced by this software will also be available, but is not detailed here.
@@ -27,7 +29,12 @@ conda activate ofs_dps
 cp conf/ofs_dps.conf.example conf/ofs_dps.conf
 #    ...then edit conf/ofs_dps.conf and set home=/path/to/working_directory
 
-# 3. Download model data for your OFS and date range
+# 3a. (Preferred) Ensure use_s3_fallback=True is set in conf/ofs_dps.conf, and the skill
+#     assessment routine will read and stream model files from the
+#     NODD S3 bucket on demand when local files are missing.
+ 
+# 3b. (Alternate) If you prefer to download model data locally: 
+#     Download model data for your OFS and date range
 python ./bin/utils/get_model_data.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-02T00:00:00Z -ws nowcast -t stations
 python ./bin/utils/get_model_data.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-02T00:00:00Z -ws forecast_b -t stations
 

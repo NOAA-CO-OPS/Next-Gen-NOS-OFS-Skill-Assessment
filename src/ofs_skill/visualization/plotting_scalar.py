@@ -604,7 +604,7 @@ def oned_scalar_plot(
         except Exception as e_x:
             logger.error('Cannot find station ID in datum report! '
                 'Exception: %s', e_x,)
-        if has_fail.bool():
+        if has_fail.any():
             fig.add_annotation(
                 text='<b>Warning:<br>datum mismatch</b>',
                 xref='x domain', yref='y domain',

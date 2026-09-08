@@ -14,6 +14,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ from pandas.errors import EmptyDataError
 from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
+from ofs_skill.model_processing.station_ledger import StationLedger
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
@@ -29,6 +31,24 @@ from ofs_skill.obs_retrieval.utils import get_parallel_config
 from ofs_skill.skill_assessment import format_paired_one_d, metrics_paired_one_d
 from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
 from ofs_skill.tidal_analysis.extremes import extract_water_level_extrema
+from ofs_skill.utils import cache_manifest
+from ofs_skill.utils.file_headers import series_rows_to_skip, strip_model_ctl_header
+from ofs_skill.utils.timeseries_coverage import (
+    covers_run_window,
+    parse_run_window,
+    remove_stale_artifact,
+)
+
+# Short model name-part -> long variable name. Cache-manifest signatures are
+# keyed on the long variable name (the ctl/obs/prd writers pass the long
+# name), so the reuse gates in this module -- which work in the short
+# ``wl``/``temp``/``salt``/``cu`` convention -- map back before comparing.
+_NAME_TO_VARIABLE = {
+    'wl': 'water_level',
+    'temp': 'water_temperature',
+    'salt': 'salinity',
+    'cu': 'currents',
+}
 
 
 def _cache_key(prop):
@@ -83,6 +103,37 @@ def _set_cached_model(prop, dataset):
         gc.collect()
 
 
+def _close_cached_model(prop):
+    """Close and drop the model dataset cached on ``prop``.
+
+    The model dataset is opened lazily with the h5netcdf engine and stashed
+    on ``prop._cached_model`` so a single load can be shared across the
+    per-variable and per-station worker threads. Nothing else closes the
+    *final* cached dataset once processing is done, so its file handle would
+    otherwise be finalized during interpreter shutdown -- after h5py's
+    module globals have been torn down -- producing the noisy but harmless
+    ``TypeError: bad operand type for unary ~: 'NoneType'`` tracebacks
+    reported in issue #94. Closing it here, while the interpreter is still
+    healthy, lets h5netcdf/h5py release the handle cleanly.
+
+    Best-effort: a missing cache, a dataset without ``close``, or a close
+    that raises are all swallowed so end-of-run cleanup never masks the
+    actual results.
+    """
+    cached = getattr(prop, '_cached_model', None)
+    if cached is None:
+        return
+    try:
+        cached.close()
+    except Exception:  # pragma: no cover - defensive cleanup only
+        pass
+    finally:
+        prop._cached_model = None
+        prop._cached_model_key = None
+        del cached
+        gc.collect()
+
+
 def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
     """
     Extract info from model control files. If control file does not exist,
@@ -113,8 +164,9 @@ def ofs_ctlfile_extract(prop, name_var, logger, model_dataset=None):
         if os.path.getsize(ctl_path) > 0:
             with open(ctl_path, encoding='utf-8') as file:
                 read_ofs_ctl_file = file.read()
-
-                lines = read_ofs_ctl_file.split('\n')
+                # Split into lines; drop the single header line, if
+                # present (legacy files have none)
+                lines = strip_model_ctl_header(read_ofs_ctl_file.split('\n'))
                 lines = [x for x in lines if x != '']
                 lines = [i.split(' ') for i in lines]
                 lines = [list(filter(None, i)) for i in lines]
@@ -159,10 +211,21 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
 
         if os.path.isfile(obs_path):
             if os.path.getsize(obs_path) > 0:
-                obs_df = pd.read_csv(obs_path,
-                    sep=r'\s+',
-                    header=None,
-                )
+                try:
+                    obs_df = pd.read_csv(obs_path,
+                        sep=r'\s+',
+                        header=None,
+                        skiprows=series_rows_to_skip(obs_path),
+                    )
+                except EmptyDataError:
+                    logger.error(
+                        '%s/%s_%s_%s_station.obs has no data rows',
+                        prop.data_observations_1d_station_path,
+                        read_station_ctl_file[0][obs_row][0],
+                        prop.ofs,
+                        name_var,
+                    )
+                    return formatted_series
             else:
                 logger.error(
                     '%s/%s_%s_%s_station.obs is empty',
@@ -188,10 +251,14 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
 
             prd_path = os.path.join(prop.data_model_1d_node_path,prdfile)
             if os.path.isfile(prd_path):
-                ofs_df = pd.read_csv(prd_path,
-                    sep=r'\s+',
-                    header=None,
-                )
+                try:
+                    ofs_df = pd.read_csv(prd_path,
+                        sep=r'\s+',
+                        header=None,
+                        skiprows=series_rows_to_skip(prd_path)
+                    )
+                except EmptyDataError:
+                    return None
             else:
                 logger.error(
                     '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
@@ -232,6 +299,7 @@ def prepare_series(read_station_ctl_file, read_ofs_ctl_file, prop,
                 ofs_df = pd.read_csv(prd_path,
                     sep=r'\s+',
                     header=None,
+                    skiprows=series_rows_to_skip(prd_path)
                     )
             except EmptyDataError:
                 return None
@@ -261,11 +329,34 @@ def _station_metadata(read_station_ctl_file, read_ofs_ctl_file, obs_idx, ofs_idx
     return {
         'station_id': read_station_ctl_file[0][obs_idx][0],
         'node': read_ofs_ctl_file[1][ofs_idx],
-        'obs_depth': read_station_ctl_file[1][obs_idx][-2],
+        # Every obs ctl writer emits the water depth as the 4th coord
+        # token. Scalar-variable coord lines have 5 tokens so [-2] used
+        # to land on it by coincidence, but CO-OPS ADCP currents lines
+        # carry 7 tokens ([-2] read height_from_bottom, making
+        # obs_water_depth constant across a station's bins) and
+        # NDBC/USGS/CHS currents lines carry 6 ([-2] read a literal
+        # 0.0). Issue #200. A malformed short row degrades to a blank
+        # depth rather than dropping the station via IndexError.
+        'obs_depth': (
+            read_station_ctl_file[1][obs_idx][3]
+            if len(read_station_ctl_file[1][obs_idx]) > 3 else ''
+        ),
         'mod_depth': read_ofs_ctl_file[-2][ofs_idx],
         'X': str(float(read_station_ctl_file[1][obs_idx][1])),
         'Y': read_station_ctl_file[1][obs_idx][0],
     }
+
+
+def _ledger_drop(prop: Any, station_id: str, stage: str, reason: str) -> None:
+    """Record a station drop on ``prop.station_ledger`` if one is attached.
+
+    Best-effort and thread-safe; a missing ledger is a no-op so the skill
+    workflow runs identically whether or not accounting is enabled.
+    """
+    ledger = getattr(prop, 'station_ledger', None)
+    if ledger is None:
+        return
+    ledger.drop(station_id, stage=stage, reason=reason)
 
 
 def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
@@ -284,6 +375,10 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                 f'Could not match station ID {ofs_station_id} between '
                 f'control file in get_node_ofs!'
             )
+            _ledger_drop(
+                prop, ofs_station_id, 'id_mismatch',
+                'model ctl station ID has no matching obs ctl entry',
+            )
             return None
 
         obs_row = station_id_to_idx[ofs_station_id]
@@ -294,11 +389,39 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
             name_var, i, obs_row, logger
         )
 
-        if not (
-            formatted_series
-            and formatted_series != 'NoDataFound'
-            and len(formatted_series[0]) > 1
+        # Distinguish "no overlapping valid timestamps" (a data-coverage
+        # condition worth surfacing prominently, per issue #200) from the
+        # generic missing-file / empty-series failures.
+        if formatted_series is format_paired_one_d.PairingStatus.NO_TEMPORAL_OVERLAP:
+            _ledger_drop(
+                prop, station_id, 'temporal_overlap',
+                'obs and model series have no overlapping valid timestamps '
+                'in the requested window',
+            )
+            logger.warning(
+                'Station %s (%s): obs and model data do not overlap in time '
+                'within the requested window; no skill row produced. '
+                'Check that observations exist for this period.',
+                station_id, name_var,
+            )
+            return None
+
+        # Any remaining sentinel/None/degenerate result means no usable
+        # paired series. ``formatted_series`` here is either the string
+        # 'NoDataFound', a PairingStatus, None, or the success tuple.
+        if (
+            not formatted_series
+            or isinstance(
+                formatted_series,
+                str | format_paired_one_d.PairingStatus,
+            )
+            or len(formatted_series[0]) <= 1
         ):
+            _ledger_drop(
+                prop, station_id, 'pairing',
+                'no valid paired OBS/OFS series (missing/empty obs or model '
+                'data, or no overlapping valid timestamps)',
+            )
             logger.error(
                 f'{prop.ofs}_{name_var}_{station_id}_{read_ofs_ctl_file[1][i]}_'
                 f'{prop.whichcast}_{prop.ofsfiletype}_pair.int is not created successfully'
@@ -355,6 +478,16 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                 cleaned_val = str(p_value).replace(',', ' ').replace('[', '').replace(']', '')
                 output_2.write(f'{cleaned_val}\n')
         logger.info(f'{filename} is created successfully')
+        # Stamp the run signature on the paired file so a same-parameter
+        # rerun reuses it and a changed-parameter run treats it as stale.
+        # Keyed on the long variable name to match the .prd/.obs writers.
+        cache_manifest.record_artifact(
+            int_path,
+            cache_manifest.run_signature(
+                prop, variable=_NAME_TO_VARIABLE.get(name_var, name_var),
+                extra={'whichcast': getattr(prop, 'whichcast', None)}),
+            prop.data_skill_1d_pair_path,
+            logger)
 
         # Water-level extrema (HW/LW) independent detection + ±3h pairing
         if name_var == 'wl' and prop.ofs[0] != 'l':
@@ -447,14 +580,24 @@ def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
 
 
 def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
-    """
-    This function 1) writes the paired observation and model time series to
-    file (.int), and 2) sends the paired time series to
-    metrics_paired_one_d to calculate skill stats, which are returned from the
-    function.
+    """Pair observation and model series for one variable and compute skill.
 
-    Returns a list: [output] for scalars, [output, output_dir] for currents,
-    [output, output_hw, output_lw] for water level (when extrema were paired).
+    Writes paired time series (``.int``) and calls
+    ``metrics_paired_one_d`` to produce per-station skill rows.
+
+    Args:
+        read_station_ctl_file: Parsed observation control-file structure
+            (station rows / metadata).
+        read_ofs_ctl_file: Parsed model control-file structure aligned to
+            the same stations.
+        prop: ``ModelProperties`` for paths, dates, and run settings.
+        name_var: Short variable key (``wl``, ``temp``, ``salt``, or ``cu``).
+        logger: Logger for progress and drop reasons.
+
+    Returns:
+        A list of output dicts: ``[output]`` for scalars;
+        ``[output, output_dir]`` for currents; and for water level with
+        extrema pairing, HW/LW dicts are included as well.
     """
 
     def _create_output_dict(extrema=False):
@@ -476,6 +619,19 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
     output_lw = _create_output_dict(extrema=True)
 
     data_length = min(len(read_station_ctl_file[0]), len(read_ofs_ctl_file[-1]))
+
+    ledger = getattr(prop, 'station_ledger', None)
+    if ledger is not None:
+        ledger.note_stage(
+            'obs_ctl',
+            count_in=len(read_station_ctl_file[0]),
+            note='stations with retrievable obs data (obs station ctl file)',
+        )
+        ledger.note_stage(
+            'model_ctl',
+            count_out=len(read_ofs_ctl_file[-1]),
+            note='obs stations matched to a model location (model ctl file)',
+        )
 
     # O(1) station ID -> obs-row lookup, computed once and shared with workers
     station_id_to_idx = {
@@ -514,6 +670,12 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
                 _append_entry(output_lw, result['lw'])
 
     # Construct final output payload
+    if ledger is not None:
+        ledger.note_stage(
+            'skill_csv',
+            count_out=len(output['station_id']),
+            note='stations written to the per-variable skill CSV',
+        )
     if name_var == 'cu' and len(output_dir['station_id']) > 0:
         return [output, output_dir]
     if name_var == 'wl' and len(output_hw['station_id']) > 0:
@@ -541,22 +703,41 @@ def name_convent(variable):
 
 
 def get_skill(prop, logger):
-    """
- This is the final skill assessment script.
- This function reads the obs and ofs control files, search for the
- respective data and creates the paired (.int) datasets and skill table.
+    """Run the 1D skill assessment for the variables configured on ``prop``.
+
+    For each variable, ensures observation (``.obs``) and model (``.prd``)
+    products exist (fetching/extracting when missing or stale), pairs them
+    into ``.int`` files, computes skill tables via :func:`skill`, and writes
+    outputs under the skill/paths on ``prop``.
+
+    Args:
+        prop: ``ModelProperties`` with OFS, dates, datum, whichcast(s),
+            paths, and variable list populated.
+        logger: Logger instance, or ``None`` to load from config.
+
+    Returns:
+        None. Side effects: paired series, skill CSVs/tables, and related
+        artifacts on disk.
+
+    Raises:
+        SystemExit: If required config/logging files are missing when
+            ``logger`` is ``None``.
     """
 
     if logger is None:
         config_file = utils.Utils().get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(Path(prop.path), log_config_file)
+        log_config_file = utils.resolve_asset_path(
+            prop.path, 'conf', 'logging.conf')
 
         # Check if log file exists
         if not os.path.isfile(log_config_file):
+            print(f'Logging config not found: {log_config_file}. Abort!',
+                  file=sys.stderr)
             sys.exit(-1)
         # Check if config file exists
         if not os.path.isfile(config_file):
+            print(f'Configuration file not found: {config_file}. Abort!',
+                  file=sys.stderr)
             sys.exit(-1)
 
         # Creater logger
@@ -627,7 +808,7 @@ def get_skill(prop, logger):
         prop.path = Path(dir_params['home'])
 
     # prop.path validation
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     if not os.path.exists(ofs_extents_path):
         error_message = (
             f'ofs_extents/ folder is not found. '
@@ -717,97 +898,145 @@ def get_skill(prop, logger):
     # USGS, and NDBC based on the station data source
 
     def _ensure_obs_files(read_station_ctl_file, p, name_var, logger_):
-        """Check for missing .obs files, download if needed."""
+        """Check for missing or stale .obs files, download if needed.
+
+        Obs filenames do not encode the run window, and the obs module
+        skips stations whose .obs file already exists -- so a file left
+        over from an earlier run window would be reused verbatim. Delete
+        stale files first, then fetch once so all missing files are
+        recreated for the current window.
+        """
+        run_window = parse_run_window(p, logger_)
+        needs_fetch = False
         for i in range(0, len(read_station_ctl_file[0])):
             obs_path = os.path.join(p.data_observations_1d_station_path,
                     str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
                         name_var+'_station.obs'))
             if os.path.isfile(obs_path):
                 if os.path.getsize(obs_path) > 0:
-                    logger_.info(
-                        '%s/%s_%s_%s_station.obs found',
-                        p.data_observations_1d_station_path,
-                        read_station_ctl_file[0][i][0],
-                        p.ofs,
-                        name_var,
-                    )
+                    obs_sig = cache_manifest.run_signature(
+                        p, variable=_NAME_TO_VARIABLE.get(name_var, name_var))
+                    stale_params = not cache_manifest.artifact_is_fresh(
+                        obs_path, obs_sig)
+                    if (run_window is not None
+                            and not covers_run_window(
+                                obs_path, run_window[0], run_window[1],
+                                logger=logger_)):
+                        logger_.warning(
+                            '%s does not cover the run window %s to %s '
+                            'and is likely left over from an earlier '
+                            'run. Deleting it and re-fetching '
+                            'observations.',
+                            obs_path, run_window[0], run_window[1])
+                        if remove_stale_artifact(
+                                obs_path,
+                                p.data_observations_1d_station_path,
+                                logger_):
+                            cache_manifest.forget_artifact(obs_path, p.data_observations_1d_station_path,
+                                                           logger_)
+                            needs_fetch = True
+                    elif stale_params:
+                        # Same window length but built under different
+                        # datum/station-owner/bins parameters -- delete and
+                        # re-fetch for the current run.
+                        logger_.warning(
+                            '%s was built for different run parameters and '
+                            'is likely left over from an earlier run. '
+                            'Deleting it and re-fetching observations.',
+                            obs_path)
+                        if remove_stale_artifact(
+                                obs_path,
+                                p.data_observations_1d_station_path,
+                                logger_):
+                            cache_manifest.forget_artifact(obs_path,
+                                                           p.data_observations_1d_station_path,
+                                                           logger_)
+                            cache_manifest.note_stale('obs')
+                            needs_fetch = True
+                    else:
+                        logger_.info('%s found', obs_path)
                 else:
-                    logger_.error(
-                        '%s/%s_%s_%s_station.obs is empty',
-                        p.data_observations_1d_station_path,
-                        read_station_ctl_file[0][i][0],
-                        p.ofs,
-                        name_var,
-                    )
+                    logger_.error('%s is empty', obs_path)
             else:
                 logger_.error(
-                    '%s/%s_%s_%s_station.obs is missing, calling Obs Module',
-                    p.data_observations_1d_station_path,
-                    read_station_ctl_file[0][i][0],
-                    p.ofs,
-                    name_var,
-                )
-                get_station_observations(p, logger_)
-                break
+                    '%s is missing, calling Obs Module', obs_path)
+                needs_fetch = True
+        if needs_fetch:
+            get_station_observations(p, logger_)
 
     def _ensure_prd_files(read_ofs_ctl_file, p, name_var, logger_,
                           cached_model=None):
-        """Check for missing .prd files, extract if needed.
-        Returns the (possibly updated) cached model dataset."""
+        """Check for missing or stale .prd files, extract if needed.
+        Returns the (possibly updated) cached model dataset.
+
+        Like the .obs files, .prd filenames do not encode the run
+        window, so files left over from an earlier run would be reused
+        verbatim. Delete stale files first, then extract once so all
+        missing files are recreated for the current window.
+        """
+        run_window = parse_run_window(p, logger_)
+        needs_model = False
         for i in range(0, len(read_ofs_ctl_file[-1])):
             if p.whichcast == 'forecast_a':
-                if os.path.isfile(
+                prd_path = (
                     f'{p.data_model_1d_node_path}/'
                     f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
                     f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
                     f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
-                ) is False:
-                    logger_.error(
-                        '%s/%s_%s_%s_%s_%s_%s_%s_model.prd is missing',
-                        p.data_model_1d_node_path,
-                        read_ofs_ctl_file[-1][i],
-                        p.ofs,
-                        name_var,
-                        read_ofs_ctl_file[1][i],
-                        p.whichcast,
-                        p.forecast_hr,
-                        p.ofsfiletype
-                    )
-                    logger_.info(
-                        'Calling OFS module for %s',
-                        p.whichcast,
-                    )
-                    result = get_node_ofs(p, logger_,
-                                          model_dataset=cached_model)
-                    if result is not None:
-                        cached_model = result
-                    break
+                )
             else:
-                if os.path.isfile(
+                prd_path = (
                     f'{p.data_model_1d_node_path}/'
                     f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
                     f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
                     f'{p.ofsfiletype}_model.prd'
-                ) is False:
-                    logger_.info(
-                        '%s/%s_%s_%s_%s_%s_%s_model.prd is missing',
-                        p.data_model_1d_node_path,
-                        read_ofs_ctl_file[-1][i],
-                        p.ofs,
-                        name_var,
-                        read_ofs_ctl_file[1][i],
-                        p.whichcast,
-                        p.ofsfiletype
-                    )
-                    logger_.info(
-                        'Calling OFS module for %s',
-                        p.whichcast,
-                    )
-                    result = get_node_ofs(p, logger_,
-                                          model_dataset=cached_model)
-                    if result is not None:
-                        cached_model = result
-                    break
+                )
+            if os.path.isfile(prd_path):
+                prd_extra = {'whichcast': p.whichcast}
+                if p.whichcast == 'forecast_a':
+                    prd_extra['forecast_hr'] = p.forecast_hr
+                prd_sig = cache_manifest.run_signature(
+                    p, variable=_NAME_TO_VARIABLE.get(name_var, name_var),
+                    extra=prd_extra)
+                stale_params = not cache_manifest.artifact_is_fresh(
+                    prd_path, prd_sig)
+                if (run_window is not None
+                        and not covers_run_window(
+                            prd_path, run_window[0], run_window[1],
+                            logger=logger_)):
+                    logger_.warning(
+                        '%s does not cover the run window %s to %s and '
+                        'is likely left over from an earlier run. '
+                        'Deleting it and re-extracting model data.',
+                        prd_path, run_window[0], run_window[1])
+                    if remove_stale_artifact(
+                            prd_path, p.data_model_1d_node_path, logger_):
+                        cache_manifest.forget_artifact(prd_path,
+                                                       prop.data_model_1d_node_path,
+                                                       logger_)
+                        needs_model = True
+                elif stale_params:
+                    # Same window length but built under different
+                    # datum/station-owner/bins parameters -- re-extract.
+                    logger_.warning(
+                        '%s was built for different run parameters and is '
+                        'likely left over from an earlier run. Deleting it '
+                        'and re-extracting model data.', prd_path)
+                    if remove_stale_artifact(
+                            prd_path, p.data_model_1d_node_path, logger_):
+                        cache_manifest.forget_artifact(prd_path,
+                                                       prop.data_model_1d_node_path,
+                                                       logger_)
+                        cache_manifest.note_stale('prd')
+                        needs_model = True
+            else:
+                logger_.info('%s is missing', prd_path)
+                needs_model = True
+        if needs_model:
+            logger_.info('Calling OFS module for %s', p.whichcast)
+            result = get_node_ofs(p, logger_, model_dataset=cached_model)
+            if result is not None:
+                cached_model = result
         return cached_model
 
     parallel_cfg = get_parallel_config(
@@ -819,6 +1048,20 @@ def get_skill(prop, logger):
         """Process skill assessment for a single variable."""
         name_var = name_convent(variable)
 
+        # Attach a fresh station-drop ledger for this variable so every
+        # stage (matching, pairing, temporal overlap) can record why a
+        # station did or did not survive to the final CSV. Best-effort:
+        # the workflow runs identically if ledger construction fails.
+        try:
+            p.station_ledger = StationLedger(
+                ofs=getattr(p, 'ofs', ''),
+                variable=variable,
+                whichcast=getattr(p, 'whichcast', ''),
+                filetype=getattr(p, 'ofsfiletype', ''),
+            )
+        except (TypeError, ValueError):  # pragma: no cover - defensive only
+            p.station_ledger = None
+
         # =================================================================
         # This will try to read the station ctl file for the given ofs and
         # for all
@@ -829,6 +1072,12 @@ def get_skill(prop, logger):
                     p.ofs, variable)
         ctl_path = os.path.join(p.control_files_path,str(p.ofs+'_'+\
                                 name_var+'_station.ctl'))
+
+        obs_ctl_signature = cache_manifest.run_signature(p, variable=variable)
+        cache_manifest.ensure_fresh(
+            ctl_path, obs_ctl_signature, p.control_files_path,
+            'obs ctl', logger)
+
         if os.path.isfile(ctl_path) is False:
             logger.info(
                 'Station ctl file not found. Creating station '
@@ -1009,25 +1258,67 @@ def get_skill(prop, logger):
                 variable,
             )
 
+        # Emit the station accounting ledger for this variable so the
+        # obs->matched->paired->CSV reductions are explained in one place
+        # rather than scattered across per-station INFO/ERROR lines.
+        ledger = getattr(p, 'station_ledger', None)
+        if ledger is not None:
+            ledger.log_summary(logger)
+            try:
+                csv_path = os.path.join(
+                    p.control_files_path,
+                    f'station_ledger_{p.ofs}_{name_var}_'
+                    f'{p.whichcast}_{p.ofsfiletype}.csv',
+                )
+                # A pass that ran fresh node matching is authoritative and
+                # always (re)writes the CSV. A pass that reused cached ctl
+                # files (node matching never ran) only writes when it has
+                # drops of its own to report or no CSV exists yet —
+                # otherwise it would overwrite a richer ledger from the
+                # matching pass with a header-only file.
+                if (
+                    ledger.has_stage('node_match')
+                    or ledger.has_drops
+                    or not os.path.isfile(csv_path)
+                ):
+                    written = ledger.to_csv(csv_path)
+                    if written:
+                        logger.info('Station accounting ledger written to %s',
+                                    written)
+                else:
+                    logger.debug(
+                        'Station ledger CSV at %s left in place: this pass '
+                        'reused cached station matching and recorded no '
+                        'drops', csv_path)
+            except (OSError, ValueError):  # pragma: no cover - defensive only
+                logger.debug('Failed to write station ledger CSV',
+                             exc_info=True)
+
     # Variable processing runs sequentially here. Variable parallelism
     # is handled inside get_node_ofs (which loads the model once and
     # dispatches variable extraction in parallel).
-    for variable in prop.var_list:
-        _skill_for_variable(variable, prop)
+    try:
+        for variable in prop.var_list:
+            _skill_for_variable(variable, prop)
 
-    # Now collect forecast horizon time series, if ya want!
-    if (prop.horizonskill and
-        prop.whichcast == 'forecast_b'):
-        # Get all model time series, and put them in a big 'ol CSV file
-        # Check to see if this has already been done
-        logger.info('Starting forecast horizon skill! This is going to '
-                    'take a while...\n')
-        try:
-            do_horizon_skill.make_horizon_series(prop, logger)
-            # Now get obs time series and put that in the CSV file, too.
-            do_horizon_skill.merge_obs_series_scalar(prop, logger)
-        except Exception as e_x:
-            logger.error('Exception caught in do_horizon_skill after '
-                         'calling it from get_skill. Error: %s', e_x)
-        prop.horizonskill = False
-        logger.info('Completed forecast horizon skill!')
+        # Now collect forecast horizon time series, if ya want!
+        if (prop.horizonskill and
+            prop.whichcast == 'forecast_b'):
+            # Get all model time series, and put them in a big 'ol CSV file
+            # Check to see if this has already been done
+            logger.info('Starting forecast horizon skill! This is going to '
+                        'take a while...\n')
+            try:
+                do_horizon_skill.make_horizon_series(prop, logger)
+                # Now get obs time series and put that in the CSV file, too.
+                do_horizon_skill.merge_obs_series_scalar(prop, logger)
+            except Exception as e_x:
+                logger.error('Exception caught in do_horizon_skill after '
+                             'calling it from get_skill. Error: %s', e_x)
+            prop.horizonskill = False
+            logger.info('Completed forecast horizon skill!')
+    finally:
+        # Release the shared model dataset's file handle now, while the
+        # interpreter is still healthy, rather than letting the GC finalize
+        # it at shutdown after h5py has been torn down (issue #94).
+        _close_cached_model(prop)

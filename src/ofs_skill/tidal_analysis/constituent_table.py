@@ -16,7 +16,7 @@ Currents
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -240,7 +240,7 @@ def write_constituent_table_csv(
     if data_type:
         header_lines.append(f'# Data Type: {data_type}')
     header_lines.append(
-        f"# Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        f"# Generated: {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     )
     if metadata:
         for key, value in metadata.items():

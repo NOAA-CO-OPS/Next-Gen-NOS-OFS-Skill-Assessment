@@ -85,13 +85,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.interpolate as interp
+from bin.model_processing import get_icecover_model
+from bin.obs_retrieval import get_icecover_observations
+from bin.visualization import create_1dplot_ice
 from mpl_toolkits.basemap import Basemap
 from numpy import isnan
 from sklearn.metrics import confusion_matrix
 
-from bin.model_processing import get_icecover_model
-from bin.obs_retrieval import get_icecover_observations
-from bin.visualization import create_1dplot_ice
 from ofs_skill.model_processing import (
     model_properties,
     model_source,
@@ -377,7 +377,7 @@ def do_iceskill(prop, logger):
         sys.exit(-1)
 
     # prop.path validation
-    prop.ofs_extents_path = os.path.join(
+    prop.ofs_extents_path = utils.resolve_asset_path(
         prop.path, dir_params['ofs_extents_dir'],
     )
     if not os.path.exists(prop.ofs_extents_path):
@@ -1223,38 +1223,57 @@ def do_iceskill(prop, logger):
 
 
 # Execution:
-if __name__ == '__main__':
-    # Arguments:
-    # Parse (optional and required) command line arguments
-    parser = argparse.ArgumentParser()
+def _run_pipeline(run_args):
+    """Execute the ice skill pipeline with the given arguments."""
+    prop1 = model_properties.ModelProperties()
+    ofs = getattr(run_args, 'OFS', None) or getattr(run_args, 'ofs', None)
+    prop1.ofs = ofs.lower()
+    prop1.path = getattr(run_args, 'Path', None) or getattr(run_args, 'path', None)
+    prop1.config_file = getattr(run_args, 'config', None)
+    prop1.start_date_full = run_args.StartDate_full
+    prop1.end_date_full = run_args.EndDate_full
+    whichcasts = getattr(run_args, 'Whichcasts', None)
+    prop1.whichcasts = ','.join(whichcasts) if isinstance(
+        whichcasts, list) else whichcasts
+    prop1.ice_dt = str(getattr(run_args, 'TimeStep', 'daily'))
+    prop1.dailyavg = getattr(run_args, 'DailyAverage', False)
+    prop1.model_source = model_source.model_source(prop1.ofs)
+
+    do_iceskill(prop1, None)
+
+
+def main(argv=None):
+    """Entry point for the do-iceskill console script."""
+    parser = argparse.ArgumentParser(prog='do-iceskill')
     parser.add_argument(
         '-o',
         '--ofs',
-        required=True,
+        required=False,
+        default=None,
         help="""Choose from the list in the
         ofs_extents/ folder, you can also create your own shapefile,
         add it at the ofs_extents/ folder and call it here""", )
     parser.add_argument(
         '-p',
         '--path',
-        required=True,
+        required=False,
         help='Inventory File path where ofs_extents folder is located', )
     parser.add_argument(
         '-s',
         '--StartDate_full',
-        required=True,
+        required=False,
         help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g.'2023-01-01T12:34:00Z'",
     )
     parser.add_argument(
         '-e',
         '--EndDate_full',
-        required=True,
+        required=False,
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'",
     )
     parser.add_argument(
         '-ws',
         '--Whichcasts',
-        required=True,
+        required=False,
         help="whichcasts: 'nowcast', 'forecast_b', 'hindcast'", )
     parser.add_argument(
         '-da',
@@ -1271,17 +1290,14 @@ if __name__ == '__main__':
     parser.add_argument(
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.ofs.lower()
-    prop1.path = args.path
-    prop1.config_file = args.config
-    prop1.start_date_full = args.StartDate_full
-    prop1.end_date_full = args.EndDate_full
-    prop1.whichcasts = args.Whichcasts
-    prop1.ice_dt = args.TimeStep
-    prop1.dailyavg = args.DailyAverage
-    prop1.model_source = model_source.model_source(prop1.ofs)
+    if args.ofs is None:
+        from ofs_skill.visualization import create_gui_ice
+        create_gui_ice.create_gui_ice(runner=_run_pipeline)
+    else:
+        _run_pipeline(args)
 
-    do_iceskill(prop1, None)
+
+if __name__ == '__main__':
+    main()

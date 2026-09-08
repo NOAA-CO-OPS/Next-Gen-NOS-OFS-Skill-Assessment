@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from ofs_skill.obs_retrieval.utils import load_api_keys
+from ofs_skill.obs_retrieval.utils import load_api_keys, redact_secrets
 
 
 @pytest.fixture()
@@ -99,3 +99,18 @@ def test_value_with_equals_sign(tmp_path, monkeypatch):
     load_api_keys(str(conf))
 
     assert os.environ['TOKEN'] == 'abc=def=ghi'
+
+
+def test_redact_secrets_masks_usgs_pat(monkeypatch):
+    """Exception text must not leak API_USGS_PAT into logs."""
+    monkeypatch.setenv('API_USGS_PAT', 'super-secret-token')
+    msg = 'request failed with Authorization=super-secret-token'
+    assert 'super-secret-token' not in redact_secrets(msg)
+    assert '***' in redact_secrets(msg)
+
+
+def test_redact_secrets_skips_short_and_none(monkeypatch):
+    """Short secrets are not redacted; None passes through."""
+    monkeypatch.setenv('API_USGS_PAT', 'short')  # len 5 < 6
+    assert redact_secrets('has short in it') == 'has short in it'
+    assert redact_secrets(None) is None

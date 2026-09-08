@@ -36,17 +36,19 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env install pre-commit setup info clean
+.PHONY: help env install pre-commit setup info clean ci-local
 
 ## Show available targets
 help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  setup        Full developer setup (env + install + pre-commit)"
+	@echo "  setup        Full developer setup (env + install + pre-commit + pre-push)"
 	@echo "  env          Create or update the conda environment"
 	@echo "  install      Install the package in development mode (pip install -e .[dev])"
-	@echo "  pre-commit   Install pre-commit git hooks"
+	@echo "  pre-commit   Install pre-commit and pre-push git hooks"
+	@echo "  ci-local     Fast local gate (ruff==0.7.0 + detect-secrets + smoke tests)"
+	@echo "               Windows: Git Bash, or: powershell -File scripts/ci-local.ps1"
 	@echo "  info         Show detected solver and environment info"
 	@echo "  clean        Remove the conda environment"
 	@echo ""
@@ -67,13 +69,19 @@ endif
 install:
 	$(CONDA_RUN) pip install -e ".[dev]"
 
-## Install pre-commit hooks into the local .git/hooks
+## Install pre-commit and pre-push hooks into the local .git/hooks
 pre-commit:
-	$(CONDA_RUN) pre-commit install
+	$(CONDA_RUN) pre-commit install --install-hooks
+	$(CONDA_RUN) pre-commit install --hook-type pre-push
+
+## Fast local gate used by pre-push (not the full CI matrix)
+ci-local:
+	$(CONDA_RUN) bash scripts/ci-local.sh
 
 ## Full developer setup: create/update env, install package, install hooks
 setup: env install pre-commit
 	@echo "Setup complete. Activate with: conda activate $(ENV_NAME)"
+	@echo "Before pushing, hooks run make ci-local (or: make ci-local)."
 
 ## Show which solver (mamba/conda) was detected
 info:

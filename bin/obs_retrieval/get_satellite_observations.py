@@ -1192,7 +1192,7 @@ def parameter_dir_validation(prop, dir_params, logger):
         prop.path = dir_params['home']
 
     # prop.path validation
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
 
     if not os.path.exists(ofs_extents_path):
         error_message = (
@@ -1489,7 +1489,8 @@ if __name__ == '__main__':
     prop1.ofs = args.ofs.lower()
     prop1.path = args.path
     prop1.config_file = args.config
-    prop1.ofs_extents_path = r'' + prop1.path + 'ofs_extents' + '/'
+    prop1.ofs_extents_path = utils.resolve_asset_path(
+        prop1.path, 'ofs_extents') + '/'
     prop1.start_date_full = args.StartDate_full
     prop1.end_date_full = args.EndDate_full
 

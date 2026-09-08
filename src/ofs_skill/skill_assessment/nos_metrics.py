@@ -49,16 +49,12 @@ _DEFAULT_THRESHOLDS = {
 def rmse(predicted, observed):
     """Root mean squared error (NaN-safe).
 
-    Parameters
-    ----------
-    predicted : array-like
-        Model predictions.
-    observed : array-like
-        Observations.
+    Args:
+        predicted: Array-like model predictions.
+        observed: Array-like observations (same shape).
 
-    Returns
-    -------
-    float
+    Returns:
+        RMSE as a float.
     """
     return float(np.sqrt(np.nanmean((np.asarray(predicted) - np.asarray(observed))**2)))
 
@@ -66,16 +62,11 @@ def rmse(predicted, observed):
 def pearson_r(predicted, observed):
     """Pearson correlation coefficient.
 
-    Parameters
-    ----------
-    predicted : array-like
-        Model predictions.
-    observed : array-like
-        Observations.
+    Args:
+        predicted: Array-like model predictions.
+        observed: Array-like observations.
 
-    Returns
-    -------
-    float
+    Returns:
         Correlation coefficient, or NaN if undefined.
     """
     r, _ = pearsonr(observed, predicted)
@@ -85,27 +76,23 @@ def pearson_r(predicted, observed):
 def mean_bias(errors):
     """Mean of an error array, ignoring NaNs.
 
-    Parameters
-    ----------
-    errors : array-like
+    Args:
+        errors: Array-like signed errors (e.g. model - obs).
 
-    Returns
-    -------
-    float
+    Returns:
+        Mean bias as a float.
     """
     return float(np.nanmean(errors))
 
 
 def standard_deviation(errors):
-    """Standard deviation of an error array (ddof=0), ignoring NaNs.
+    """Standard deviation of an error array (``ddof=0``), ignoring NaNs.
 
-    Parameters
-    ----------
-    errors : array-like
+    Args:
+        errors: Array-like signed errors.
 
-    Returns
-    -------
-    float
+    Returns:
+        Population standard deviation as a float.
     """
     return float(np.nanstd(errors))
 

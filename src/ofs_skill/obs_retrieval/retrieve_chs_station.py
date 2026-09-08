@@ -16,7 +16,6 @@ Created on Wed Feb  4 19:51:12 2026
 
 from datetime import datetime, timedelta
 from logging import Logger
-from typing import Optional
 
 import pandas as pd
 from searvey._chs_api import fetch_chs_station
@@ -51,7 +50,7 @@ _CURRENT_SENSOR_PAIRS = [('wcs1', 'wcd1'), ('wcs2', 'wcd2')]
 _ACCEPTED_QC_CODES = {'1', '2'}
 
 
-def _get_chs_uuid(identifier: str, logger: Logger) -> Optional[str]:
+def _get_chs_uuid(identifier: str, logger: Logger) -> str | None:
     """Helper to resolve a CHS station code to its UUID."""
     if is_chs_uuid(identifier):
         return identifier
@@ -224,7 +223,7 @@ def retrieve_chs_station(
     id_number: str,
     variable: str,
     logger: Logger,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Retrieve CHS station data using SEARVEY library."""
     chs_uuid = _get_chs_uuid(id_number, logger)
     if not chs_uuid:

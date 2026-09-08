@@ -48,6 +48,7 @@ import json
 import logging
 import logging.config
 import os
+import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,15 @@ from ofs_skill.model_processing import (
 )
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.visualization import plotting_2d
+
+
+def _format_run_command():
+    """Reconstruct the exact python command used to launch this run.
+
+    Echoing this into the log lets us debug a user's run from the log file
+    alone, without asking them to also send the command they invoked.
+    """
+    return shlex.join([sys.executable, *sys.argv])
 
 
 def validate_and_initialize_parameters(prop):
@@ -88,6 +98,7 @@ def validate_and_initialize_parameters(prop):
 
     logging.config.fileConfig(log_config_file)
     logger = logging.getLogger('root')
+    logger.info('Run command: %s', _format_run_command())
     logger.info('Using config %s', config_file)
     logger.info('Using log config %s', log_config_file)
     logger.info('--- Starting Visualization Process ---')
@@ -118,7 +129,7 @@ def validate_and_initialize_parameters(prop):
     if prop.path is None:
         prop.path = dir_params['home']
 
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     if not os.path.exists(ofs_extents_path):
         logger.error('ofs_extents/ folder is not found at %s. Abort!',prop.path)
         sys.exit(-1)
@@ -213,10 +224,10 @@ def validate_and_initialize_parameters(prop):
                     'all necessary model files '
                     'are present! Check final '
                     'time series for accuracy.')
-    # Now check if satellite files exist
-    datapath = Path(os.path.join(prop.path,'data',
-                           'observations',
-                           '2d_satellite',))
+    # Now check if satellite files exist. Use the satellite path already
+    # resolved from the configured data_dir (honors a custom/absolute
+    # data_dir) rather than rebuilding it with a hardcoded 'data'.
+    datapath = Path(prop.data_observations_2d_satellite_path)
     l3cfile = Path(os.path.join(datapath,
                            str(prop.ofs+'.nc')))
     sportfile = Path(os.path.join(datapath,
@@ -381,99 +392,57 @@ def json_to_numpy(files,logger):
     return x,y,z_all
 
 
-if __name__ == '__main__':
-
-    # Parse (optional and required) command line arguments
-    parser = argparse.ArgumentParser(
-        prog='python write_obs_ctlfile.py',
-        usage='%(prog)s',
-        description='ofs write Station Control File',
-    )
-    parser.add_argument(
-        '-o',
-        '--ofs',
-        required=True,
-        help='Choose from the list on the ofs_Extents folder, you can also '
-             'create your own shapefile, add it top the ofs_Extents folder and '
-             'call it here',
-    )
-    parser.add_argument('-p', '--path', required=True,
-                        help='Path to /opt/ofs_dps')
-    parser.add_argument('-s', '--StartDate_full', required=True,
-        help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
-    parser.add_argument('-e', '--EndDate_full', required=True,
-        help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
-    parser.add_argument('-ws', '--whichcasts', required=True,
-        help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
-    parser.add_argument('-c', '--config',
-        help='Path to configuration file (default: conf/ofs_dps.conf)')
-
-    args = parser.parse_args()
-
+def _run_pipeline(run_args):
+    """Execute the 2D visualization pipeline with the given arguments."""
     prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.ofs.lower()
-    prop1.path = args.path
-    prop1.ofs_extents_path = r'' + prop1.path + 'ofs_extents' + '/'
-    prop1.start_date_full = args.StartDate_full
-    prop1.end_date_full = args.EndDate_full
-    prop1.whichcasts = args.whichcasts.lower()
-    prop1.model_source = get_model_source(args.ofs)
-    prop1.ofsfiletype='fields' #hardcoding - 2d always uses fields
-    prop1.config_file = args.config
+    ofs = getattr(run_args, 'OFS', None) or getattr(run_args, 'ofs', None)
+    prop1.ofs = ofs.lower()
+    prop1.path = getattr(run_args, 'Path', None) or getattr(run_args, 'path', None)
+    prop1.ofs_extents_path = utils.resolve_asset_path(
+        prop1.path, 'ofs_extents') + '/'
+    prop1.start_date_full = run_args.StartDate_full
+    prop1.end_date_full = run_args.EndDate_full
+    whichcasts = getattr(run_args, 'Whichcasts', None) or getattr(
+        run_args, 'whichcasts', None)
+    prop1.whichcasts = ','.join(whichcasts) if isinstance(
+        whichcasts, list) else whichcasts.lower()
+    prop1.model_source = get_model_source(ofs)
+    prop1.ofsfiletype = 'fields'  # hardcoding - 2d always uses fields
+    prop1.config_file = getattr(run_args, 'config', None)
 
-    ''' Set up paths & assign to prop1, do date validation '''
     prop1, logger = validate_and_initialize_parameters(prop1)
 
     for i in prop1.whichcasts:
         try:
             prop1.whichcast = i.lower()
-            logger.info('Running scripts for whichcast = %s',i)
+            logger.info('Running scripts for whichcast = %s', i)
 
-            dir_list = list_of_dir(prop1,
-                                  logger)
-            list_files = list_of_files(prop1,
-                                      dir_list,
-                                      logger)
-            logger.info('Calling intake_scisa from '
+            dir_list = list_of_dir(prop1, logger)
+            list_files = list_of_files(prop1, dir_list, logger)
+            logger.info('Calling intake_scisa from create_2dplot.')
+            model = intake_model(list_files, prop1, logger)
+            logger.info('Returned from call to intake_scisa inside of '
                         'create_2dplot.')
-            model = intake_model(list_files,
-                                prop1,
-                                logger)
-            logger.info('Returned from call to '
-                        'intake_scisa inside of '
-                        'create_2dplot.')
-            satdatapath = Path(os.path.join(prop1.path,'data',
-                                   'observations',
-                                   '2d_satellite',))
-            # Lazy import to avoid pyinterp dependency issues on Windows
+            satdatapath = Path(prop1.data_observations_2d_satellite_path)
             from ofs_skill.visualization import processing_2d
 
             if prop1.l3c:
                 l3cfile = Path(os.path.join(satdatapath,
-                                   str(prop1.ofs+'.nc')))
-                processing_2d.parse_leaflet_json(model,
-                                                 l3cfile,
-                                                 prop1)
+                                            str(prop1.ofs + '.nc')))
+                processing_2d.parse_leaflet_json(model, l3cfile, prop1)
             if prop1.sport:
                 sportfile = Path(os.path.join(satdatapath,
-                                         str(prop1.ofs + \
-                                             '_sport.nc')))
-                processing_2d.parse_leaflet_json(model,
-                                                 sportfile,
-                                                 prop1)
-            # If no satellite data available, still process model data
+                                              str(prop1.ofs + '_sport.nc')))
+                processing_2d.parse_leaflet_json(model, sportfile, prop1)
             if not prop1.l3c and not prop1.sport:
                 logger.info('Processing model data only (no satellite data).')
-                processing_2d.parse_leaflet_json(model,
-                                                 None,
-                                                 prop1)
+                processing_2d.parse_leaflet_json(model, None, prop1)
             try:
-                plotting_2d.plot_2d(prop1,logger)
+                plotting_2d.plot_2d(prop1, logger)
             except Exception as e:
                 logger.error('Problem calling plotting_2d.plot_2d - ABORT')
                 logger.error('Exception: %s', e)
 
-            # Generate static offline maps if enabled
             conf_settings = utils.Utils().read_config_section(
                 'settings', logger,
             )
@@ -482,8 +451,11 @@ if __name__ == '__main__':
             ).lower() in ('true', '1', 'yes')
             if static_plots:
                 logger.info('Generating static 2D offline maps...')
+                # Honor the configured data_dir/visual_dir rather than a
+                # hardcoded 'data'. visuals_2d_station_path is already
+                # resolved from dir_params in validate_and_initialize_parameters.
                 visual_2d_dir = os.path.join(
-                    prop1.path, 'data', 'visual', '2d',
+                    prop1.visuals_2d_station_path, '2d',
                 )
                 plotting_2d.generate_offline_maps(
                     prop1.data_model_2d_json_path,
@@ -494,8 +466,6 @@ if __name__ == '__main__':
             logger.info('Finished 2D processing for %s', prop1.whichcast)
 
         except SystemExit as e:
-            # Catch sys.exit() calls from list_of_files, intake_model,
-            # and other functions in the call chain that still use sys.exit
             logger.error('2D processing for %s exited prematurely '
                          '(exit code %s). Continuing to next whichcast.',
                          i, e.code)
@@ -505,3 +475,43 @@ if __name__ == '__main__':
             logger.error('Exception: %s', e)
 
     logger.info('Finished create_2d_plot.py!')
+
+
+def main(argv=None):
+    """Entry point for the create-2dplot console script."""
+    parser = argparse.ArgumentParser(
+        prog='create-2dplot',
+        usage='%(prog)s',
+        description='2D skill assessment visualization',
+    )
+    parser.add_argument(
+        '-o',
+        '--ofs',
+        required=False,
+        default=None,
+        help='Choose from the list on the ofs_Extents folder, you can also '
+             'create your own shapefile, add it top the ofs_Extents folder and '
+             'call it here',
+    )
+    parser.add_argument('-p', '--path', required=False,
+                        help='Path to /opt/ofs_dps')
+    parser.add_argument('-s', '--StartDate_full', required=False,
+        help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
+    parser.add_argument('-e', '--EndDate_full', required=False,
+        help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
+    parser.add_argument('-ws', '--whichcasts', required=False,
+        help="whichcast: 'Nowcast', 'Forecast_A', 'Forecast_B'", )
+    parser.add_argument('-c', '--config',
+        help='Path to configuration file (default: conf/ofs_dps.conf)')
+
+    args = parser.parse_args(argv)
+
+    if args.ofs is None:
+        from ofs_skill.visualization import create_gui_2d
+        create_gui_2d.create_gui_2d(runner=_run_pipeline)
+    else:
+        _run_pipeline(args)
+
+
+if __name__ == '__main__':
+    main()

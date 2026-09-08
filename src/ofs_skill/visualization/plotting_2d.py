@@ -126,21 +126,30 @@ def list_of_json_files(filepath, prop1, logger):
         raise FileNotFoundError(f'No files found in directory {filepath}')
     spltstr = []
     files = []
+    # Ignore daily avg and ssh, sss, ssu, and ssv for model files;
+    # ignore daily avg, latency, current grids, and HF radar for obs files
+    model_excludes = ('daily', 'SPoRT', 'ssh', 'sss', 'ssu', 'ssv')
+    obs_excludes = ('model', 'daily', 'lnc', 'mag', 'dir', 'hfradar')
+    start_date = datetime.strptime(prop1.start_date_full, '%Y%m%d-%H:%M:%S')
+    end_date = datetime.strptime(prop1.end_date_full, '%Y%m%d-%H:%M:%S')
     for af_name in all_files:
-        if 'model' in af_name and 'daily' not in af_name and 'SPoRT' not in af_name and 'ssh' not in af_name and 'sss' not in af_name and 'ssu' not in af_name and 'ssv' not in af_name:  # ignore daily avg and ssh, sss, ssu, and ssv
-            if ((datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') >=
-                  datetime.strptime(prop1.start_date_full, '%Y%m%d-%H:%M:%S'))
-                and (datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') <=
-                      datetime.strptime(prop1.end_date_full, '%Y%m%d-%H:%M:%S'))
+        if not af_name.endswith('.json'):
+            continue
+        try:
+            file_date = datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz')
+        except (ValueError, IndexError):
+            # Files that don't follow the {ofs}_{YYYYMMDD-HHz}_... pattern
+            # (e.g. HF radar JSONs with date-only tags) can share these dirs
+            logger.debug('Skipping 2D JSON with non-standard name: %s', af_name)
+            continue
+        if 'model' in af_name and not any(s in af_name for s in model_excludes):
+            if (start_date <= file_date <= end_date
                 and af_name.split('_')[0] == prop1.ofs
                 and prop1.whichcast in af_name.split('.')[-2]):
                 spltstr.append(af_name.split('_')[1])  # Date info for sorting
                 files.append(filepath + '/' + af_name)  # Full file path
-        elif 'model' not in af_name and 'daily' not in af_name and 'lnc' not in af_name and 'mag' not in af_name and 'dir' not in af_name:  # ignore daily avg
-            if ((datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') >=
-                  datetime.strptime(prop1.start_date_full, '%Y%m%d-%H:%M:%S'))
-                and (datetime.strptime(af_name.split('_')[1], '%Y%m%d-%Hz') <=
-                      datetime.strptime(prop1.end_date_full, '%Y%m%d-%H:%M:%S'))
+        elif not any(s in af_name for s in obs_excludes):
+            if (start_date <= file_date <= end_date
                 and af_name.split('_')[0] == prop1.ofs):
                 spltstr.append(af_name.split('_')[1])  # Date info for sorting
                 files.append(filepath + '/' + af_name)  # Full file path
@@ -639,6 +648,53 @@ def load_json_grid(filepath: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return lons, lats, data
 
 
+# Natural Earth's "physical/land" polygons treat the Great Lakes as land --
+# lakes are published as a separate feature rather than being cut out of
+# land. Painting cfeature.LAND over the data therefore hides the entire
+# domain of every Great Lakes OFS. This mirrors the same misclassification
+# processing_2d already works around on the data side, where the global
+# land mask is skipped for GREAT_LAKES_OFS.
+#
+# Cached because the difference costs ~0.5 s and the shapes never change
+# within a process. ``False`` records a failed attempt so we do not retry
+# the geometry work (or a Natural Earth download) on every figure.
+_LAND_WITHOUT_LAKES: object = None
+
+
+def _land_without_lakes(logger: Logger):
+    """Natural Earth land polygons with the lake interiors removed.
+
+    Returns a cartopy feature safe to paint over gridded data, or ``None``
+    if the geometry could not be built -- callers must then draw land
+    *beneath* the data rather than over it, so a missing Natural Earth
+    shapefile degrades into slight land bleed-through instead of a blank
+    map.
+    """
+    global _LAND_WITHOUT_LAKES
+    if _LAND_WITHOUT_LAKES is not None:
+        return _LAND_WITHOUT_LAKES or None
+
+    try:
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+        from shapely.ops import unary_union
+
+        land = unary_union(list(cfeature.LAND.geometries()))
+        lakes = unary_union(list(cfeature.LAKES.geometries()))
+        _LAND_WITHOUT_LAKES = cfeature.ShapelyFeature(
+            [land.difference(lakes)], ccrs.PlateCarree(),
+        )
+    except Exception:  # pragma: no cover - depends on Natural Earth assets
+        logger.warning(
+            'Could not build the land-without-lakes mask; drawing land '
+            'beneath the data instead. Coastal land may show slight '
+            'interpolation bleed-through.', exc_info=True,
+        )
+        _LAND_WITHOUT_LAKES = False
+        return None
+    return _LAND_WITHOUT_LAKES
+
+
 def plot_2d_scalar_map(
     lons: np.ndarray,
     lats: np.ndarray,
@@ -688,8 +744,12 @@ def plot_2d_scalar_map(
         vmin=vmin, vmax=vmax,
         transform=ccrs.PlateCarree(), zorder=1,
     )
-    # Land on top of data to cover interpolation bleed-through
-    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=2)
+    # Land on top of data to cover interpolation bleed-through, with the
+    # lakes cut out so Great Lakes domains are not painted over entirely.
+    land = _land_without_lakes(logger)
+    ax.add_feature(land if land is not None else cfeature.LAND,
+                   facecolor='lightgray',
+                   zorder=2 if land is not None else 0)
     ax.coastlines(resolution='10m', zorder=3)
     ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=3)
     ax.gridlines(draw_labels=True)
@@ -750,8 +810,12 @@ def plot_2d_current_quiver_map(
         transform=ccrs.PlateCarree(),
         scale=15, width=0.002, color='black', alpha=0.7, zorder=2,
     )
-    # Land on top of data to cover interpolation bleed-through
-    ax.add_feature(cfeature.LAND, facecolor='lightgray', zorder=3)
+    # Land on top of data to cover interpolation bleed-through, with the
+    # lakes cut out so Great Lakes domains are not painted over entirely.
+    land = _land_without_lakes(logger)
+    ax.add_feature(land if land is not None else cfeature.LAND,
+                   facecolor='lightgray',
+                   zorder=3 if land is not None else 0)
     ax.coastlines(resolution='10m', zorder=4)
     ax.add_feature(cfeature.STATES, linewidth=0.5, zorder=4)
     ax.gridlines(draw_labels=True)

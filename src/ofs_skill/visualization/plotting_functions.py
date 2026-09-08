@@ -39,6 +39,7 @@ from ofs_skill.obs_retrieval.currents_bins_override import (
     split_virtual_currents_id,
 )
 from ofs_skill.obs_retrieval.retrieve_t_and_c_station import get_station_depth
+from ofs_skill.obs_retrieval.utils import resolve_asset_path
 from ofs_skill.skill_assessment import nos_metrics
 
 if TYPE_CHECKING:
@@ -124,9 +125,11 @@ def get_title(
     Generate formatted HTML plot title with station and run metadata.
 
     Creates a multi-line title including OFS name, station information,
-    node ID, NWS ID (for CO-OPS water-level / temp / salt stations), and
-    date range. For currents plots (``name_var == 'cu'``) the title also
-    carries an ``Obs depth / Model depth`` annotation produced by
+    node ID (with the station-to-node great-circle distance in km when
+    it can be resolved from the ctl files), NWS ID (for CO-OPS
+    water-level / temp / salt stations), and date range. For currents
+    plots (``name_var == 'cu'``) the title also carries an
+    ``Obs depth / Model depth`` annotation produced by
     :func:`_build_depth_line`, with a ``Bin NN`` prefix for CO-OPS
     per-bin ADCP virtual IDs.
 
@@ -187,6 +190,11 @@ def get_title(
     else:
         nwsline = ''
 
+    # Station-to-node distance, shown inline right after the node ID so
+    # readers can judge how representative the matched node is.
+    node_dist = build_node_dist_fragment(
+        prop, station_id, name_var, logger
+    )
     # Currents plots get an explicit "Obs depth | Model depth" annotation.
     # For CO-OPS ADCP virtual IDs (``{parent}_b{NN}``) a "Bin NN" prefix
     # is included. Obs depth is resolved from the CO-OPS bins endpoint
@@ -205,11 +213,31 @@ def get_title(
             f'{station_id[2]} station:&nbsp;{station_id[1]} ' \
             f'({station_id[0]})<br>' \
             f'OFS:&nbsp;{prop.ofs.upper()}&nbsp;&nbsp;&nbsp;Node ID:&nbsp;' \
-            f'{node}&nbsp;&nbsp;&nbsp;' \
+            f'{node}{node_dist}&nbsp;&nbsp;&nbsp;' \
             + nwsline + depth_line + adcp_type_line + \
             f'<br>From:&nbsp;{start_date}' \
             f'&nbsp;&nbsp;&nbsp;To:&nbsp;' \
             f'{end_date}<b>'
+
+
+def count_title_lines(title: str) -> int:
+    """Return the number of visual lines an HTML plot title occupies.
+
+    Titles built by :func:`get_title` use ``<br>`` tags to break the
+    header, station, OFS/node, optional depth and ADCP-type lines, and
+    the date range onto separate rows. Currents (``cu``) titles can add
+    up to two extra rows (a depth line and an ADCP-type line) that
+    scalar titles never have, so a fixed top margin tuned for scalar
+    plots is too small and the title collides with the horizontal
+    legend (issue #221).
+
+    A title with N ``<br>`` separators spans N+1 lines. Empty inserts
+    (e.g. an omitted depth/ADCP line) never emit a ``<br>``, so this
+    count reflects the rows actually rendered.
+    """
+    if not title:
+        return 1
+    return title.count('<br>') + 1
 
 
 _COOPS_MDAPI_URL = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/'
@@ -222,6 +250,12 @@ _MODEL_CTL_CACHE: dict[str, dict[str, float]] = {}
 #   {ctl_path: {station_id: (depth_m, hfb_m, mounting_type)}}.
 _OBS_CTL_CACHE: dict[str, dict[str, tuple[float, float, str]]] = {}
 
+# Cache station <-> node coordinate parses used for the title's
+# station-to-node distance annotation:
+#   {ctl_path: {station_id: (lat_deg, lon_deg)}}.
+_MODEL_CTL_COORD_CACHE: dict[str, dict[str, tuple[float, float]]] = {}
+_OBS_CTL_COORD_CACHE: dict[str, dict[str, tuple[float, float]]] = {}
+
 
 def _invalidate_obs_station_depths(ctl_path: str) -> None:
     """Drop a cached parse so the next read re-parses the file on disk.
@@ -231,9 +265,11 @@ def _invalidate_obs_station_depths(ctl_path: str) -> None:
     side-looking ADCPs; without this hook a plotting call that
     happened earlier in the same process would otherwise read the
     pre-backpatch (depth=0) entry from cache and produce a misleading
-    plot title.
+    plot title. The coordinate cache for the same file is dropped too,
+    so every cached parse of a rewritten obs ctl is refreshed together.
     """
     _OBS_CTL_CACHE.pop(ctl_path, None)
+    _OBS_CTL_COORD_CACHE.pop(ctl_path, None)
 
 
 def _load_obs_station_depths(
@@ -325,6 +361,176 @@ def _load_model_station_depths(ctl_path: str) -> dict[str, float]:
         pass
     _MODEL_CTL_CACHE[ctl_path] = result
     return result
+
+
+# Spherical-Earth radius shared with the station-matching layer in
+# ``model_processing.indexing`` (which derives its km-per-degree constant
+# from the same sphere), so the title annotation agrees with the
+# ``station_match_max_dist_km`` cutoff.
+_EARTH_RADIUS_KM = 6371.0
+
+
+def _haversine_km(
+    lat1: float, lon1: float, lat2: float, lon2: float,
+) -> float:
+    """Great-circle distance in km between two lat/lon points (degrees).
+
+    Uses the haversine formula on a spherical Earth
+    (R = ``_EARTH_RADIUS_KM``) — the same approximation the
+    station-matching layer in ``model_processing.indexing`` uses, so the
+    title annotation agrees with the matching cutoff. The formula is
+    periodic in longitude, so mixed -180..180 / 0..360 conventions are
+    handled without explicit wrapping.
+    """
+    lat1_r, lon1_r, lat2_r, lon2_r = map(
+        np.radians, (lat1, lon1, lat2, lon2))
+    hav = (
+        np.sin((lat2_r - lat1_r) / 2.0) ** 2
+        + np.cos(lat1_r) * np.cos(lat2_r)
+        * np.sin((lon2_r - lon1_r) / 2.0) ** 2
+    )
+    return float(2.0 * _EARTH_RADIUS_KM * np.arcsin(np.sqrt(hav)))
+
+
+def _load_model_node_coords(ctl_path: str) -> dict[str, tuple[float, float]]:
+    """Return ``{station_id: (node_lat, node_lon)}`` from a model ctl file.
+
+    The model control file format is::
+
+        <node> <layer> <lat> <lon> <station_id> <shift/depth>
+
+    where ``<lat>``/``<lon>`` are the coordinates of the matched model
+    node (fields files) or model station point (stations files) — every
+    writer branch in ``write_ofs_ctlfile`` emits the model-side
+    coordinates, not the observation station's. Missing files or
+    malformed lines yield an empty dict.
+    """
+    if ctl_path in _MODEL_CTL_COORD_CACHE:
+        return _MODEL_CTL_COORD_CACHE[ctl_path]
+    result: dict[str, tuple[float, float]] = {}
+    # Only successful reads are cached: a missing file or transient read
+    # error must not pin an empty parse for the rest of the process (the
+    # ctl file may appear, or the read succeed, on a later call).
+    if not os.path.isfile(ctl_path):
+        return result
+    try:
+        with open(ctl_path, encoding='utf-8') as fh:
+            for raw in fh:
+                parts = raw.split()
+                if len(parts) < 6:
+                    continue
+                try:
+                    result[parts[-2]] = (float(parts[2]), float(parts[3]))
+                except (TypeError, ValueError):
+                    continue
+    except OSError:
+        return result
+    _MODEL_CTL_COORD_CACHE[ctl_path] = result
+    return result
+
+
+def _load_obs_station_coords(ctl_path: str) -> dict[str, tuple[float, float]]:
+    """Return ``{station_id: (lat, lon)}`` parsed from an obs station.ctl.
+
+    Station control file format (2 lines per station)::
+
+        <id> <source_id> "<name>"
+          <lat> <lon> <zdiff> <obs_depth> <shift> [...]
+
+    Missing files or malformed entries yield an empty dict.
+    """
+    if ctl_path in _OBS_CTL_COORD_CACHE:
+        return _OBS_CTL_COORD_CACHE[ctl_path]
+    result: dict[str, tuple[float, float]] = {}
+    # Only successful reads are cached (see _load_model_node_coords).
+    if not os.path.isfile(ctl_path):
+        return result
+    try:
+        with open(ctl_path, encoding='utf-8') as fh:
+            lines = fh.read().splitlines()
+        for i in range(0, len(lines) - 1, 2):
+            head = lines[i].split()
+            coord = lines[i + 1].split()
+            if not head or len(coord) < 2:
+                continue
+            try:
+                result[head[0]] = (float(coord[0]), float(coord[1]))
+            except (TypeError, ValueError):
+                continue
+    except OSError:
+        return result
+    _OBS_CTL_COORD_CACHE[ctl_path] = result
+    return result
+
+
+def get_station_node_distance_km(
+    prop, station_id_val: str, name_var: str,
+) -> float | None:
+    """Great-circle distance (km) between a station and its matched node.
+
+    Resolves the observation station's coordinates from
+    ``{ofs}_{name_var}_station.ctl`` and the matched model node/point
+    coordinates from ``{ofs}_{name_var}_model_station.ctl`` /
+    ``{ofs}_{name_var}_model.ctl`` in ``prop.control_files_path``, then
+    returns the haversine distance between them. The ctl file matching
+    ``prop.ofsfiletype`` is preferred, so in a directory where both a
+    stations and a fields run have written ctl files the distance always
+    reflects the current run's matched location. Returns ``None`` when
+    either coordinate cannot be resolved (missing/blank ctl file,
+    unknown station ID) so callers can silently omit the annotation.
+    """
+    ctl_dir = getattr(prop, 'control_files_path', None)
+    if not ctl_dir:
+        return None
+
+    obs_coords = _load_obs_station_coords(
+        os.path.join(ctl_dir, f'{prop.ofs}_{name_var}_station.ctl')
+    ).get(str(station_id_val))
+    if obs_coords is None:
+        return None
+
+    # _model_station.ctl is written by stations runs, _model.ctl by fields
+    # runs; try the current run's filetype first.
+    if getattr(prop, 'ofsfiletype', '') == 'fields':
+        suffixes = ('_model.ctl', '_model_station.ctl')
+    else:
+        suffixes = ('_model_station.ctl', '_model.ctl')
+
+    node_coords = None
+    for suffix in suffixes:
+        node_coords = _load_model_node_coords(
+            os.path.join(ctl_dir, f'{prop.ofs}_{name_var}{suffix}')
+        ).get(str(station_id_val))
+        if node_coords is not None:
+            break
+    if node_coords is None:
+        return None
+
+    return _haversine_km(*obs_coords, *node_coords)
+
+
+def build_node_dist_fragment(prop, station_id, name_var, logger) -> str:
+    """HTML fragment with the station-to-node distance for plot titles.
+
+    Rendered inline right after the node ID, e.g.
+    ``&nbsp;(2.3&nbsp;km&nbsp;from&nbsp;station)``. Distances that
+    round to zero at one decimal are shown as ``<0.1 km``. Returns an
+    empty string when the distance cannot be resolved — the title must
+    never break over a missing annotation (hence the deliberately broad
+    catch below).
+    """
+    try:
+        dist_km = get_station_node_distance_km(
+            prop, station_id[0], name_var)
+    except Exception as ex:  # pylint: disable=broad-exception-caught
+        logger.error(
+            'Exception resolving station-to-node distance for %s: %s',
+            station_id[0], ex)
+        return ''
+    if dist_km is None:
+        return ''
+    dist_str = '&lt;0.1' if dist_km < 0.05 else f'{dist_km:.1f}'
+    return f'&nbsp;({dist_str}&nbsp;km&nbsp;from&nbsp;station)'
 
 
 def _lookup_obs_depth(
@@ -529,9 +735,10 @@ def get_error_range(
 
     Notes:
         - Creates error_ranges.csv in conf/ if missing
-        - File location: {prop.path}/conf/error_ranges.csv
+        - File location: {prop.path}/conf/error_ranges.csv if present,
+          otherwise conf/error_ranges.csv in the installation directory
     """
-    config_path = os.path.join(prop.path, 'conf', 'error_ranges.csv')
+    config_path = resolve_asset_path(prop.path, 'conf', 'error_ranges.csv')
 
     # Delegate to the canonical implementation
     X1, X2 = nos_metrics.get_error_threshold(name_var, config_path)
