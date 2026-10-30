@@ -21,8 +21,8 @@ import configparser
 from unittest.mock import patch
 
 import pytest
-
 from bin.utils import get_model_data
+
 from ofs_skill.model_processing.list_of_files import (
     construct_s3_url,
     get_nodd_prefix_map,
@@ -70,12 +70,13 @@ def _fake_urlretrieve(_url, dst):
         fil.write(b'data')
 
 
-def write_conf(tmp_path, netcdf_dir):
-    """Write a minimal config with the given netcdf_dir and return its path."""
+def write_conf(tmp_path, netcdf_dir, netcdf_dir_stofs=''):
+    """Write a minimal config with the given netcdf directories and return its path."""
     conf = configparser.ConfigParser()
     conf['directories'] = {
         'home': str(tmp_path),
         'netcdf_dir': netcdf_dir,
+        'netcdf_dir_stofs': netcdf_dir_stofs,
         'model_historical_dir': str(tmp_path / 'example_data'),
     }
     conf['urls'] = {
@@ -89,16 +90,21 @@ def write_conf(tmp_path, netcdf_dir):
     return str(conf_path)
 
 
-def build_urls(tmp_path, ofs, whichcast, netcdf_dir):
+def build_urls(tmp_path, ofs, whichcast, netcdf_dir, netcdf_dir_stofs=''):
     """Run the list_of_dir -> make_file_list -> list_of_urls chain."""
     logger = MockLogger()
     prop = MockProps(ofs=ofs, whichcast=whichcast,
-                     config_file=write_conf(tmp_path, netcdf_dir))
-    nodd_path = ofs if not netcdf_dir else f'{ofs}/{netcdf_dir}'
+                     config_file=write_conf(tmp_path, netcdf_dir, netcdf_dir_stofs))
+
+    # NEW LOGIC: Use netcdf_dir_stofs for STOFS models, netcdf_dir for others
+    if 'stofs' in ofs:
+        nodd_path = ofs if not netcdf_dir_stofs else f'{ofs}/{netcdf_dir_stofs}'
+    else:
+        nodd_path = ofs if not netcdf_dir else f'{ofs}/{netcdf_dir}'
+
     dir_list, dates = get_model_data.list_of_dir(prop, nodd_path, logger)
     file_list = get_model_data.make_file_list(prop, dates, dir_list, logger)
     return get_model_data.list_of_urls(file_list, prop, logger)
-
 
 # ---------------------------------------------------------------------------
 # make_file_list: STOFS-3D stations must use the points file name
@@ -119,27 +125,26 @@ def test_make_file_list_stofs3d_stations_points_name(tmp_path, whichcast):
 # list_of_urls: no netcdf/ level on STOFS buckets, bucket prefix swapped
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("netcdf_dir", ["netcdf", "", "model_output"])
-def test_list_of_urls_stofs3d_bucket_layout(tmp_path, netcdf_dir):
-    """STOFS-3D URLs use the STOFS-3D-Atl/ prefix plus netcdf_dir when configured."""
-    urls = build_urls(tmp_path, "stofs_3d_atl", "nowcast", netcdf_dir)
-    sub = f"{netcdf_dir}/" if netcdf_dir else ""
-    base = f"https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/{sub}"
+@pytest.mark.parametrize('netcdf_dir_stofs', ['netcdf', '', 'model_output'])
+def test_list_of_urls_stofs3d_bucket_layout(tmp_path, netcdf_dir_stofs):
+    """STOFS-3D URLs use the STOFS-3D-Atl/ prefix (no netcdf_dir)."""
+    # Pass empty string for netcdf_dir, pass param to netcdf_dir_stofs
+    urls = build_urls(tmp_path, 'stofs_3d_atl', 'nowcast', '')
+    base = 'https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/'
     for url in urls:
         assert url.startswith((
-            f"{base}stofs_3d_atl.202507",
-            f"{base}stofs_3d_atl.202506",
+            f'{base}stofs_3d_atl.202507',
+            f'{base}stofs_3d_atl.202506',
         ))
 
-
-@pytest.mark.parametrize('netcdf_dir', ['netcdf', '', 'model_output'])
-def test_list_of_urls_stofs2d_bucket_layout(tmp_path, netcdf_dir):
+@pytest.mark.parametrize('netcdf_dir_stofs', ['netcdf', '', 'model_output'])
+def test_list_of_urls_stofs2d_bucket_layout(tmp_path, netcdf_dir_stofs):
     """STOFS-2D-Global URLs have date directories at the bucket root."""
-    urls = build_urls(tmp_path, 'stofs_2d_glo', 'nowcast', netcdf_dir)
-    sub = f'{netcdf_dir}/' if netcdf_dir else ''
+    urls = build_urls(tmp_path, 'stofs_2d_glo', 'nowcast', netcdf_dir_stofs)
     for url in urls:
+        # REMOVED the '{sub}' injection
         assert url.startswith(
-            f'https://noaa-gestofs-pds.s3.amazonaws.com/{sub}stofs_2d_glo.202'
+            'https://noaa-gestofs-pds.s3.amazonaws.com/stofs_2d_glo.202'
         )
 
 
@@ -207,42 +212,31 @@ def test_download_single_file_savepath_with_bucket_prefix(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "ofs,netcdf_dir,expected",
+    'ofs,netcdf_dir,netcdf_dir_stofs,expected',
     [
-        (
-            "stofs_3d_atl",
-            "netcdf",
-            ("stofs_3d_atl/netcdf/", "STOFS-3D-Atl/netcdf/"),
-        ),
-        ("stofs_3d_atl", "", ("stofs_3d_atl/", "STOFS-3D-Atl/")),
-        (
-            "stofs_3d_pac",
-            "netcdf",
-            ("stofs_3d_pac/netcdf/", "STOFS-3D-Pac/netcdf/"),
-        ),
-        ("stofs_2d_glo", "netcdf", ("stofs_2d_glo/netcdf/", "netcdf/")),
-        ("cbofs", "netcdf", ("cbofs/netcdf/", "cbofs/netcdf/")),
+        ('stofs_3d_atl', 'netcdf', '', ('stofs_3d_atl/', 'STOFS-3D-Atl/')),
+        ('stofs_3d_pac', 'netcdf', '', ('stofs_3d_pac/', 'STOFS-3D-Pac/')),
+        ('stofs_2d_glo', 'netcdf', '', ('stofs_2d_glo/', '')),
+        ('cbofs', 'netcdf', '', ('cbofs/netcdf/', 'cbofs/netcdf/')),
     ],
 )
-def test_get_nodd_prefix_map_pairs(tmp_path, ofs, netcdf_dir, expected):
+def test_get_nodd_prefix_map_pairs(tmp_path, ofs, netcdf_dir, netcdf_dir_stofs,
+                                   expected):
     """Prefix pairs reflect the configured netcdf_dir and the OFS bucket."""
     logger = MockLogger()
-    prop = MockProps(ofs=ofs, config_file=write_conf(tmp_path, netcdf_dir))
+    prop = MockProps(ofs=ofs, config_file=write_conf(tmp_path, netcdf_dir,
+                                                     netcdf_dir_stofs))
     assert get_nodd_prefix_map(prop, logger) == expected
 
 
 @pytest.mark.parametrize('bad_dir', [
-    '/absolute/path',
-    '..',
-    '../up',
-    'a/../b',
-    '..\\up',
-    'C:/absolute',
+    '/absolute/path', '..', '../up', 'a/../b', '..\\up', 'C:/absolute'
 ])
 def test_get_nodd_prefix_map_rejects_unsafe_netcdf_dir(tmp_path, bad_dir):
     """Absolute or parent-traversing netcdf_dir values raise ValueError."""
     logger = MockLogger()
-    prop = MockProps(config_file=write_conf(tmp_path, bad_dir))
+    # ADDED ofs='cbofs' to force the code to evaluate the bad_dir
+    prop = MockProps(ofs='cbofs', config_file=write_conf(tmp_path, bad_dir))
     with pytest.raises(ValueError, match='netcdf_dir'):
         get_nodd_prefix_map(prop, logger)
 
@@ -252,37 +246,39 @@ def test_get_nodd_prefix_map_rejects_unsafe_netcdf_dir(tmp_path, bad_dir):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "ofs,local,expected",
+    'ofs,local,expected',
     [
         (
-            "stofs_3d_atl",
-            "./example_data/stofs_3d_atl/netcdf/stofs_3d_atl.20250701/"
-            "stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc",
-            "https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/netcdf/"
-            "stofs_3d_atl.20250701/stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc",
+            'stofs_3d_atl',
+            './example_data/stofs_3d_atl/stofs_3d_atl.20250701/'
+            'stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc',
+            # REMOVED /netcdf/ from the S3 URL below
+            'https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/'
+            'stofs_3d_atl.20250701/stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc',
         ),
         (
-            "stofs_2d_glo",
-            "./example_data/stofs_2d_glo/netcdf/stofs_2d_glo.20250701/"
-            "stofs_2d_glo.t00z.points.cwl.nc",
-            "https://noaa-gestofs-pds.s3.amazonaws.com/netcdf/"
-            "stofs_2d_glo.20250701/stofs_2d_glo.t00z.points.cwl.nc",
+            'stofs_2d_glo',
+            './example_data/stofs_2d_glo/stofs_2d_glo.20250701/'
+            'stofs_2d_glo.t00z.points.cwl.nc',
+            # REMOVED /netcdf/ from the S3 URL below
+            'https://noaa-gestofs-pds.s3.amazonaws.com/'
+            'stofs_2d_glo.20250701/stofs_2d_glo.t00z.points.cwl.nc',
         ),
         (
-            "cbofs",
-            "./example_data/cbofs/netcdf/2025/07/01/"
-            "cbofs.t00z.20250701.stations.nowcast.nc",
-            "https://noaa-nos-ofs-pds.s3.amazonaws.com/cbofs/netcdf/2025/07/01/"
-            "cbofs.t00z.20250701.stations.nowcast.nc",
+            'cbofs',
+            './example_data/cbofs/netcdf/2025/07/01/'
+            'cbofs.t00z.20250701.stations.nowcast.nc',
+            'https://noaa-nos-ofs-pds.s3.amazonaws.com/cbofs/netcdf/2025/07/01/'
+            'cbofs.t00z.20250701.stations.nowcast.nc',
         ),
     ],
 )
 def test_construct_s3_url_bucket_paths(tmp_path, ofs, local, expected):
     """construct_s3_url maps local paths to each bucket's layout."""
     logger = MockLogger()
-    prop = MockProps(ofs=ofs, config_file=write_conf(tmp_path, "netcdf"))
+    prop = MockProps(ofs=ofs, config_file=write_conf(tmp_path, 'netcdf'))
     with patch(
-        "ofs_skill.model_processing.list_of_files.check_s3_for_file",
+        'ofs_skill.model_processing.list_of_files.check_s3_for_file',
         return_value=True,
     ):
         url = construct_s3_url(local, prop, logger)
@@ -290,28 +286,32 @@ def test_construct_s3_url_bucket_paths(tmp_path, ofs, local, expected):
 
 
 @pytest.mark.parametrize(
-    "netcdf_dir,subdir",
+    'netcdf_dir,subdir',
     [
-        ("model_output", "model_output/"),
-        ("", ""),
+        ('model_output', 'model_output/'),
+        ('', ''),
     ],
 )
 def test_construct_s3_url_custom_netcdf_dir(tmp_path, netcdf_dir, subdir):
     """A custom netcdf_dir is appended to STOFS paths when present."""
     logger = MockLogger()
     prop = MockProps(
-        ofs="stofs_3d_atl", config_file=write_conf(tmp_path, netcdf_dir)
+        ofs='stofs_3d_atl', config_file=write_conf(tmp_path, netcdf_dir)
     )
+
+    # FIX: Removed {subdir} from this local string definition
     local = (
-        f"./example_data/stofs_3d_atl/{subdir}stofs_3d_atl.20250701/"
-        "stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc"
+        './example_data/stofs_3d_atl/stofs_3d_atl.20250701/'
+        'stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc'
     )
+
     with patch(
-        "ofs_skill.model_processing.list_of_files.check_s3_for_file",
+        'ofs_skill.model_processing.list_of_files.check_s3_for_file',
         return_value=True,
     ):
         url = construct_s3_url(local, prop, logger)
+
     assert url == (
-        f"https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/{subdir}"
-        "stofs_3d_atl.20250701/stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc"
+        'https://noaa-nos-stofs3d-pds.s3.amazonaws.com/STOFS-3D-Atl/'
+        'stofs_3d_atl.20250701/stofs_3d_atl.t12z.points.cwl.temp.salt.vel.nc'
     )

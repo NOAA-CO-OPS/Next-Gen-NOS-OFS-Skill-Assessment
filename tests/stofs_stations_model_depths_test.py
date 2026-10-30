@@ -221,7 +221,8 @@ def test_write_ofs_ctlfile_stofs_stations(tmp_path, variable, name_var):
     conf.write_text(
         '[directories]\n'
         f'model_historical_dir={tmp_path.as_posix()}\n'
-        'netcdf_dir=netcdf\n',
+        'netcdf_dir=netcdf\n'
+        'netcdf_dir_stofs=netcdf\n',
         encoding='utf-8',
     )
 

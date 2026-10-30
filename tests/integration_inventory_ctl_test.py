@@ -92,7 +92,12 @@ def test_write_obs_ctlfile_usgs_temp_with_mocks(tmp_path, logger):
     cache_manifest.record_artifact(
         str(inv_path),
         cache_manifest.inventory_signature(
-            'cbofs', '20240101', '20240102', 'usgs'),
+            'cbofs',
+            '2023-12-29T00:00:00Z', # Updated to match start_date_full
+            '2024-01-05T00:00:00Z', # Updated to match end_date_full
+            'usgs',
+            None                    # Added currents_bins_csv matching write_obs_ctlfile
+        ),
         str(control),
     )
 
@@ -103,6 +108,8 @@ def test_write_obs_ctlfile_usgs_temp_with_mocks(tmp_path, logger):
         write_obs_ctlfile(
             start_date='20240101',
             end_date='20240102',
+            start_date_full='2023-12-29T00:00:00Z',
+            end_date_full='2024-01-05T00:00:00Z',
             datum='MLLW',
             path=str(tmp_path),
             ofs='cbofs',

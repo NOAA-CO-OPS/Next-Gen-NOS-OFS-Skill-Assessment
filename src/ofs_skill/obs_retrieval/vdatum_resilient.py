@@ -54,7 +54,7 @@ from pathlib import Path
 import pyproj
 import pyproj.datadir
 import pyproj.exceptions
-from coastalmodeling_vdatum import vdatum
+from coastalmodeling_vdatum import _path, vdatum
 
 _logger = logging.getLogger(__name__)
 
@@ -285,16 +285,25 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
                 f'{vd_to!r}.') from exc
         except pyproj.exceptions.ProjError as exc:
             last_exc = exc
+            # Extract just the last line of the exception to drop the long pipeline
+            short_exc = str(exc).split('\n')[-1].strip()
+
             log.warning(
                 'vdatum.convert ProjError (attempt %d/%d) for %s->%s'
                 '%s: %s',
                 attempt + 1, _RETRY_ATTEMPTS, vd_from, vd_to,
                 f' station {station_id}' if station_id else '',
-                exc,
+                short_exc,
             )
             if attempt < _RETRY_ATTEMPTS - 1:
                 _sleep_with_backoff(attempt)
-
+    # 1. Define original_paths and swap the URLs at the same indentation level as the try block
+    original_paths = {}
+    for attr in dir(_path):
+        val = getattr(_path, attr)
+        if isinstance(val, str) and '/' in val:
+            original_paths[attr] = val
+            setattr(_path, attr, val.split('/')[-1])
     # One last attempt with online=False -- the grid may already be in
     # PROJ's user-writable cache from a prior successful fetch.
     try:
@@ -302,17 +311,34 @@ def convert(vd_from, vd_to, lat, lon, z, *, epoch=None,
             'vdatum.convert online=True exhausted; falling back to '
             'online=False (cached grids only)%s',
             f' for station {station_id}' if station_id else '')
-        return vdatum.convert(vd_from, vd_to, lat, lon, z,
-                              online=False, epoch=epoch)
+
+        # Capture the result instead of returning immediately
+        result = vdatum.convert(vd_from, vd_to, lat, lon, z,
+                                online=False, epoch=epoch)
+
+        # Log success if no exception was raised
+        log.info(
+            'Successfully loaded local vertical datum grids for %s->%s%s.',
+            vd_from, vd_to,
+            f' station {station_id}' if station_id else ''
+        )
+
+        return result
     except pyproj.exceptions.ProjError as exc:
+        short_exc = str(exc).split('\n')[-1].strip()
         log.error(
             'vdatum.convert permanently failed for %s->%s%s. Check that '
             'PROJ_NETWORK=ON. %s Underlying error: %s',
             vd_from, vd_to,
             f' station {station_id}' if station_id else '',
-            grid_remediation(), exc,
+            grid_remediation(), short_exc,
         )
         raise exc from last_exc
+    finally:
+        # Restore the absolute URLs so subsequent online=True attempts
+        # on other stations or threads behave normally
+        for attr, val in original_paths.items():
+            setattr(_path, attr, val)
 
 
 # ---------------------------------------------------------------------------

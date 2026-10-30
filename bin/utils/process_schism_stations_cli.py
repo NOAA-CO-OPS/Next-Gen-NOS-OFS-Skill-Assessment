@@ -366,13 +366,12 @@ def process_schism_stations(prop, logger):
     None.
 
     '''
-    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        logger = utils.init_root_logger(
-            prop.path, utils.Utils(_conf).get_config_file())
+        logger = utils.init_root_logger(base_path=prop.path, config_file=getattr(prop, 'config_file', None))
 
     logger.info('--- Start loading SCHISM station output text files ---')
     # Directory parameters
+    _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Parameter validation
     parameter_validation(prop, dir_params, logger)

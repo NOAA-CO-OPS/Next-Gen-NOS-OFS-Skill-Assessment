@@ -51,6 +51,7 @@ skill_dir=skill
 model_historical_dir=%(home)s/example_data
 model_obc_dir=%(home)s/example_data
 netcdf_dir=netcdf
+netcdf_dir_stofs=
 1d_node_dir=1d_node
 horizon_model_dir=horizon_model
 model_icesave_dir=2D_ice_cover

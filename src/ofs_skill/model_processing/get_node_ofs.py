@@ -27,7 +27,11 @@ from ofs_skill.model_processing import do_horizon_skill_utils
 
 # Use new package imports - import directly from modules to avoid circular import
 from ofs_skill.model_processing.get_datum_offset import get_datum_offset as get_datum_offset_func
-from ofs_skill.model_processing.get_datum_offset import report_datums
+from ofs_skill.model_processing.get_datum_offset import (
+    read_vdatum_from_bucket,
+    report_datums,
+    validate_secofs_local_vdatum,
+)
 from ofs_skill.model_processing.intake_scisa import intake_model
 from ofs_skill.model_processing.list_of_files import list_of_dir
 from ofs_skill.model_processing.list_of_files import list_of_files as list_of_files_func
@@ -979,8 +983,12 @@ def _precompute_scalar_data(prop, model, ofs_ctlfile, model_var, logger):
     actual_var = model_var
     if prop.model_source == 'roms' and model_var == 'salinity':
         actual_var = 'salt'
-    if prop.model_source == 'schism' and model_var == 'temp':
-        actual_var = 'temperature'
+    if prop.model_source == 'schism' and model_var in ('temp', 'temperature'):
+        # STOFS files name the variable 'temperature'; SECOFS stations
+        # files keep SCHISM's native 'temp'. Probe instead of assuming,
+        # or the KeyError drops the variable to per-station extraction.
+        actual_var = 'temperature' if 'temperature' in model.variables \
+            else 'temp'
     if prop.model_source == 'schism' and model_var == 'zeta':
         actual_var = 'elevation' if prop.ofsfiletype == 'fields' else model_var
 
@@ -1013,7 +1021,7 @@ def _precompute_scalar_data(prop, model, ofs_ctlfile, model_var, logger):
     elif prop.model_source == 'schism':
         if 'stofs' in prop.ofs and model_var in ('temp', 'temperature'):
             scalar_data = _batch_extract(
-                model, 'temperature', indices, None, logger=logger, **extract_kwargs
+                model, actual_var, indices, None, logger=logger, **extract_kwargs
             )
         elif is_2d:
             scalar_data = _batch_extract(
@@ -1682,6 +1690,54 @@ def parameter_validation(prop, dir_params, logger):
             prop.var_list = ['water_level']
             # I think we can alter its state here, but maybe there's a reason not to?
 
+    # Run upfront datum validation if water level is requested
+    wl_requested = (
+        'water_level' in getattr(prop, 'var_list', [])
+        or getattr(prop, 'name_var', None) == 'wl'
+        or getattr(prop, 'var_name', None) == 'water_level'
+    )
+
+    if wl_requested:
+        if prop.ofs == 'secofs':
+            # Validates local_vdatum path and secofs_vdatums.nc presence upfront
+            validate_secofs_local_vdatum(prop, logger)
+        elif prop.ofs not in ['loofs2'] and 'stofs' not in prop.ofs:
+            # Probe S3 bucket with local fallback for non-SECOFS/non-STOFS models
+            vdatums = read_vdatum_from_bucket(prop, logger)
+            if isinstance(vdatums, int) and vdatums == -9990:
+                logger.warning(
+                    'No vdatum file could be loaded for %s (S3 and local fallback both failed). '
+                    'Model water levels will not receive a datum shift, but continuing extraction.',
+                    prop.ofs,
+                )
+            elif not isinstance(vdatums, int):
+                try:
+                    if 'l' not in prop.ofs[0]:
+                        _ = vdatums[f'{prop.datum.lower()}tomsl']
+                    else:
+                        if prop.datum.lower() != 'lwd':
+                            _ = vdatums[f'{prop.datum.lower()}tolwd']
+                    logger.info('Specified datum %s available for model conversion!', prop.datum)
+                except KeyError:
+                    if prop.ofs.lower() not in ['loofs', 'lmhofs', 'leofs', 'lsofs', 'loofs2']:
+                        logger.warning(
+                            'Datum %s is NOT available for %s! Switching to MLLW...',
+                            prop.datum,
+                            prop.ofs,
+                        )
+                        prop.datum = 'MLLW'
+                    else:
+                        logger.warning(
+                            'Datum %s is NOT available for %s! Switching to IGLD...',
+                            prop.datum,
+                            prop.ofs,
+                        )
+                        prop.datum = 'IGLD85'
+                finally:
+                    if hasattr(vdatums, 'close'):
+                        vdatums.close()
+        elif 'stofs' in prop.ofs:
+            logger.info('STOFS models convert dynamically; no grid vdatum file required.')
 
 def read_custom_filenames(filepath):
     """Read a custom model-file list, one path/URL per line.
@@ -1967,9 +2023,14 @@ def get_node_ofs(prop, logger, model_dataset=None):
     # Parameter validation
     parameter_validation(prop, dir_params, logger)
 
+    netcdf_dir = dir_params.get('netcdf_dir_stofs', dir_params['netcdf_dir']) if 'stofs' in prop.ofs else dir_params['netcdf_dir']
+
     prop.model_path = os.path.join(
-        dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir']
+        dir_params['model_historical_dir'],
+        prop.ofs,
+        netcdf_dir
     )
+
     prop.model_path = Path(prop.model_path).as_posix()
 
     prop.control_files_path = os.path.join(prop.path, dir_params['control_files_dir'])
@@ -2090,11 +2151,13 @@ def get_node_ofs(prop, logger, model_dataset=None):
             serieskey = _merge_filename_key(filepath, serieskey, logger)
         serieskey.to_csv(filepath, index_label='DateTime')
     except KeyError:
-        logger.error(
-            'No filename variable found in the lazy loaded model '
-            'dataset! Cannot write filename time series key. '
-            'Moving on...'
-        )
+        # Expected whenever a cached/pre-loaded dataset is reused: the
+        # filename bookkeeping variable is dropped during resampling,
+        # and the key CSV was already written on the first load. Not an
+        # error — at ERROR level this repeated on every extraction pass.
+        logger.info('No filename variable in the model dataset (typical '
+                    'for a cached/pre-loaded dataset); skipping the '
+                    'filename time series key.')
     except Exception as ex:
         logger.error('Error writing model time series filename ' 'key: %s', ex)
 
@@ -2147,7 +2210,6 @@ def get_node_ofs(prop, logger, model_dataset=None):
                         'must be present! Exiting...',
                         control_file,
                     )
-                    sys.exit()
 
                 if os.path.isfile(control_file) and os.path.getsize(control_file) > 0: # Gets size of obs ctl file!
                     ofs_ctlfile = ofs_ctlfile_extract(

@@ -50,6 +50,70 @@ from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_ex
 # before it use Correction1. The secofs_vdatums.nc file is stamped this date.
 SECOFS_MODELZERO_TRANSITION = '04/30/2026'
 
+# Paths already reported missing by ``_open_secofs_vdatums``. The open is
+# attempted once per station, so without this the same missing-file error
+# (plus, previously, a multi-frame HDF5-DIAG stack) repeats hundreds of
+# times and buries the rest of the log.
+_MISSING_VDATUM_REPORTED = set()
+
+
+def _open_secofs_vdatums(corrections_path: str,
+                         logger: Logger) -> xr.Dataset | None:
+    """Open ``secofs_vdatums.nc`` next to the SECOFS corrections file.
+
+    Checks existence before handing the path to xarray: probing a
+    missing file through the netCDF engines emits an HDF5-DIAG stack
+    per attempt, and this path runs once per station. The first missing
+    occurrence logs at ERROR, repeats at DEBUG.
+    """
+    head, _ = os.path.split(corrections_path)
+    nc_path = os.path.join(head, 'secofs_vdatums.nc')
+    if not os.path.isfile(nc_path):
+        if nc_path in _MISSING_VDATUM_REPORTED:
+            logger.debug('SECOFS vdatum file %s still missing.', nc_path)
+        else:
+            _MISSING_VDATUM_REPORTED.add(nc_path)
+            logger.error(
+                'Error finding SECOFS vdatum file -- datum conversion '
+                'is not possible. Expected %s (from the local_vdatum '
+                'path in ofs_dps.conf).', nc_path)
+        return None
+    try:
+        return xr.open_dataset(nc_path)
+    except (OSError, ValueError) as ex:
+        logger.error('Error reading SECOFS vdatum file %s (%s) -- datum '
+                     'conversion is not possible.', nc_path, ex)
+        return None
+
+
+def validate_secofs_local_vdatum(prop: Any, logger: Logger) -> None:
+    """Abort at parameter-validation time if SECOFS datum data is absent.
+
+    The generic datum availability check probes the vdatum file on the
+    NODD bucket, but SECOFS water-level conversion reads a *local*
+    corrections file (``directories.local_vdatum`` in ofs_dps.conf)
+    with ``secofs_vdatums.nc`` beside it as fallback. A wrong path (for
+    example the example config's ``Add_path_to`` placeholder) otherwise
+    surfaces only hours into the run, once per station, as ``-9994``
+    offsets — and the run still completes with unusable water levels.
+    """
+    dir_params = utils.Utils(
+        getattr(prop, 'config_file', None)).read_config_section(
+            'directories', logger)
+    path = dir_params.get('local_vdatum')
+    if not path:
+        logger.error(
+            'No local_vdatum path configured in ofs_dps.conf. SECOFS '
+            'water level datum conversion is not possible. Abort!')
+        raise SystemExit(1)
+    head, _ = os.path.split(path)
+    nc_path = os.path.join(head, 'secofs_vdatums.nc')
+    if not os.path.isfile(path) and not os.path.isfile(nc_path):
+        logger.error(
+            'SECOFS datum data not found: neither the corrections file '
+            '(%s) nor the vdatum grid (%s) exists. Check the '
+            'local_vdatum path in ofs_dps.conf. Abort!', path, nc_path)
+        raise SystemExit(1)
 
 def _close_quietly(obj: Any) -> None:
     """Close an xarray dataset (or anything with ``close``) without raising.
@@ -360,9 +424,11 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> xr.Dataset | int:
         try:
             vdatums = xr.open_dataset(s3.open(url, 'rb'))
             return vdatums
-        except FileNotFoundError:
-            logger.warning('vdatum file not found on S3 bucket, trying '
-                           'local fallback...')
+        except Exception as e_s3:
+            logger.warning(
+                'Could not load vdatum file from S3 bucket (%s), trying local fallback...',
+                e_s3,
+            )
             try:
                 _conf = getattr(prop, 'config_file', None)
                 dir_params = utils.Utils(
@@ -372,16 +438,17 @@ def read_vdatum_from_bucket(prop: Any, logger: Logger) -> xr.Dataset | int:
                 if not local_vdatum:
                     logger.warning(
                         'No local_vdatum path configured in ofs_dps.conf. '
-                        'Cannot fall back to local vdatum file.')
+                        'Cannot fall back to local vdatum file.'
+                    )
                     return -9990
                 vdatums = xr.open_dataset(local_vdatum)
                 logger.warning(
                     'Using local vdatum fallback: %s — verify this file '
-                    'is current with the S3 version.', local_vdatum)
+                    'is current with the S3 version.', local_vdatum
+                )
                 return vdatums
             except Exception as e_x:
-                logger.warning(
-                    'Local vdatum fallback failed: %s', e_x)
+                logger.warning('Local vdatum fallback failed: %s', e_x)
                 return -9990
         except Exception as e_x:
             logger.error('Error opening vdatums on the fly!')
@@ -492,7 +559,6 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 id_number)
     vdatums: Any = None
     ds_wcofs: Any = None
-    datum_field: Any = None
     try:
         if prop.ofs not in ['secofs', 'loofs2'] and 'stofs' not in prop.ofs:
             vdatums = read_vdatum_from_bucket(prop, logger)
@@ -518,22 +584,13 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
             path = dir_params.get('local_vdatum')
             if not path:
                 logger.error('No local_vdatum path configured in ofs_dps.conf. '
-                             'Cannot do SECOFS datum conversion.')
+                            'Cannot do SECOFS datum conversion.')
                 return -9994
             if prop.datum.lower() == 'mllw':
                 try:
                     vdatums = pd.read_csv(path, sep='\t')
-                    # Find ID number in dataframe.
-                    # Key the correction column on the assessment
-                    # window's start, not on whatever start date this
-                    # extraction pass happens to carry -- a continuation
-                    # run extracts only a tail span, and letting the tail
-                    # pick its own column would put the head and tail of
-                    # one series on two different model zeros.
-                    reference_date = (
-                        getattr(prop, 'datum_reference_date', None)
-                        or prop.start_date_full)
-                    if datetime.strptime(reference_date,'%Y-%m-%dT%H:%M:%SZ')\
+                    # Find ID number in dataframe
+                    if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
                         > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
                         corr_col = 'Correction2'
                     else:
@@ -541,24 +598,12 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     wl_corr = float(vdatums[vdatums['ID']==int(id_number)][corr_col])*-1
                     return wl_corr
                 except (FileNotFoundError, TypeError, UnicodeDecodeError, ValueError):
-                    filename = 'secofs_vdatums.nc'
-                    head, tail = os.path.split(path)
-                    path = os.path.join(head, filename)
-                    try:
-                        vdatums = xr.open_dataset(path)
-                    except FileNotFoundError:
-                        logger.error('Error finding SECOFS vdatum file -- datum conversion '
-                                      'is not possible.')
+                    vdatums = _open_secofs_vdatums(path, logger)
+                    if vdatums is None:
                         return -9994
             else:
-                filename = 'secofs_vdatums.nc'
-                head, tail = os.path.split(path)
-                path = os.path.join(head, filename)
-                try:
-                    vdatums = xr.open_dataset(path)
-                except FileNotFoundError:
-                    logger.error('Error finding SECOFS vdatum file -- datum conversion '
-                                  'is not possible.')
+                vdatums = _open_secofs_vdatums(path, logger)
+                if vdatums is None:
                     return -9994
 
         # Set water levels to user-specified datum
@@ -638,7 +683,7 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 return -9991
 
         return _apply_datum_offset(prop, node, model, id_number, datum_field,
-                                   vdatums, logger)
+                                vdatums, logger)
     finally:
         # Release the vdatum grid file handles now. Left open, these
         # h5netcdf/h5py-backed datasets are finalized during interpreter
@@ -710,7 +755,7 @@ def _apply_datum_offset(prop: Any, node: int, model: xr.Dataset,
                 if prop.ofs == 'stofs_3d_atl':
                     nativedatum = 'navd88'
                 elif prop.ofs == 'stofs_3d_pac':
-                    nativedatum = 'msl'
+                    nativedatum = 'lmsl'
                 elif prop.ofs == 'loofs2':
                     nativedatum = 'LWD'
                 dummyval = 10.0
@@ -830,7 +875,7 @@ def _apply_datum_offset(prop: Any, node: int, model: xr.Dataset,
                     )
                     if np.isinf(z):
                         logger.error('VDatum conversion returned inf for an ADCIRC node. This is probably because the node location is outside of the coastalmodeling_vdatum tool coverage area. Check if the coordinates are correct. Returning -9993.')
-                        return -9993\
+                        return -9993
                     # Note the sign convention here, so that we can subtract
                     # the datum_offset from the model water levels to get to the target datum,
                     # as is consistent with other models.

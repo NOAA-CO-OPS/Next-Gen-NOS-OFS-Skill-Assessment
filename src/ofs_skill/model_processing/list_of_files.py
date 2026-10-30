@@ -61,7 +61,7 @@ def get_nodd_prefix_map(prop: Any, logger: Logger) -> tuple[str, str]:
     """
     _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
-    netcdf_dir = dir_params['netcdf_dir']
+    netcdf_dir = dir_params.get('netcdf_dir_stofs', dir_params['netcdf_dir']) if 'stofs' in prop.ofs else dir_params['netcdf_dir']
     posix_dir = PurePosixPath(netcdf_dir)
     windows_dir = PureWindowsPath(netcdf_dir)
     if (
@@ -633,9 +633,14 @@ def list_of_dir(prop: Any, logger: Logger) -> list[str]:
             logger.info('Trying backup dir...')
             dir_params = utils.Utils(_conf).read_config_section(
                 'directories', logger)
+
+            netcdf_dir = dir_params.get('netcdf_dir_stofs', dir_params['netcdf_dir']) if 'stofs' in prop.ofs else dir_params['netcdf_dir']
+
             backup_model_path = os.path.join(
                 dir_params['model_historical_dir_backup'],
-                prop.ofs, dir_params['netcdf_dir'])
+                prop.ofs,
+                netcdf_dir
+            )
 
             # Construct backup directory path based on OFS type and date
             if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac', 'stofs_2d_glo'):

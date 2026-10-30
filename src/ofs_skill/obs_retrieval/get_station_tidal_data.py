@@ -31,8 +31,11 @@ def _convert_tidal_datum(tidal_data, used_datum, requested_datum, lat, lon, logg
                 'than the requested datum (%s)! Converting...',
                 used_datum, requested_datum)
     dummy_val = 10
+    used_datum_temp = used_datum
+    if used_datum_temp.upper() == 'MSL':
+        used_datum_temp = 'lmsl'
     _,_,z = vdatum_resilient.convert(
-        used_datum.lower(),
+        used_datum_temp.lower(),
         requested_datum.lower(),
         lat,
         lon,

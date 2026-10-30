@@ -260,7 +260,7 @@ def make_skill_maps(
     tick_values_mb = [-mb_cap, -target_error, 0, target_error, mb_cap]
     tick_labels_mb = [label_min_mb, f'-Target ({-target_error})', '0', f'+Target ({target_error})', label_max_mb]
 
-    # ========================================================
+# ========================================================
     #                     BUILD COMBINED FIGURE
     # ========================================================
 
@@ -306,7 +306,8 @@ def make_skill_maps(
         return template
 
     def build_view(color_col, size_col, custom_cols, coloraxis_id):
-        fig_tmp = px.scatter_mapbox(
+        # Changed from px.scatter_mapbox to px.scatter_map
+        fig_tmp = px.scatter_map(
             df, lat='Y ', lon='X ', color=color_col, hover_name='ID ',
             custom_data=custom_cols, size=size_col,
         )
@@ -314,7 +315,8 @@ def make_skill_maps(
         trace.marker.coloraxis = coloraxis_id
         trace.hovertemplate = build_hovertemplate(custom_cols)
 
-        outline = px.scatter_mapbox(
+        # Changed from px.scatter_mapbox to px.scatter_map
+        outline = px.scatter_map(
             df, lat='Y ', lon='X ', hover_name='ID ', size=size_col,
         ).data[0]
         outline.marker.color = 'black'
@@ -354,8 +356,10 @@ def make_skill_maps(
 
     # 5. Layout & Dropdown Menus
     fig.update_layout(
-        mapbox_style='carto-positron',
-        mapbox=dict(zoom=zoom_level, center=dict(lat=center_lat, lon=center_lon)),
+        # Changed mapbox_style to map_style
+        map_style='carto-positron',
+        # Changed mapbox=dict(...) to map=dict(...)
+        map=dict(zoom=zoom_level, center=dict(lat=center_lat, lon=center_lon)),
         height=map_height,
         width=map_width,
         title=dict(text=plottitle_rmse, font=dict(color='black', size=22), x=0.5),

@@ -806,8 +806,8 @@ def _fetch_and_format_station(
 
 
 def _create_station_ctl_file(
-    ctl_file_path, prop, datum, start_date, end_date, path, ofs,
-    stationowner, var_list, logger, config_file=None,
+    ctl_file_path, prop, datum, start_date, end_date, start_date_full,
+    end_date_full, path, ofs, stationowner, var_list, logger, config_file=None,
 ):
     """Build the station ctl files and return the parsed result for
     ``ctl_file_path``.
@@ -833,7 +833,7 @@ def _create_station_ctl_file(
                 'This might take a couple of minutes'
             )
             write_obs_ctlfile(
-                start_date, end_date, datum, path, ofs,
+                start_date, end_date, start_date_full, end_date_full, datum, path, ofs,
                 stationowner, var_list, logger,
                 currents_bins_csv=getattr(
                     prop, 'currents_bins_csv', None),
@@ -957,8 +957,9 @@ def _process_variable_obs(
                     control_files_path)
     else:
         read_station_ctl_file = _create_station_ctl_file(
-            ctl_file_path, prop, datum, start_date, end_date, path, ofs,
-            stationowner, var_list, logger, config_file=config_file,
+            ctl_file_path, prop, datum, start_date, end_date, start_date_full,
+            end_date_full, path, ofs, stationowner, var_list, logger,
+            config_file=config_file,
         )
         # Record the signature for every station ctl the build produced, so
         # sibling variables reuse them and a same-parameter rerun stays fast.

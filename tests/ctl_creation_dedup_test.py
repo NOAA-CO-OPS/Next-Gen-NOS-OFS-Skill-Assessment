@@ -41,9 +41,9 @@ class TestCtlCreationDedup:
         build_calls = []
         parsed_sentinel = (['station'], ['metadata'])
 
-        def fake_write_obs_ctlfile(start_date, end_date, datum, path, ofs,
-                                   stationowner, var_list, logger_arg,
-                                   **kwargs):
+        def fake_write_obs_ctlfile(start_date, end_date, start_date_full, end_date_full,
+                           datum, path, ofs, stationowner, var_list, logger_arg,
+                           **kwargs):
             build_calls.append(threading.get_ident())
             # Widen the window a real multi-minute build would occupy so
             # a missing lock reliably produces duplicate builds.
@@ -62,10 +62,11 @@ class TestCtlCreationDedup:
             return gso._create_station_ctl_file(
                 str(ctl_file_path),
                 SimpleNamespace(currents_bins_csv=None),
-                'MLLW', '20260301', '20260308', str(tmp_path), 'cbofs',
+                'MLLW', '20260301', '20260308',
+                '2026030100', '2026030823',  # Added arguments
+                str(tmp_path), 'cbofs',
                 ['co-ops'],
-                ['water_level', 'water_temperature', 'salinity',
-                 'currents'],
+                ['water_level', 'water_temperature', 'salinity', 'currents'],
                 logger,
             )
 
@@ -98,7 +99,9 @@ class TestCtlCreationDedup:
 
         result = gso._create_station_ctl_file(
             str(ctl_file_path), SimpleNamespace(currents_bins_csv=None),
-            'MLLW', '20260301', '20260308', str(tmp_path), 'cbofs',
+            'MLLW', '20260301', '20260308',
+            '2026030100', '2026030823',      # Added arguments
+            str(tmp_path), 'cbofs',
             ['co-ops'], ['water_level'], logger,
         )
         assert result == parsed_sentinel

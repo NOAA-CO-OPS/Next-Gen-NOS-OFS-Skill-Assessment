@@ -42,7 +42,7 @@ def _resolve_ofs_shapefile(ofs_name, shape_path):
     return candidate
 
 
-def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None):
+def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None, config_file=None):
     """Find overlap between two OFS shapefiles, write it as a new shapefile,
     then retrieve an observation-station inventory inside the overlap."""
 
@@ -52,7 +52,7 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
 
     logger.info('--- Starting Overlap Process ---')
 
-    dir_params = Utils().read_config_section('directories', logger)
+    dir_params = Utils(config_file).read_config_section('directories', logger)
 
     # --- Shapefile Setup & Loading ---
     # The two inputs are shipped assets, so they resolve from the working
@@ -97,11 +97,11 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
     intersection_gdf = gpd.overlay(gdf1, gdf2, how='intersection')
 
     if intersection_gdf.empty:
-        logger.info(
-            'No overlapping areas were found between the two shapefiles. '
-            'No output created.'
+        logger.error(
+            'No overlapping areas were found between the two OFS domains. '
+            'No output created. Exiting!'
         )
-        return
+        sys.exit(1)
 
     # Downstream ofs_geometry keeps only the largest polygon — warn when the
     # intersection produces multiple features or a mixed geometry type so
@@ -158,11 +158,11 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
     end_date = start_date
     try:
         logger.info('Initializing geometry and retrieving inventories...')
-        geo = ofs_geometry(new_ofs, home_path, logger, None)
+        geo = ofs_geometry(new_ofs, home_path, logger, config_file)
 
         dataset_final = retrieving_inventories(
             geo, start_date, end_date, new_ofs, stationowner, logger,
-            config_file=None,
+            config_file=config_file,
         )
 
         logger.info(
@@ -186,13 +186,11 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
         dataset_final.to_csv(inventory_file_path)
         logger.info('Final Inventory saved as: %s', inventory_file_path)
 
-    except Exception as ex:
+    except Exception:
         logger.exception(
             'Error creating inventory file inventory_all_%s.csv', new_ofs
         )
-        raise RuntimeError(
-            f'Inventory retrieval failed for {new_ofs}'
-        ) from ex
+        sys.exit(1)
 
 
 if __name__ == '__main__':
@@ -233,6 +231,11 @@ if __name__ == '__main__':
             "(default: 'co-ops,ndbc,usgs,chs')."
         ),
     )
+    parser.add_argument(
+        '-c', '--config',
+        required=False,
+        help='Path to configuration file',
+    )
 
     args = parser.parse_args()
 
@@ -242,4 +245,5 @@ if __name__ == '__main__':
         home_path=args.home_path,
         stationowner=args.station_owner,
         logger=None,
+        config_file=args.config,
     )

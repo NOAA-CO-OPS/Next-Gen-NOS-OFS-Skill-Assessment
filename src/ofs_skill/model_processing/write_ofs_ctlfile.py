@@ -575,8 +575,12 @@ def write_ofs_ctlfile(prop: Any, model: Any, logger: Logger) -> Any:
         logger, config_file=_conf
     )
 
+    netcdf_dir = dir_params.get('netcdf_dir_stofs', dir_params['netcdf_dir']) if 'stofs' in prop.ofs else dir_params['netcdf_dir']
+
     prop.model_path = os.path.join(
-        dir_params['model_historical_dir'], prop.ofs, dir_params['netcdf_dir']
+        dir_params['model_historical_dir'],
+        prop.ofs,
+        netcdf_dir
     )
     prop.model_path = Path(prop.model_path).as_posix()
 

@@ -101,7 +101,17 @@ proj-grids:
 	   echo "Until it succeeds, NAVD88 <-> MLLW datum conversions will fail" && \
 	   echo "and those stations will be dropped from the skill assessment." && \
 	   exit 1)
-
+	@echo "Downloading NOAA VDatum grids..."
+	@$(CONDA_RUN) python -c "\
+	import urllib.request, os;\
+	base_url = 'https://noaa-nos-stofs2d-pds.s3.amazonaws.com/_archive/coastalmodeling-vdatum/';\
+	files = ['us_noaa_nos_LWD-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif', 'us_noaa_nos_IGLD85-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_MLLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_MHHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_LMSL-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif'];\
+	proj_dir = os.path.join(os.environ['CONDA_PREFIX'], 'share', 'proj');\
+	os.makedirs(proj_dir, exist_ok=True);\
+	[(print(f'{f} already exists.') if os.path.exists(os.path.join(proj_dir, f)) else (urllib.request.urlretrieve(base_url + f, os.path.join(proj_dir, f)), print(f'{f} download complete.'))) for f in files]"
 ## Fast local gate used by pre-push (not the full CI matrix)
 ci-local:
 	$(CONDA_RUN) bash scripts/ci-local.sh

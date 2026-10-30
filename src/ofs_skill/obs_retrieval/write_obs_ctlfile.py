@@ -445,8 +445,11 @@ def _process_coops_station(
                 ):
                     ldatum = _normalize_vdatum_name(datum).lower()
                     dummyval = 10
+                    datum_found_temp = datum_found
+                    if datum_found_temp.upper() == 'MSL':
+                        datum_found_temp = 'lmsl'
                     _, _, z = vdatum_resilient.convert(
-                        str(datum_found).lower(),
+                        str(datum_found_temp).lower(),
                         ldatum,
                         y_value,
                         x_value,
@@ -710,23 +713,44 @@ def _process_ndbc_station(
 
         elif variable in {'water_temperature', 'salinity'}:
             data_station['DEP01'] = data_station['DEP01'].astype(float)
+            # Check if all values are NaN
+            if data_station['DEP01'].isna().all():
+                dep01_mean = 0.0
+                logger.warning('Observation %s depth value is NaN for station %s!. '
+                               'Assigning depth value of 0.0 instead...',
+                               name_var,
+                               str(id_number))
+            else:
+                # Pandas mean() skips NaNs by default
+                dep01_mean = data_station['DEP01'].mean(skipna=True)
             return [
                 (
                     f'{str(id_number)} {str(id_number)}_{name_var}_'
                     f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                     f'{x_value:.3f} 0.0  '
-                    f'{data_station["DEP01"].mean():.2f}  '
+                    f'{dep01_mean:.2f}  '
                     f'0.0\n'
                 )
             ]
+
         elif variable == 'currents':
             data_station['DEP01'] = data_station['DEP01'].astype(float)
+            # Check if all values are NaN
+            if data_station['DEP01'].isna().all():
+                dep01_mean = 0.0
+                logger.warning('Observation %s depth value is NaN for station %s!. '
+                               'Assigning depth value of 0.0 instead...',
+                               name_var,
+                               str(id_number))
+            else:
+                # Pandas mean() skips NaNs by default
+                dep01_mean = data_station['DEP01'].mean(skipna=True)
             return [
                 (
                     f'{str(id_number)} {str(id_number)}_{name_var}_'
                     f'{ofs}_NDBC "{name}"\n  {y_value:.3f} '
                     f'{x_value:.3f} 0.0  '
-                    f'{data_station["DEP01"].mean():.2f}  '
+                    f'{dep01_mean:.2f}  '
                     f'0.0  0.00\n'
                 )
             ]
@@ -1215,6 +1239,8 @@ def record_inventory_if_populated(inventory, inventory_path,
 def write_obs_ctlfile(
     start_date,
     end_date,
+    start_date_full,
+    end_date_full,
     datum,
     path,
     ofs,
@@ -1271,7 +1297,7 @@ def write_obs_ctlfile(
     # wrong station set (issue: stale cache reuse across runs).
     inventory_path = f'{control_files_path}/inventory_all_{ofs}.csv'
     inventory_signature = cache_manifest.inventory_signature(
-        ofs, start_date, end_date, stationowner, currents_bins_csv)
+        ofs, start_date_full, end_date_full, stationowner, currents_bins_csv)
     cache_manifest.ensure_fresh(
         inventory_path, inventory_signature, control_files_path,
         'inventory', logger)

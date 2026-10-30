@@ -403,6 +403,7 @@ def ensure_fresh(artifact_path, signature, base_dir, kind, logger=None,
             '%s was built for different run parameters than the current '
             'run and is likely left over from an earlier run. Deleting it '
             'so it is regenerated.', artifact_path)
+        logger.info('Signature: %s', signature)
     if remove_stale_artifact(artifact_path, base_dir, logger):
         forget_artifact(artifact_path, base_dir, logger)
         note_stale(kind)
