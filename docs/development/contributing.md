@@ -14,6 +14,8 @@ What `make setup` does:
 1. Create/update the `ofs_dps` conda env from `environment.yml`
 2. `pip install -e ".[dev]"`
 3. Install **pre-commit** and **pre-push** git hooks
+4. Download the GEOID18 PROJ grid (`make proj-grids`) — see
+   [Vertical datum grids and network access](#vertical-datum-grids-and-network-access)
 
 Manual equivalent:
 
@@ -23,9 +25,57 @@ conda activate ofs_dps
 pip install -e ".[dev]"
 pre-commit install
 pre-commit install --hook-type pre-push
+projsync --system-directory --file us_noaa_g2018u0.tif
 ```
 
 Python support: **3.11+** (`requires-python` in `pyproject.toml`).
+
+## Vertical datum grids and network access
+
+Water level skill assessment converts observations between vertical
+datums (NAVD88 ↔ MLLW / MHHW / IGLD85). Those conversions are PROJ
+pipelines built by `coastalmodeling-vdatum`, and they need grid files
+that come from **two different hosts**:
+
+| Grid | How PROJ finds it | What you need |
+| --- | --- | --- |
+| The seven tidal-datum grids | Absolute `https://` URLs on the NOAA bucket | Outbound HTTPS to `noaa-nos-stofs2d-pds.s3.amazonaws.com`, plus `PROJ_NETWORK=ON` (exported by the conda env) |
+| GEOID18 (`us_noaa_g2018u0.tif`, ~15 MB) | **Bare filename** — PROJ looks on local disk, then falls back to `cdn.proj.org` | Either the file on local disk (`make proj-grids`) or outbound HTTPS to `cdn.proj.org` — a *different* host from the bucket above |
+
+The conda environment ships no `.tif` grids, so GEOID18 has to be put
+there once:
+
+```bash
+make proj-grids     # projsync --system-directory --file us_noaa_g2018u0.tif
+```
+
+`--system-directory` writes into `$CONDA_PREFIX/share/proj`, so the grid
+is scoped to the environment and applies no matter which account later
+runs a scheduled job. (`--user-writable-directory` targets `$HOME` and
+would silently not apply to another user's run.) `projsync` is
+idempotent — re-running it prints `already downloaded.` and exits 0.
+
+Skipping this step *and* blocking `cdn.proj.org`, or blocking the NOAA
+bucket, makes every affected conversion fail with `ProjError` 1029
+(`File not found or invalid`) and **drops those stations from the
+assessment**.
+
+Both `create_1dplot.py` and the station-observation pipeline preflight
+this at startup by performing a real `navd88 -> mllw` conversion, and
+abort if it fails. The check is the conversion, not the presence of the
+file: a host serving GEOID18 out of PROJ's network cache has no `.tif`
+anywhere and converts perfectly well, so it is not blocked. When the
+probe does fail, the filesystem is consulted only to decide what to tell
+you — "run `make proj-grids`" if the grid is genuinely absent, "open
+outbound HTTPS to the bucket" if it is already there. PROJ reports both
+faults with identical text, so this is the only way to tell them apart.
+
+Great Lakes runs are warned rather than aborted: their model offsets are
+fixed arithmetic and need no PROJ pipeline, so the run stays useful and
+only loses USGS gauges reporting NAVD88.
+
+Nothing in the test suite downloads a grid; the offline suite passes
+with no `.tif` present, which is also how CI runs.
 
 ## Local checks before push
 

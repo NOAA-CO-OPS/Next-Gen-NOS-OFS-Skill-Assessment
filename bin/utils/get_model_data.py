@@ -6,7 +6,6 @@ Created on Tue Apr  8 10:05:25 2025
 from __future__ import annotations
 
 import argparse
-import logging.config
 import os
 import socket
 import sys
@@ -741,19 +740,7 @@ def get_model_data(prop, logger):
     """
     # Specify defaults (can be overridden with command line options)
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (
-            Path(__file__).parent.parent.parent / log_config_file
-        ).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-
-        # Create logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(prop.path)
     logger.info('--- Starting the program ---')
 
     #Parameter validation
@@ -891,6 +878,15 @@ if __name__ == '__main__':
         required=False,
         help="'02hr', '06hr', '12hr', '24hr' ... ", )
     parser.add_argument(
+        '-cr',
+        '--Continue_Run',
+        action='store_true',
+        help='Accepted so a continuation run can reuse the same command as '
+        'the assessment it extends. Model downloads are already incremental '
+        '- files present on disk are skipped - so this flag only changes how '
+        'the run is logged here; the extraction and observation stages honor '
+        'it via create_1dplot.py.')
+    parser.add_argument(
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
@@ -904,6 +900,11 @@ if __name__ == '__main__':
     prop1.end_date_full = args.EndDate_full
     prop1.whichcast = args.Whichcast.lower()
     prop1.ofsfiletype = args.FileType.lower()
+    prop1.continue_run = getattr(args, 'Continue_Run', False)
+    if prop1.continue_run:
+        print('Continuation run: model files already on disk are skipped, '
+              'so only the dates missing from the requested window are '
+              'downloaded.')
 
     # Do forecast_a to assess a single forecast cycle
     if 'forecast_a' in prop1.whichcast:

@@ -55,6 +55,10 @@ class ModelProperties:
         filecheck: Flag controlling model-file availability checks.
         filepath: Caller-supplied file path override, when set.
         currents_bins_csv: Optional ADCP bin-override CSV path.
+        continue_run: Extend existing artifacts instead of regenerating
+            them, fetching only the tail missing from the run window.
+        continue_overlap_hours: Hours of already-retrieved data a
+            continuation run re-fetches before the seam.
         config_file: Path to the config file in use, when set.
         ofs_extents_path: Directory of OFS extent shapefiles.
         data_model_2d_json_path: 2D model JSON outputs.
@@ -111,6 +115,8 @@ class ModelProperties:
         # Extension attrs set dynamically by various CLI entrypoints.
         self.currents_bins_csv: Any = None
         self.filepath: Any = ''
+        self.continue_run: Any = False
+        self.continue_overlap_hours: Any = 24.0
 
         # Path attributes
         self.control_files_path: str = ''

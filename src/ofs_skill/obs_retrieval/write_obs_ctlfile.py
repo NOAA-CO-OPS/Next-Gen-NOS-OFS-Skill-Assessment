@@ -27,6 +27,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+import pyproj.exceptions
 
 from ofs_skill.obs_retrieval import retrieve_properties, utils, vdatum_resilient
 from ofs_skill.obs_retrieval.chs_utils import (
@@ -57,7 +58,32 @@ from ofs_skill.utils.file_headers import OBS_CTL_HEADER
 _COOPS_MAX_WORKERS = 6
 _COOPS_CURRENTS_MAX_WORKERS = 2
 _NDBC_MAX_WORKERS = 6
-_CHS_MAX_WORKERS = 1
+# One CHS station costs 8 requests (1 UUID lookup + 7 month-long data
+# chunks), against the 30 requests/minute CHS publishes -- a ceiling of
+# ~3.75 stations/minute. A single worker only demands ~12.6 req/min, since
+# most of a station's ~38s is spent transferring rather than waiting, so it
+# leaves most of the budget unused. Three workers saturate the cap with
+# headroom; more only adds queuing and memory (each in-flight station holds
+# ~54k rows) without raising throughput.
+#
+# This is safe only because chs_utils.RateLimiter serializes admission
+# under a lock -- the limiter is global, so it throttles this stage and the
+# observation stage together and the cap holds regardless of worker count.
+_CHS_MAX_WORKERS = 3
+
+# CHS observed water level is referenced to chart datum, labeled 'IGLD' by
+# retrieve_chs_station. Great-Lakes OFS have an explicit offset path below;
+# every other OFS must route through vdatum, which has no conversion from
+# this datum to a tidal datum such as MLLW.
+_CHS_WATER_LEVEL_DATUM = 'IGLD'
+
+_GLOFS_DATUMS = {
+    'leofs': 173.5,
+    'lmhofs': 176.0,
+    'lsofs': 183.2,
+    'loofs': 74.2,
+    'loofs2': 74.2,
+}
 _USGS_MAX_WORKERS_WITH_KEY = 4
 _USGS_MAX_WORKERS_NO_KEY = 2
 
@@ -274,6 +300,43 @@ def _emit_coops_currents_entries(
     return entries
 
 
+def _log_station_failure(provider, variable, station_id, exc, logger):
+    """Log a station that could not be written to the control file.
+
+    A station is dropped here for two very different reasons, and until
+    now both were reported as an INFO-level "data not found" line naming
+    the data provider. That made a genuinely empty station and a broken
+    vertical datum environment look identical in the log, which is how
+    the missing GEOID18 grid (issues #127, #216, #295) went unnoticed for
+    months while it quietly removed every station needing a conversion.
+
+    A ``ProjError`` is never a data-availability problem: the observations
+    were retrieved successfully and the datum conversion is what failed.
+    Report it at ERROR, name it for what it is, and keep the provider's
+    "data not found" wording for the real no-data case.
+    """
+    if isinstance(exc, pyproj.exceptions.ProjError):
+        logger.error(
+            '%s %s station %s DROPPED from the control file: the '
+            'observations were retrieved but the vertical datum '
+            'conversion failed. This is an environment fault, not '
+            'missing data -- see the vdatum.convert error above for the '
+            'required PROJ grid or network fix. Exception: %s',
+            provider,
+            variable,
+            str(station_id),
+            exc,
+        )
+        return
+    logger.info(
+        '%s %s data not found for station %s. Exception: %s',
+        provider,
+        variable,
+        str(station_id),
+        exc,
+    )
+
+
 def _process_coops_station(
     id_number,
     name,
@@ -464,12 +527,7 @@ def _process_coops_station(
                 logger,
             )
     except Exception as ex:
-        logger.info(
-            'CO-OPS %s data not found for station %s. Exception: %s',
-            variable,
-            str(id_number),
-            ex,
-        )
+        _log_station_failure('CO-OPS', variable, id_number, ex, logger)
     return []
 
 
@@ -585,12 +643,7 @@ def _process_usgs_station(
                     )
                 ]
     except Exception as ex:
-        logger.info(
-            'USGS %s data not found for station %s. Exception: %s',
-            variable,
-            str(id_number),
-            ex,
-        )
+        _log_station_failure('USGS', variable, id_number, ex, logger)
     return []
 
 
@@ -678,13 +731,56 @@ def _process_ndbc_station(
                 )
             ]
     except Exception as ex:
-        logger.info(
-            'NDBC %s data not found for station %s. Exception: %s',
-            variable,
-            str(id_number),
-            ex,
-        )
+        _log_station_failure('NDBC', variable, id_number, ex, logger)
     return []
+
+
+def _chs_water_level_datum_supported(ofs, datum, x_value, y_value, logger):
+    """
+    Can CHS water level be aligned to ``datum`` for this OFS?
+
+    The answer depends only on ``(ofs, datum)`` -- never on the observations
+    themselves -- so it is resolved once, before any station is retrieved,
+    rather than once per station after each station's data has already been
+    downloaded. A 6-month NECOFS run spends roughly a minute per CHS station,
+    so discovering this per station costs hours and yields nothing.
+
+    Returns ``(supported, reason)`` where ``reason`` is the underlying
+    ValueError when the conversion is unavailable, and None otherwise.
+    """
+    if ofs in _GLOFS_DATUMS:
+        return True, None
+    if _CHS_WATER_LEVEL_DATUM.upper() == str(datum).upper():
+        return True, None
+
+    ldatum = _normalize_vdatum_name(datum).lower()
+    # Normalize the CHS label too. The raw 'igld' is not in vdatum's
+    # vocabulary ('igld85' is), so probing with it fails at the vocabulary
+    # guard and reports a naming problem when the real answer is that no
+    # path exists. Both spellings are rejected, so the skip decision is
+    # unchanged, but the canonical name makes the logged reason accurate.
+    # It is also the safe direction: if a future vdatum gains an
+    # igld85->tidal path, this pre-check starts allowing stations through
+    # rather than silently skipping ones that could now be converted.
+    from_datum = _normalize_vdatum_name(_CHS_WATER_LEVEL_DATUM).lower()
+    try:
+        vdatum_resilient.convert(
+            from_datum,
+            ldatum,
+            y_value,
+            x_value,
+            10,
+            epoch=None,
+            station_id='chs-datum-precheck',
+            logger=logger,
+        )
+    except ValueError as exc:
+        # Unsupported datum vocabulary -- the same failure every CHS water
+        # level station in this run would hit. Anything else (a transient
+        # grid or network problem) is not a reason to skip the provider, so
+        # only ValueError short-circuits.
+        return False, exc
+    return True, None
 
 
 def _process_chs_station(
@@ -724,13 +820,7 @@ def _process_chs_station(
             meta_offset = metadata.get('offset')
             station_datum = str(data_station['Datum'].iloc[0])
 
-            glofs_datums = {
-                'leofs': 173.5,
-                'lmhofs': 176.0,
-                'lsofs': 183.2,
-                'loofs': 74.2,
-                'loofs2': 74.2,
-            }
+            glofs_datums = _GLOFS_DATUMS
 
             if meta_offset is not None:
                 expected_offset = glofs_datums.get(ofs)
@@ -822,14 +912,41 @@ def _process_chs_station(
             ]
 
     except Exception as ex:
-        logger.error(
-            'CHS %s data not processed for station %s. Exception: %s',
-            variable,
-            str(id_number),
-            ex,
-        )
+        if isinstance(ex, pyproj.exceptions.ProjError):
+            _log_station_failure('CHS', variable, id_number, ex, logger)
+        else:
+            logger.error(
+                'CHS %s data not processed for station %s. Exception: %s',
+                variable,
+                str(id_number),
+                ex,
+            )
 
     return []
+
+
+def _normalize_inventory_flag(inventory, column, default=True):
+    """Coerce an inventory boolean column to real bools, in place.
+
+    The column may be absent (an inventory cached before it existed), may
+    round-trip through CSV as the strings 'True'/'False', or may be blank
+    for providers that do not supply it. A missing or unreadable value
+    falls back to ``default`` -- True for every current caller, so an
+    absent flag never silently drops a station.
+    """
+    if column not in inventory.columns:
+        inventory[column] = default
+        return
+
+    if inventory[column].dtype == object:
+        mapped = inventory[column].map(
+            {'True': True, 'False': False, True: True, False: False}
+        )
+        # .where rather than .fillna: filling an object column and then
+        # casting emits a pandas downcasting FutureWarning.
+        inventory[column] = mapped.where(mapped.notna(), default).astype(bool)
+    else:
+        inventory[column] = inventory[column].fillna(default).astype(bool)
 
 
 def _process_variable(
@@ -972,6 +1089,53 @@ def _process_variable(
 
     # --- CHS stations (parallel) ---
     chs_stations = stations_with_var.loc[stations_with_var['Source'] == 'CHS']
+
+    # A CHS station advertises a time series for as long as its metadata
+    # entry exists, which outlives the station itself, so the has_* flags
+    # do not imply the station still records. Decommissioned stations
+    # return nothing for any window -- including windows from while they
+    # were active, since the IWLS observed series only reaches back about
+    # six years -- but each one still costs ~8 requests against a 30
+    # req/min budget to find that out.
+    if not chs_stations.empty and 'operating' in chs_stations.columns:
+        retired = chs_stations.loc[~chs_stations['operating']]
+        if not retired.empty:
+            logger.info(
+                'Skipping %d decommissioned CHS station(s) of %d for %s; '
+                'CHS reports these as no longer operating and they return '
+                'no data for any window. Retrieving %d operating '
+                'station(s).',
+                len(retired),
+                len(chs_stations),
+                variable,
+                len(chs_stations) - len(retired),
+            )
+            chs_stations = chs_stations.loc[chs_stations['operating']]
+
+    if not chs_stations.empty and variable == 'water_level':
+        reference = chs_stations.iloc[0]
+        supported, reason = _chs_water_level_datum_supported(
+            ofs, datum, reference['X'], reference['Y'], logger
+        )
+        if not supported:
+            logger.warning(
+                'Skipping all %d CHS water level station(s): CHS observed '
+                'water level is referenced to chart datum (%s), and there is '
+                'no conversion path from %s to the requested datum (%s) for '
+                '%s. Every one of these stations would be discarded after '
+                'being retrieved, so they are not retrieved at all. To '
+                'include them, re-run with a datum reachable from %s; to '
+                'silence this, exclude CHS via -so. Underlying error: %s',
+                len(chs_stations),
+                _CHS_WATER_LEVEL_DATUM,
+                _normalize_vdatum_name(_CHS_WATER_LEVEL_DATUM).lower(),
+                datum,
+                ofs,
+                _CHS_WATER_LEVEL_DATUM,
+                reason,
+            )
+            chs_stations = chs_stations.iloc[0:0]
+
     if not chs_stations.empty:
         futures = []
         with ThreadPoolExecutor(max_workers=_CHS_MAX_WORKERS) as executor:
@@ -1127,9 +1291,9 @@ def write_obs_ctlfile(
         inventory = pd.read_csv(
             r'' + f'{control_files_path}/inventory_all_{ofs}.csv', dtype=dtypes
         )
-        for col in ['has_wl', 'has_temp', 'has_salt', 'has_cu']:
-            if col not in inventory.columns:
-                inventory[col] = True
+        for col in ['has_wl', 'has_temp', 'has_salt', 'has_cu',
+                    'operating']:
+            _normalize_inventory_flag(inventory, col)
         logger.info(
             'Inventory (inventory_all_%s.csv) found in %s.',
             ofs,
@@ -1157,19 +1321,9 @@ def write_obs_ctlfile(
             inventory = pd.read_csv(
                 r'' + f'{control_files_path}/inventory_all_{ofs}.csv', dtype=dtypes
             )
-            for col in ['has_wl', 'has_temp', 'has_salt', 'has_cu']:
-                if col not in inventory.columns:
-                    inventory[col] = True
-                else:
-                    if inventory[col].dtype == object:
-                        inventory[col] = (
-                            inventory[col]
-                            .map({'True': True, 'False': False, True: True, False: False})
-                            .fillna(True)
-                            .astype(bool)
-                        )
-                    else:
-                        inventory[col] = inventory[col].astype(bool)
+            for col in ['has_wl', 'has_temp', 'has_salt', 'has_cu',
+                        'operating']:
+                _normalize_inventory_flag(inventory, col)
             logger.info('Inventory file created successfully')
         except Exception as ex:
             logger.error(f'Error when creating inventory files: {ex}')

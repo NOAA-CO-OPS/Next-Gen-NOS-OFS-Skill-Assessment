@@ -46,8 +46,6 @@ Example call:
 from __future__ import annotations
 
 import argparse
-import logging
-import logging.config
 import os
 import re
 import sys
@@ -638,6 +636,38 @@ def process_files(
     logger.info('Finished get_hf_radar.py!')
 
 
+def resolve_bounds(bounds, ofs_name, ofs_extents_dir) -> tuple[str, Path]:
+    """
+    Resolve the study-area shapefile from ``-b/--bounds`` or ``-o/--ofs``.
+
+    An explicit ``-b`` is used verbatim - it is the user's own file and may
+    live anywhere. An ``-o`` names a shapefile in ``ofs_extents/``, which
+    ships with the installation, so it goes through
+    :func:`utils.resolve_asset_path`: a copy under the working directory
+    wins, and the installation copy is the fallback. Without that, this
+    entry point could only be run from the installation root even though
+    its ``-C`` output directory is external by design.
+
+    Parameters
+    ----------
+    bounds : str or None
+        Value of ``-b/--bounds``.
+    ofs_name : str or None
+        Value of ``-o/--ofs``.
+    ofs_extents_dir : str
+        ``ofs_extents_dir`` from the ``[directories]`` config section.
+
+    Returns
+    -------
+    tuple
+        ``(ofs_name, shapefile_path)``.
+    """
+    if bounds is not None:
+        return Path(bounds).stem, Path(bounds)
+    return ofs_name, Path(utils.resolve_asset_path(
+        os.getcwd(), ofs_extents_dir, f'{ofs_name}.shp'))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog='get_hf_radar.py',
@@ -685,21 +715,13 @@ if __name__ == '__main__':
     if args.bounds is None and args.ofs is None:
         parser.error('Either -b/--bounds or -o/--ofs must be provided.')
 
-    # Set up logging
-    config_file = utils.Utils().get_config_file()
-    log_config_file = os.path.join(os.getcwd(), 'conf', 'logging.conf')
-
-    if not os.path.isfile(log_config_file):
-        print(f'Log config file not found: {log_config_file}', file=sys.stderr)
-        sys.exit(-1)
-    if not os.path.isfile(config_file):
-        print(f'Config file not found: {config_file}', file=sys.stderr)
-        sys.exit(-1)
-
-    logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger('root')
-    logger.info('Using config %s', config_file)
-    logger.info('Using log config %s', log_config_file)
+    # Set up logging. This entry point has no -p; its working directory is
+    # wherever it was launched from, and -C is the (possibly external)
+    # output directory.
+    _conf = args.config
+    logger = utils.init_root_logger(
+        os.getcwd(), utils.Utils(_conf).get_config_file())
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
 
     start_time = parse_utc_timestamp(args.StartDate_full)
     end_time = parse_utc_timestamp(args.EndDate_full)
@@ -724,12 +746,8 @@ if __name__ == '__main__':
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine OFS name and shapefile path
-    if args.bounds is not None:
-        ofs = Path(args.bounds).stem
-        shapefile_path = Path(args.bounds)
-    else:
-        ofs = args.ofs
-        shapefile_path = Path(f'./ofs_extents/{ofs}.shp')
+    ofs, shapefile_path = resolve_bounds(
+        args.bounds, args.ofs, dir_params['ofs_extents_dir'])
 
     if not shapefile_path.exists():
         logger.error('Shapefile not found: %s', shapefile_path)
@@ -738,7 +756,7 @@ if __name__ == '__main__':
     gdf = gpd.read_file(shapefile_path)
 
     # Read static_plots setting from config
-    conf_settings = utils.Utils().read_config_section('settings', logger)
+    conf_settings = utils.Utils(_conf).read_config_section('settings', logger)
     static_plots = conf_settings.get(
         'static_plots', 'False',
     ).lower() in ('true', '1', 'yes')

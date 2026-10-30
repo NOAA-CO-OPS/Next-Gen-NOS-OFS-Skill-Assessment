@@ -45,8 +45,6 @@ Revisions:
 """
 import argparse
 import json
-import logging
-import logging.config
 import os
 import shlex
 import sys
@@ -66,6 +64,32 @@ from ofs_skill.model_processing import (
 )
 from ofs_skill.obs_retrieval import utils
 from ofs_skill.visualization import plotting_2d
+
+# Config string values treated as True (case-insensitive, whitespace-trimmed).
+# Mirrors ConfigParser.getboolean()'s truthy set minus 'on'; kept consistent
+# across the [settings] booleans this module resolves (make_plotly_2d_maps,
+# static_plots).
+_TRUTHY = frozenset(('true', '1', 'yes'))
+
+
+def _coerce_bool(value: object, default: str = 'False') -> bool:
+    """Coerce a config-file value to a bool.
+
+    ``'true'``, ``'1'`` and ``'yes'`` (case-insensitive, surrounding
+    whitespace ignored) map to ``True``; everything else, including a missing
+    value, maps to ``False``.
+
+    Args:
+        value: Raw config value, typically the result of ``dict.get(key)``.
+            ``None`` is treated as absent and falls back to ``default``.
+        default: String used when ``value`` is ``None``.
+
+    Returns:
+        The coerced boolean.
+    """
+    if value is None:
+        value = default
+    return str(value).strip().lower() in _TRUTHY
 
 
 def _format_run_command():
@@ -88,19 +112,9 @@ def validate_and_initialize_parameters(prop):
     """
     # Setup logger
     _conf = getattr(prop, 'config_file', None)
-    config_file = utils.Utils(_conf).get_config_file()
-    log_config_file = (Path(__file__).parent.parent.parent / 'conf' / 'logging.conf').resolve()
-
-    if not os.path.isfile(log_config_file):
-        sys.exit('Logging config file not found. Abort!')
-    if not os.path.isfile(config_file):
-        sys.exit('Main config file not found. Abort!')
-
-    logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger('root')
+    logger = utils.init_root_logger(
+        getattr(prop, 'path', None), utils.Utils(_conf).get_config_file())
     logger.info('Run command: %s', _format_run_command())
-    logger.info('Using config %s', config_file)
-    logger.info('Using log config %s', log_config_file)
     logger.info('--- Starting Visualization Process ---')
 
     # Load directory parameters
@@ -412,6 +426,11 @@ def _run_pipeline(run_args):
 
     prop1, logger = validate_and_initialize_parameters(prop1)
 
+    # Resolve optional [settings] toggles once, honoring the run's config file.
+    conf_settings = utils.Utils(prop1.config_file).read_config_section('settings', logger)
+    prop1.make_plotly_2d_maps = _coerce_bool(conf_settings.get('make_plotly_2d_maps'))
+    prop1.static_plots = _coerce_bool(conf_settings.get('static_plots'))
+
     for i in prop1.whichcasts:
         try:
             prop1.whichcast = i.lower()
@@ -433,7 +452,12 @@ def _run_pipeline(run_args):
             if prop1.sport:
                 sportfile = Path(os.path.join(satdatapath,
                                               str(prop1.ofs + '_sport.nc')))
-                processing_2d.parse_leaflet_json(model, sportfile, prop1)
+                # The L3C pass above already wrote the model JSONs for
+                # this window; only write them here when SPoRT is the
+                # sole satellite source (issue #122).
+                processing_2d.parse_leaflet_json(
+                    model, sportfile, prop1,
+                    write_model=not prop1.l3c)
             if not prop1.l3c and not prop1.sport:
                 logger.info('Processing model data only (no satellite data).')
                 processing_2d.parse_leaflet_json(model, None, prop1)
@@ -443,13 +467,7 @@ def _run_pipeline(run_args):
                 logger.error('Problem calling plotting_2d.plot_2d - ABORT')
                 logger.error('Exception: %s', e)
 
-            conf_settings = utils.Utils().read_config_section(
-                'settings', logger,
-            )
-            static_plots = conf_settings.get(
-                'static_plots', 'False',
-            ).lower() in ('true', '1', 'yes')
-            if static_plots:
+            if prop1.static_plots:
                 logger.info('Generating static 2D offline maps...')
                 # Honor the configured data_dir/visual_dir rather than a
                 # hardcoded 'data'. visuals_2d_station_path is already

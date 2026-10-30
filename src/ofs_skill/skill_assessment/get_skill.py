@@ -7,12 +7,13 @@
 
 import copy
 import gc
+import glob
 import logging
 import logging.config
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,11 @@ from pandas.errors import EmptyDataError
 from ofs_skill.model_processing import do_horizon_skill
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_dates
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
-from ofs_skill.model_processing.station_ledger import StationLedger
+from ofs_skill.model_processing.station_ledger import (
+    PAIRING_STAGES,
+    StationLedger,
+)
+from ofs_skill.model_processing.station_ledger_inventory import reconcile_inventory
 from ofs_skill.obs_retrieval import parse_arguments_to_list, utils
 from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
@@ -33,8 +38,17 @@ from ofs_skill.skill_assessment.make_skill_maps import make_skill_maps
 from ofs_skill.tidal_analysis.extremes import extract_water_level_extrema
 from ofs_skill.utils import cache_manifest
 from ofs_skill.utils.file_headers import series_rows_to_skip, strip_model_ctl_header
+from ofs_skill.utils.series_continuation import DEFAULT_CONTINUE_OVERLAP_HOURS
 from ofs_skill.utils.timeseries_coverage import (
+    COVERS,
+    PREFIX,
+    clamp_window_to_coverage,
+    classify_coverage,
+    continuation_start,
     covers_run_window,
+    created_this_run,
+    dataset_time_bounds,
+    filename_key_time_bounds,
     parse_run_window,
     remove_stale_artifact,
 )
@@ -359,6 +373,93 @@ def _ledger_drop(prop: Any, station_id: str, stage: str, reason: str) -> None:
     ledger.drop(station_id, stage=stage, reason=reason)
 
 
+def _attach_ledger_view(prop: Any, variable: str) -> None:
+    """Attach a per-variable view of the run's station-drop ledger.
+
+    One :class:`StationLedger` is created per run (per OFS) and shared by
+    every variable and whichcast; each pass records through a view that
+    stamps its own ``variable``/``whichcast``/``filetype`` onto the records.
+    That is what lets the whole run land in a single
+    ``station_ledger_{ofs}.csv`` instead of one file per combination
+    (issue #224). Best-effort: the workflow runs identically if ledger
+    construction fails.
+    """
+    root = getattr(prop, 'station_ledger_root', None)
+    if root is None:
+        try:
+            root = StationLedger(
+                ofs=getattr(prop, 'ofs', ''),
+                run_start=str(getattr(prop, 'start_date_full', '') or ''),
+                run_end=str(getattr(prop, 'end_date_full', '') or ''),
+            )
+        except (TypeError, ValueError):  # pragma: no cover - defensive only
+            root = None
+        prop.station_ledger_root = root
+    if root is None:  # pragma: no cover - defensive only
+        prop.station_ledger = None
+        return
+    try:
+        prop.station_ledger = root.for_context(
+            variable=variable,
+            whichcast=getattr(prop, 'whichcast', ''),
+            filetype=getattr(prop, 'ofsfiletype', ''),
+        )
+    except (TypeError, ValueError):  # pragma: no cover - defensive only
+        prop.station_ledger = None
+
+
+def _note_legacy_ledger_files(prop: Any, logger: logging.Logger) -> None:
+    """Log once that pre-#224 per-variable ledger CSVs are superseded.
+
+    The files are left in place -- deleting a user's artifacts is out of
+    proportion to the clutter they cause.
+    """
+    if getattr(prop, '_legacy_ledger_notice_done', False):
+        return
+    prop._legacy_ledger_notice_done = True  # pylint: disable=protected-access
+    try:
+        pattern = os.path.join(
+            prop.control_files_path, f'station_ledger_{prop.ofs}_*.csv')
+        legacy = sorted(glob.glob(pattern))
+    except (OSError, TypeError, ValueError):  # pragma: no cover - defensive
+        return
+    if legacy:
+        logger.info(
+            '%d per-variable station ledger file(s) from an earlier release '
+            'are superseded by the combined station_ledger_%s.csv and may be '
+            'deleted: %s',
+            len(legacy), prop.ofs, ', '.join(os.path.basename(f) for f in legacy),
+        )
+
+
+def _emit_ledger(prop: Any, logger: logging.Logger) -> None:
+    """Log this variable's accounting and refresh the combined ledger CSV.
+
+    The per-variable summary keeps the familiar operator log output, while
+    the CSV is written once per OFS and merged with whatever is already on
+    disk so a second invocation (another whichcast, or a cached-control-file
+    pass) adds to the file rather than replacing it.
+    """
+    view = getattr(prop, 'station_ledger', None)
+    if view is not None:
+        view.log_summary(logger)
+    root = getattr(prop, 'station_ledger_root', None)
+    if root is None:
+        return
+    try:
+        csv_path = os.path.join(
+            prop.control_files_path, f'station_ledger_{prop.ofs}.csv')
+        written = root.to_csv(csv_path, merge_existing=True)
+        if written:
+            logger.info('Station accounting ledger written to %s', written)
+        else:
+            logger.debug('Station ledger CSV could not be written to %s',
+                         csv_path)
+        _note_legacy_ledger_files(prop, logger)
+    except (OSError, TypeError, ValueError):  # pragma: no cover - defensive
+        logger.debug('Failed to write station ledger CSV', exc_info=True)
+
+
 def _process_station_pair(i, read_station_ctl_file, read_ofs_ctl_file,
                           station_id_to_idx, prop, name_var, logger):
     """
@@ -622,16 +723,46 @@ def skill(read_station_ctl_file, read_ofs_ctl_file, prop, name_var, logger):
 
     ledger = getattr(prop, 'station_ledger', None)
     if ledger is not None:
-        ledger.note_stage(
-            'obs_ctl',
-            count_in=len(read_station_ctl_file[0]),
-            note='stations with retrievable obs data (obs station ctl file)',
-        )
-        ledger.note_stage(
-            'model_ctl',
-            count_out=len(read_ofs_ctl_file[-1]),
-            note='obs stations matched to a model location (model ctl file)',
-        )
+        # The inventory reconciliation records ``obs_ctl`` in units of
+        # inventory *stations* (in -> out). Only fall back to the bare
+        # control-file line count when it did not run.
+        if not ledger.has_stage('obs_ctl'):
+            ledger.note_stage(
+                'obs_ctl',
+                count_in=len(read_station_ctl_file[0]),
+                note=(
+                    'obs station ctl file entries (inventory reconciliation '
+                    'did not run for this context)'
+                ),
+            )
+        # Recorded unconditionally and under its own stage name because the
+        # unit differs: currents control files carry one line per ADCP bin,
+        # so this is the denominator ``model_ctl`` and ``skill_csv`` are
+        # counted in. Letting it share the ``obs_ctl`` stage name made the
+        # chain read 3 stations out -> 18 stations in (issue #224).
+        if not ledger.has_stage('obs_ctl_lines'):
+            ledger.note_stage(
+                'obs_ctl_lines',
+                count_out=len(read_station_ctl_file[0]),
+                note=(
+                    'lines in the obs station ctl file (one per station, or '
+                    'one per ADCP bin for currents)'
+                ),
+            )
+        # Cast-independent: the model control file is built once and reused
+        # by every whichcast, so guard against one identical row per cast.
+        if not ledger.has_stage('model_ctl'):
+            ledger.note_stage(
+                'model_ctl',
+                count_out=len(read_ofs_ctl_file[-1]),
+                note='obs stations matched to a model location (model ctl file)',
+            )
+        # The pairing loop below always executes these three stages, but
+        # they only ever emit rows when something is dropped. Declare them
+        # so a clean pass supersedes an earlier run's drop rows instead of
+        # letting them survive as a stale explanation (issue #224).
+        for pairing_stage in PAIRING_STAGES:
+            ledger.mark_stage_run(pairing_stage)
 
     # O(1) station ID -> obs-row lookup, computed once and shared with workers
     station_id_to_idx = {
@@ -702,6 +833,395 @@ def name_convent(variable):
     return name_var
 
 
+def _ensure_obs_files(read_station_ctl_file, p, name_var, logger_):
+    """Check for missing, stale or extendable .obs files; fetch if needed.
+
+    Obs filenames do not encode the run window, and the obs module
+    skips stations whose .obs file already exists -- so a file left
+    over from an earlier run window would be reused verbatim. Delete
+    stale files first, then fetch once so all missing files are
+    recreated for the current window.
+
+    Under ``--Continue_Run`` a third outcome joins the two: a file
+    that starts early enough but stops short of the window end is
+    kept and recorded in a continuation plan, so the obs module
+    fetches only its missing tail and merges that in. The plan is
+    returned to the fetch call rather than stashed on ``p`` -- these
+    gates run on shallow copies in a worker pool, so anything written
+    back onto ``p`` here would be discarded.
+    """
+    run_window = parse_run_window(p, logger_)
+    continue_run = getattr(p, 'continue_run', False) and run_window
+    overlap = timedelta(
+        hours=float(getattr(p, 'continue_overlap_hours',
+                            DEFAULT_CONTINUE_OVERLAP_HOURS)))
+    needs_fetch = False
+    continuation = {}
+    for i in range(0, len(read_station_ctl_file[0])):
+        obs_path = os.path.join(p.data_observations_1d_station_path,
+                str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
+                    name_var+'_station.obs'))
+        if os.path.isfile(obs_path):
+            if os.path.getsize(obs_path) > 0:
+                # Parameters first: a file built under a different datum,
+                # station owner or bins file is not the series we would be
+                # extending, so it is deleted before coverage is even
+                # considered. A continuation run is the one case where the
+                # recorded window is *expected* to be shorter than the
+                # requested one, so the window fields are excluded there --
+                # otherwise every -cr run would delete the very files it
+                # exists to extend.
+                obs_sig = cache_manifest.run_signature(
+                    p, variable=_NAME_TO_VARIABLE.get(name_var, name_var))
+                if not cache_manifest.artifact_is_fresh(
+                        obs_path, obs_sig,
+                        ignore_keys=(cache_manifest.CONTINUATION_WINDOW_KEYS
+                                     if continue_run else ())):
+                    logger_.warning(
+                        '%s was built for different run parameters and '
+                        'is likely left over from an earlier run. '
+                        'Deleting it and re-fetching observations.',
+                        obs_path)
+                    if remove_stale_artifact(
+                            obs_path,
+                            p.data_observations_1d_station_path,
+                            logger_):
+                        cache_manifest.forget_artifact(
+                            obs_path,
+                            p.data_observations_1d_station_path, logger_)
+                        cache_manifest.note_stale('obs')
+                        needs_fetch = True
+                    continue
+                verdict = (
+                    classify_coverage(obs_path, run_window[0],
+                                      run_window[1], logger=logger_)
+                    if run_window is not None else COVERS)
+                if verdict == PREFIX and continue_run:
+                    tail_start = continuation_start(
+                        obs_path, run_window[0], run_window[1],
+                        overlap, logger=logger_)
+                    if tail_start is not None:
+                        logger_.info(
+                            'Continuation run: %s covers the start of '
+                            'the window but ends early; fetching only '
+                            '%s onward and merging it in.',
+                            obs_path, tail_start)
+                        continuation[os.path.normpath(obs_path)] = \
+                            tail_start
+                        needs_fetch = True
+                        continue
+                if verdict == COVERS:
+                    logger_.info('%s found', obs_path)
+                elif created_this_run(obs_path):
+                    # A file this process fetched is not "left over from
+                    # an earlier run" no matter what it covers: the
+                    # provider has no more data, and re-deleting it would
+                    # only re-fetch the identical series.
+                    logger_.info('%s found (fetched this run)', obs_path)
+                else:
+                    logger_.warning(
+                        '%s does not cover the run window %s to %s '
+                        'and is likely left over from an earlier '
+                        'run. Deleting it and re-fetching '
+                        'observations.',
+                        obs_path, run_window[0], run_window[1])
+                    if remove_stale_artifact(
+                            obs_path,
+                            p.data_observations_1d_station_path,
+                            logger_):
+                        cache_manifest.forget_artifact(
+                            obs_path,
+                            p.data_observations_1d_station_path, logger_)
+                        needs_fetch = True
+            else:
+                # A 0-byte file records "this station had no data",
+                # not a window, so there is no prefix to extend --
+                # it goes down the normal path either way.
+                logger_.error('%s is empty', obs_path)
+        else:
+            logger_.error(
+                '%s is missing, calling Obs Module', obs_path)
+            needs_fetch = True
+    if not needs_fetch:
+        return
+    get_station_observations(
+        p, logger_, continuation=continuation or None)
+    if continuation:
+        _retry_unextended_obs(continuation, p, logger_, run_window)
+
+
+def _retry_unextended_obs(continuation, p, logger_, run_window):
+    """Re-fetch, over the full window, any .obs the tail pass could not extend.
+
+    A tail fetch declines to touch the file whenever the merge cannot be
+    trusted -- the provider returned nothing, the datum or ADCP bin could
+    not be pinned, timestamps collide, there is a hole at the seam. That
+    leaves the file still short of the window, and nothing downstream in
+    *this* run would notice: pairing would quietly use the truncated
+    series. So check the plan's files once more and regenerate the
+    stragglers the ordinary way before moving on.
+    """
+    stragglers = [
+        path for path in continuation
+        if os.path.isfile(path) and os.path.getsize(path) > 0
+        and not covers_run_window(path, run_window[0], run_window[1],
+                                  logger=logger_)
+    ]
+    if not stragglers:
+        return
+    logger_.warning(
+        'Continuation run: %d observation file(s) could not be extended; '
+        're-fetching them over the full window.', len(stragglers))
+    removed = False
+    for path in stragglers:
+        if remove_stale_artifact(
+                path, p.data_observations_1d_station_path, logger_):
+            removed = True
+    if removed:
+        get_station_observations(p, logger_)
+
+
+def _prd_paths(read_ofs_ctl_file, p, name_var):
+    """Every per-station .prd path this variable/cast should produce."""
+    paths = []
+    for i in range(0, len(read_ofs_ctl_file[-1])):
+        if p.whichcast == 'forecast_a':
+            paths.append(
+                f'{p.data_model_1d_node_path}/'
+                f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
+            )
+        else:
+            paths.append(
+                f'{p.data_model_1d_node_path}/'
+                f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
+                f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
+                f'{p.ofsfiletype}_model.prd'
+            )
+    return paths
+
+def _try_prd_continuation(prd_paths, p, logger_, run_window,
+                          variable=None):
+    """Extract only the model span missing from the existing .prd files.
+
+    Returns ``True`` when every file now covers the run window, so
+    the caller can skip the full extraction entirely.
+
+    Continuation is attempted only when *all* expected files are
+    present and classify as PREFIX, and when they agree closely
+    enough on where they stop that one shared extraction window
+    serves all of them. That is the case this feature exists for --
+    extending a completed run -- and it keeps the model file list,
+    which is chosen once for the whole dataset load, unambiguous.
+    Anything else falls through to the pre-existing behavior.
+    """
+    overlap = timedelta(
+        hours=float(getattr(p, 'continue_overlap_hours',
+                            DEFAULT_CONTINUE_OVERLAP_HOURS)))
+    tail_starts = []
+    for path in prd_paths:
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            logger_.info(
+                'Continuation run: %s is missing or empty, so the '
+                'model data is extracted over the full window.', path)
+            return False
+        tail_start = continuation_start(
+            path, run_window[0], run_window[1], overlap, logger=logger_)
+        if tail_start is None:
+            logger_.info(
+                'Continuation run: %s does not extend cleanly into '
+                'the requested window, so the model data is extracted '
+                'over the full window.', path)
+            return False
+        tail_starts.append(tail_start)
+
+    if not tail_starts:
+        return False
+
+    # One dataset load serves every station, so the extraction has to
+    # start early enough for the station that is furthest behind.
+    tail_start = min(tail_starts)
+    logger_.info(
+        'Continuation run: extending %d .prd file(s) from %s instead '
+        'of re-extracting from %s.',
+        len(prd_paths), tail_start, run_window[0])
+
+    tail_prop = copy.copy(p)
+    tail_prop.start_date_full = tail_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+    tail_prop.continuation_prd_merge = True
+    # Anything chosen by the run's start date -- the SECOFS model-zero
+    # correction column, today -- must key on the window, not on the
+    # seam, or the head and tail of one series end up on two different
+    # vertical references.
+    tail_prop.datum_reference_date = p.start_date_full
+    # Extract only the variable whose files this gate just verified.
+    # get_node_ofs otherwise walks the whole var_list in merge mode,
+    # touching .prd files no coverage check has looked at.
+    if variable is not None:
+        tail_prop.var_list = [variable]
+    # The cached dataset was loaded for a different window, and
+    # _set_cached_model closes whatever it replaces -- hand the tail
+    # extraction a clean load of its own.
+    tail_model = get_node_ofs(tail_prop, logger_, model_dataset=None)
+    # Close it here rather than leaving the GC to finalize it at
+    # interpreter shutdown after h5py has been torn down -- the noisy
+    # traceback of issue #94. It is closed directly, not by caching it on
+    # tail_prop first: tail_prop is a shallow copy, so its cache slot
+    # still aliases the outer run's dataset, and _set_cached_model closes
+    # whatever it displaces.
+    if tail_model is not None:
+        try:
+            tail_model.close()
+        except Exception:  # pragma: no cover - defensive cleanup only
+            pass
+        del tail_model
+        gc.collect()
+
+    for path in prd_paths:
+        if not os.path.isfile(path) or not covers_run_window(
+                path, run_window[0], run_window[1], logger=logger_):
+            logger_.warning(
+                'Continuation run: %s still does not cover %s to %s '
+                'after the tail extraction; falling back to a full '
+                're-extraction.', path, run_window[0], run_window[1])
+            return False
+    logger_.info(
+        'Continuation run: all %d .prd file(s) now cover the run '
+        'window.', len(prd_paths))
+    return True
+
+def _ensure_prd_files(read_ofs_ctl_file, p, name_var, logger_,
+                      cached_model=None, variable=None):
+    """Check for missing or stale .prd files, extract if needed.
+    Returns the (possibly updated) cached model dataset.
+
+    Like the .obs files, .prd filenames do not encode the run
+    window, so files left over from an earlier run would be reused
+    verbatim. Delete stale files first, then extract once so all
+    missing files are recreated for the current window.
+
+    Under ``--Continue_Run`` a cheaper path is tried first: when
+    every file is present and merely stops short of the window end,
+    only the missing model span is extracted and merged in. That
+    attempt is verified against the run window afterwards, and
+    anything short of complete success falls through to the full
+    extraction below -- so continuation can only ever save time, not
+    change the result.
+
+    The window checked against is clamped to what the model catalog
+    actually provides: when the validator dropped files at the front of
+    the window (a mid-window model-configuration change, an archive
+    gap), a fresh extraction can never reach the requested start, so
+    judging the file by the raw window deletes and re-extracts identical
+    data on every variable (issue #254). The bounds come from the loaded
+    dataset when there is one, else from the filename key the last
+    extraction of this cast wrote.
+    """
+    run_window = parse_run_window(p, logger_)
+    bounds = dataset_time_bounds(cached_model)
+    if (bounds is None and run_window is not None
+            and p.whichcast != 'forecast_a'):
+        # The key is written per ofs/whichcast and does not carry the
+        # forecast cycle, so for forecast_a it may describe another
+        # cycle's catalog; leave that cast unclamped until its model
+        # dataset is in hand.
+        key_path = os.path.join(
+            p.data_model_1d_node_path,
+            f'{p.ofs}_{p.whichcast}_filename_key.csv')
+        key_bounds = filename_key_time_bounds(key_path, run_window)
+        if key_bounds is not None:
+            # Only the start is taken from the key. Its end is just
+            # where the last run stopped, and a continuation run exists
+            # to extend past exactly that point; the dropped-head fact
+            # #254 is about lives at the start. The key is the previous
+            # run's record of the catalog, so a head restored to the
+            # archive since then is not noticed until the key is
+            # deleted or the model is loaded for another reason.
+            bounds = (key_bounds[0], run_window[1])
+            logger_.info(
+                'No model dataset loaded yet; the catalog start for %s '
+                'is taken from %s. Delete that file to re-read the '
+                'catalog from scratch.', name_var, key_path)
+    run_window = clamp_window_to_coverage(
+        run_window, bounds, logger=logger_, label=name_var)
+    prd_paths = _prd_paths(read_ofs_ctl_file, p, name_var)
+
+    prd_extra = {'whichcast': p.whichcast}
+    if p.whichcast == 'forecast_a':
+        prd_extra['forecast_hr'] = p.forecast_hr
+    prd_sig = cache_manifest.run_signature(
+        p, variable=(variable if variable is not None
+                     else _NAME_TO_VARIABLE.get(name_var, name_var)),
+        extra=prd_extra)
+
+    # Only extend files this run could have written itself. A continuation
+    # run widens the window by design, so the window fields are excluded
+    # from the check -- but a file built under a different datum or bins
+    # file must not be spliced onto, so any parameter mismatch sends the
+    # whole variable down the full-extraction path below.
+    extendable = all(
+        cache_manifest.artifact_is_fresh(
+            prd_path, prd_sig,
+            ignore_keys=cache_manifest.CONTINUATION_WINDOW_KEYS)
+        for prd_path in prd_paths if os.path.isfile(prd_path))
+    tail_attempted = bool(
+        getattr(p, 'continue_run', False) and run_window is not None
+        and prd_paths and extendable)
+    if tail_attempted and _try_prd_continuation(
+            prd_paths, p, logger_, run_window, variable):
+        return cached_model
+
+    needs_model = False
+    for prd_path in prd_paths:
+        if os.path.isfile(prd_path):
+            # Never delete a file the current process extracted:
+            # regeneration would reproduce it byte-for-byte, at the
+            # cost of a full extraction pass per variable. The one
+            # exception is when a continuation was attempted above and
+            # did not succeed: a file a failed tail extraction touched
+            # is still short by construction and must be regenerated
+            # in full, as the continuation path promises.
+            if (run_window is not None
+                    and not (created_this_run(prd_path)
+                             and not tail_attempted)
+                    and not covers_run_window(
+                        prd_path, run_window[0], run_window[1],
+                        logger=logger_)):
+                logger_.warning(
+                    '%s does not cover the run window %s to %s and '
+                    'is likely left over from an earlier run. '
+                    'Deleting it and re-extracting model data.',
+                    prd_path, run_window[0], run_window[1])
+                if remove_stale_artifact(
+                        prd_path, p.data_model_1d_node_path, logger_):
+                    cache_manifest.forget_artifact(
+                        prd_path, p.data_model_1d_node_path, logger_)
+                    needs_model = True
+            elif not cache_manifest.artifact_is_fresh(prd_path, prd_sig):
+                # Covers the window but was built under different
+                # datum/station-owner/bins parameters -- re-extract.
+                logger_.warning(
+                    '%s was built for different run parameters and is '
+                    'likely left over from an earlier run. Deleting it '
+                    'and re-extracting model data.', prd_path)
+                if remove_stale_artifact(
+                        prd_path, p.data_model_1d_node_path, logger_):
+                    cache_manifest.forget_artifact(
+                        prd_path, p.data_model_1d_node_path, logger_)
+                    cache_manifest.note_stale('prd')
+                    needs_model = True
+        else:
+            logger_.info('%s is missing', prd_path)
+            needs_model = True
+    if needs_model:
+        logger_.info('Calling OFS module for %s', p.whichcast)
+        result = get_node_ofs(p, logger_, model_dataset=cached_model)
+        if result is not None:
+            cached_model = result
+    return cached_model
+
+
 def get_skill(prop, logger):
     """Run the 1D skill assessment for the variables configured on ``prop``.
 
@@ -724,31 +1244,13 @@ def get_skill(prop, logger):
             ``logger`` is ``None``.
     """
 
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils().get_config_file()
-        log_config_file = utils.resolve_asset_path(
-            prop.path, 'conf', 'logging.conf')
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            print(f'Logging config not found: {log_config_file}. Abort!',
-                  file=sys.stderr)
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            print(f'Configuration file not found: {config_file}. Abort!',
-                  file=sys.stderr)
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            prop.path, utils.Utils(_conf).get_config_file())
 
     logger.info('--- Starting skill assessment process ---')
 
-    _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     prop.datum_list = (utils.Utils(_conf).read_config_section('datums', logger)\
                        ['datum_list']).split(' ')
@@ -892,175 +1394,24 @@ def get_skill(prop, logger):
         dir_params['visual_maps'])
     os.makedirs(prop.plotly_maps, exist_ok=True)
 
-    # This outer loop is used to download all data for all variables
-    # Inside this loop there is another loop that will go over each line
-    # in the station ctl file and will try to download the data from TandC,
-    # USGS, and NDBC based on the station data source
-
-    def _ensure_obs_files(read_station_ctl_file, p, name_var, logger_):
-        """Check for missing or stale .obs files, download if needed.
-
-        Obs filenames do not encode the run window, and the obs module
-        skips stations whose .obs file already exists -- so a file left
-        over from an earlier run window would be reused verbatim. Delete
-        stale files first, then fetch once so all missing files are
-        recreated for the current window.
-        """
-        run_window = parse_run_window(p, logger_)
-        needs_fetch = False
-        for i in range(0, len(read_station_ctl_file[0])):
-            obs_path = os.path.join(p.data_observations_1d_station_path,
-                    str(read_station_ctl_file[0][i][0]+'_'+p.ofs+'_'+\
-                        name_var+'_station.obs'))
-            if os.path.isfile(obs_path):
-                if os.path.getsize(obs_path) > 0:
-                    obs_sig = cache_manifest.run_signature(
-                        p, variable=_NAME_TO_VARIABLE.get(name_var, name_var))
-                    stale_params = not cache_manifest.artifact_is_fresh(
-                        obs_path, obs_sig)
-                    if (run_window is not None
-                            and not covers_run_window(
-                                obs_path, run_window[0], run_window[1],
-                                logger=logger_)):
-                        logger_.warning(
-                            '%s does not cover the run window %s to %s '
-                            'and is likely left over from an earlier '
-                            'run. Deleting it and re-fetching '
-                            'observations.',
-                            obs_path, run_window[0], run_window[1])
-                        if remove_stale_artifact(
-                                obs_path,
-                                p.data_observations_1d_station_path,
-                                logger_):
-                            cache_manifest.forget_artifact(obs_path, p.data_observations_1d_station_path,
-                                                           logger_)
-                            needs_fetch = True
-                    elif stale_params:
-                        # Same window length but built under different
-                        # datum/station-owner/bins parameters -- delete and
-                        # re-fetch for the current run.
-                        logger_.warning(
-                            '%s was built for different run parameters and '
-                            'is likely left over from an earlier run. '
-                            'Deleting it and re-fetching observations.',
-                            obs_path)
-                        if remove_stale_artifact(
-                                obs_path,
-                                p.data_observations_1d_station_path,
-                                logger_):
-                            cache_manifest.forget_artifact(obs_path,
-                                                           p.data_observations_1d_station_path,
-                                                           logger_)
-                            cache_manifest.note_stale('obs')
-                            needs_fetch = True
-                    else:
-                        logger_.info('%s found', obs_path)
-                else:
-                    logger_.error('%s is empty', obs_path)
-            else:
-                logger_.error(
-                    '%s is missing, calling Obs Module', obs_path)
-                needs_fetch = True
-        if needs_fetch:
-            get_station_observations(p, logger_)
-
-    def _ensure_prd_files(read_ofs_ctl_file, p, name_var, logger_,
-                          cached_model=None):
-        """Check for missing or stale .prd files, extract if needed.
-        Returns the (possibly updated) cached model dataset.
-
-        Like the .obs files, .prd filenames do not encode the run
-        window, so files left over from an earlier run would be reused
-        verbatim. Delete stale files first, then extract once so all
-        missing files are recreated for the current window.
-        """
-        run_window = parse_run_window(p, logger_)
-        needs_model = False
-        for i in range(0, len(read_ofs_ctl_file[-1])):
-            if p.whichcast == 'forecast_a':
-                prd_path = (
-                    f'{p.data_model_1d_node_path}/'
-                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
-                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
-                    f'{p.forecast_hr}_{p.ofsfiletype}_model.prd'
-                )
-            else:
-                prd_path = (
-                    f'{p.data_model_1d_node_path}/'
-                    f'{read_ofs_ctl_file[-1][i]}_{p.ofs}_{name_var}_'
-                    f'{read_ofs_ctl_file[1][i]}_{p.whichcast}_'
-                    f'{p.ofsfiletype}_model.prd'
-                )
-            if os.path.isfile(prd_path):
-                prd_extra = {'whichcast': p.whichcast}
-                if p.whichcast == 'forecast_a':
-                    prd_extra['forecast_hr'] = p.forecast_hr
-                prd_sig = cache_manifest.run_signature(
-                    p, variable=_NAME_TO_VARIABLE.get(name_var, name_var),
-                    extra=prd_extra)
-                stale_params = not cache_manifest.artifact_is_fresh(
-                    prd_path, prd_sig)
-                if (run_window is not None
-                        and not covers_run_window(
-                            prd_path, run_window[0], run_window[1],
-                            logger=logger_)):
-                    logger_.warning(
-                        '%s does not cover the run window %s to %s and '
-                        'is likely left over from an earlier run. '
-                        'Deleting it and re-extracting model data.',
-                        prd_path, run_window[0], run_window[1])
-                    if remove_stale_artifact(
-                            prd_path, p.data_model_1d_node_path, logger_):
-                        cache_manifest.forget_artifact(prd_path,
-                                                       prop.data_model_1d_node_path,
-                                                       logger_)
-                        needs_model = True
-                elif stale_params:
-                    # Same window length but built under different
-                    # datum/station-owner/bins parameters -- re-extract.
-                    logger_.warning(
-                        '%s was built for different run parameters and is '
-                        'likely left over from an earlier run. Deleting it '
-                        'and re-extracting model data.', prd_path)
-                    if remove_stale_artifact(
-                            prd_path, p.data_model_1d_node_path, logger_):
-                        cache_manifest.forget_artifact(prd_path,
-                                                       prop.data_model_1d_node_path,
-                                                       logger_)
-                        cache_manifest.note_stale('prd')
-                        needs_model = True
-            else:
-                logger_.info('%s is missing', prd_path)
-                needs_model = True
-        if needs_model:
-            logger_.info('Calling OFS module for %s', p.whichcast)
-            result = get_node_ofs(p, logger_, model_dataset=cached_model)
-            if result is not None:
-                cached_model = result
-        return cached_model
-
     parallel_cfg = get_parallel_config(
         logger,
         config_file=getattr(prop, 'config_file', None),
     )
 
     def _skill_for_variable(variable, p):
+        """Process one variable and always emit the accounting ledger."""
+        _attach_ledger_view(p, variable)
+        try:
+            _skill_for_variable_body(variable, p)
+        finally:
+            # The blank-obs-ctl early return and any exception raised
+            # mid-variable must still leave the combined ledger on disk.
+            _emit_ledger(p, logger)
+
+    def _skill_for_variable_body(variable, p):
         """Process skill assessment for a single variable."""
         name_var = name_convent(variable)
-
-        # Attach a fresh station-drop ledger for this variable so every
-        # stage (matching, pairing, temporal overlap) can record why a
-        # station did or did not survive to the final CSV. Best-effort:
-        # the workflow runs identically if ledger construction fails.
-        try:
-            p.station_ledger = StationLedger(
-                ofs=getattr(p, 'ofs', ''),
-                variable=variable,
-                whichcast=getattr(p, 'whichcast', ''),
-                filetype=getattr(p, 'ofsfiletype', ''),
-            )
-        except (TypeError, ValueError):  # pragma: no cover - defensive only
-            p.station_ledger = None
 
         # =================================================================
         # This will try to read the station ctl file for the given ofs and
@@ -1086,6 +1437,24 @@ def get_skill(prop, logger):
             get_station_observations(p, logger)
         read_station_ctl_file = \
             station_ctl_file_extract(ctl_path)
+
+        # Reconcile the inventory against the obs ctl file so the ledger
+        # explains the very first reduction too -- stations that never
+        # reach the control file (issue #224). Done from the two files
+        # rather than inside the ctl writer so it also runs on the common
+        # cached-control-file pass, where the writer never executes.
+        reconcile_inventory(
+            getattr(p, 'station_ledger', None),
+            os.path.join(
+                p.control_files_path, f'inventory_all_{p.ofs}.csv'),
+            (
+                [row[0] for row in read_station_ctl_file[0]]
+                if read_station_ctl_file is not None else []
+            ),
+            variable,
+            logger,
+        )
+
         if read_station_ctl_file is not None:
             logger.info(
                 'Station ctl file (%s_%s_station.ctl) found in "%s/". '
@@ -1129,7 +1498,8 @@ def get_skill(prop, logger):
                     copy.copy(p), name_var, logger)
                 prd_future = executor.submit(
                     _ensure_prd_files, read_ofs_ctl_file,
-                    copy.copy(p), name_var, logger, cached_model)
+                    copy.copy(p), name_var, logger, cached_model,
+                    variable)
                 obs_future.result()
                 cached_model = prd_future.result()
                 _set_cached_model(p, cached_model)
@@ -1137,7 +1507,8 @@ def get_skill(prop, logger):
             # Sequential: check obs files, then prd files
             _ensure_obs_files(read_station_ctl_file, p, name_var, logger)
             cached_model = _ensure_prd_files(
-                read_ofs_ctl_file, p, name_var, logger, cached_model)
+                read_ofs_ctl_file, p, name_var, logger, cached_model,
+                variable)
             _set_cached_model(p, cached_model)
 
         if read_ofs_ctl_file is not None:
@@ -1257,42 +1628,6 @@ def get_skill(prop, logger):
                 p.ofs,
                 variable,
             )
-
-        # Emit the station accounting ledger for this variable so the
-        # obs->matched->paired->CSV reductions are explained in one place
-        # rather than scattered across per-station INFO/ERROR lines.
-        ledger = getattr(p, 'station_ledger', None)
-        if ledger is not None:
-            ledger.log_summary(logger)
-            try:
-                csv_path = os.path.join(
-                    p.control_files_path,
-                    f'station_ledger_{p.ofs}_{name_var}_'
-                    f'{p.whichcast}_{p.ofsfiletype}.csv',
-                )
-                # A pass that ran fresh node matching is authoritative and
-                # always (re)writes the CSV. A pass that reused cached ctl
-                # files (node matching never ran) only writes when it has
-                # drops of its own to report or no CSV exists yet —
-                # otherwise it would overwrite a richer ledger from the
-                # matching pass with a header-only file.
-                if (
-                    ledger.has_stage('node_match')
-                    or ledger.has_drops
-                    or not os.path.isfile(csv_path)
-                ):
-                    written = ledger.to_csv(csv_path)
-                    if written:
-                        logger.info('Station accounting ledger written to %s',
-                                    written)
-                else:
-                    logger.debug(
-                        'Station ledger CSV at %s left in place: this pass '
-                        'reused cached station matching and recorded no '
-                        'drops', csv_path)
-            except (OSError, ValueError):  # pragma: no cover - defensive only
-                logger.debug('Failed to write station ledger CSV',
-                             exc_info=True)
 
     # Variable processing runs sequentially here. Variable parallelism
     # is handled inside get_node_ofs (which loads the model once and

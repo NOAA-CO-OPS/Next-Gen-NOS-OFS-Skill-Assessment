@@ -31,14 +31,12 @@ Last Modified: 01/2026 - Refactored and updated to process model data if
 from __future__ import annotations
 
 import json
-import logging.config
 import math
 import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.path as mplPath
@@ -95,24 +93,8 @@ def param_val(netcdf_file_sat: str | None, prop1=None) -> tuple[Logger, list]:
     logger = None
     if logger is None:
         _conf = getattr(prop1, 'config_file', None) if prop1 is not None else None
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_rel = 'conf/logging.conf'
-        log_config_file = (
-            Path(__file__).parent.parent.parent.parent / log_config_rel
-        ).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-
-        # Create logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            getattr(prop1, 'path', None), utils.Utils(_conf).get_config_file())
 
     logger.info('--- Parsing to leaflet JSON file ---')
 
@@ -164,7 +146,8 @@ def param_val(netcdf_file_sat: str | None, prop1=None) -> tuple[Logger, list]:
     return (logger, outdir)
 
 
-def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
+def parse_leaflet_json(model, netcdf_file_sat, prop1,
+                       write_model: bool = True) -> None:
     """
     Process model and satellite data to Leaflet-compatible JSON files.
 
@@ -180,6 +163,12 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
         netcdf_file_sat: Path to concatenated satellite netCDF file
         prop1: Properties object with configuration
                Must have: model_source, ofs, whichcast, start/end dates
+        write_model: Write the model 2D JSONs. Set False when an
+            earlier call already wrote them for this window (both L3C
+            and SPoRT present). This also skips loading the model
+            variables, which is the dominant cost of this function, so a
+            dual-source run pays for the model read once rather than
+            twice.
 
     Returns:
         Status string indicating completion
@@ -191,7 +180,10 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
     Notes:
         - Processes SST, SSH, SSS, and surface currents (U/V)
         - Outputs JSON files named: {ofs}_{date}_{var}_{source}.json
-        - SPoRT processing returns early after completion
+        - Both satellite sources fall through to the model write, so a
+          run whose only satellite source is SPoRT still produces the
+          model 2D JSONs (issue #122). Pass ``write_model=False`` on a
+          second call for the same window to skip repeating them.
     """
     [logger, outdir] = param_val(netcdf_file_sat, prop1)
 
@@ -216,6 +208,10 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
     lon_grid = None
     lat_grid = None
     sst_in_model = None
+    ssh_in_model = None
+    sss_in_model = None
+    ssu_in_model = None
+    ssv_in_model = None
     if prop1.model_source == 'roms':
         logger.info('--- '+'ROMS: Calculating regular grid'+' ---')
         logger.info('Loading mask_rho...')
@@ -231,17 +227,26 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
         [lat_grid, lon_grid] = resample_latlon(lats[mask], lons[mask], prop1)
         logger.info('Loading ocean_time...')
         ocean_dtime = np.array(model['ocean_time'], dtype='datetime64[ns]')
-        logger.info('Loading temperature data (this may take a while)...')
-        sst_in_model = np.squeeze(np.asarray(model.variables['temp'][:][:,-1,:,:],))
-        logger.info('Loading sea surface height...')
-        ssh_in_model = np.squeeze(np.asarray(model.variables['zeta'][:]))
-        logger.info('Loading salinity data...')
-        sss_in_model = np.squeeze(np.asarray(model.variables['salt'][:][:,-1,:,:]))
-        logger.info('Loading u velocity...')
-        ssu_in_model = np.squeeze(np.asarray(model.variables['u_east'][:][:,-1,:,:]))
-        logger.info('Loading v velocity...')
-        ssv_in_model = np.squeeze(np.asarray(model.variables['v_north'][:][:,-1,:,:]))
-        # -1 index for surface level
+        # Only the target grid and the time axis are needed to interpolate
+        # satellite data; the model variables below are needed solely to
+        # write the model JSONs. Loading them forces the whole
+        # (time, eta, xi) stack into memory, which is the dominant cost of
+        # this function -- skip it when this pass is not writing them.
+        if write_model:
+            logger.info('Loading temperature data (this may take a while)...')
+            sst_in_model = np.squeeze(np.asarray(model.variables['temp'][:][:,-1,:,:],))
+            logger.info('Loading sea surface height...')
+            ssh_in_model = np.squeeze(np.asarray(model.variables['zeta'][:]))
+            logger.info('Loading salinity data...')
+            sss_in_model = np.squeeze(np.asarray(model.variables['salt'][:][:,-1,:,:]))
+            logger.info('Loading u velocity...')
+            ssu_in_model = np.squeeze(np.asarray(model.variables['u_east'][:][:,-1,:,:]))
+            logger.info('Loading v velocity...')
+            ssv_in_model = np.squeeze(np.asarray(model.variables['v_north'][:][:,-1,:,:]))
+            # -1 index for surface level
+        else:
+            logger.info('Model variables already loaded and written for this '
+                        'window; skipping the model data load.')
         logger.info('--- '+'ROMS: finished calculating regular grid'+' ---')
 
     elif prop1.model_source == 'fvcom':
@@ -252,13 +257,19 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
         lats_c = np.asarray(model.variables['latc'][:])
         [lat_grid, lon_grid] = resample_latlon(lats, lons, prop1)
         ocean_dtime = np.array(model['time'], dtype='datetime64[ns]')
-        # 0 index for surface level
-        sst_in_model = np.asarray(model.variables['temp'][:][:,0,:])
-        # 0 index for surface level
-        ssh_in_model = np.asarray(model.variables['zeta'][:])
-        sss_in_model = np.asarray(model.variables['salinity'][:][:,0,:])
-        ssu_in_model = np.asarray(model.variables['u'][:][:,0,:])
-        ssv_in_model = np.asarray(model.variables['v'][:][:,0,:])
+        # See the ROMS branch above: these are only needed to write the
+        # model JSONs.
+        if write_model:
+            # 0 index for surface level
+            sst_in_model = np.asarray(model.variables['temp'][:][:,0,:])
+            # 0 index for surface level
+            ssh_in_model = np.asarray(model.variables['zeta'][:])
+            sss_in_model = np.asarray(model.variables['salinity'][:][:,0,:])
+            ssu_in_model = np.asarray(model.variables['u'][:][:,0,:])
+            ssv_in_model = np.asarray(model.variables['v'][:][:,0,:])
+        else:
+            logger.info('Model variables already loaded and written for this '
+                        'window; skipping the model data load.')
         logger.info('--- '+'FVCOM: finished calculating regular grid'+' ---')
 
     ocean_dtime = [
@@ -285,69 +296,77 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
     elif not os.path.isfile(netcdf_file_sat):
         logger.warning('Satellite file not found: %s. Processing model data only.',
                        netcdf_file_sat)
-    else:
+    elif 'sport' in str(netcdf_file_sat):
+        # SPoRT writes its own satellite JSONs and contributes no L3C
+        # arrays, so has_satellite_data stays False and the model write
+        # below runs exactly as it does in the no-satellite case. This
+        # used to return here instead, which left data/model/2d empty
+        # whenever SPoRT was the only satellite source available and
+        # aborted the downstream plotting step (issue #122).
         try:
-            if 'sport' in str(netcdf_file_sat):
+            logger.info(
+                '--- '+'Satellite: Processing SPoRT observations'+' ---',
+            )
+            nc_sat = Dataset(netcdf_file_sat, 'r')
+            lons_sport = np.asarray(nc_sat.variables['lon'][:])
+            lats_sport = np.asarray(nc_sat.variables['lat'][:])
+            lons_sport, lats_sport = np.meshgrid(lons_sport, lats_sport)
+            dtime_sport = pd.to_datetime(
+                nc_sat['time'][:], unit='s', origin='1981-01-01',
+            )
+            sst_in_sport = nc_sat['analysed_sst'][:]-273.15
+            for i, t in enumerate(dtime_sport):
+                out_file_sport = os.path.join(
+                    outdir[1], str(
+                        prop1.ofs+'_' +
+                        t.strftime('%Y%m%d-%Hz')+'_sst_SPoRT.json',
+                    ),
+                )
+                out_file_sportL = os.path.join(
+                    outdir[1], str(
+                        prop1.ofs+'_' +
+                        t.strftime('%Y%m%d-%Hz')+'_lnc_SPoRT.json',
+                    ),
+                )
+                sst_sat_sport = interp_grid(
+                    lons_sport.ravel(),
+                    lats_sport.ravel(),
+                    sst_in_sport[i, :, :].ravel(),
+                    lon_grid, lat_grid, logger, prop1,
+                )
+
+                latency_sat_sport = interp_grid(
+                    lons_sport.ravel(),
+                    lats_sport.ravel(),
+                    nc_sat['latency'][:][i, :, :].ravel(),
+                    lon_grid, lat_grid, logger, prop1,
+                )
+
                 logger.info(
-                    '--- '+'Satellite: Processing SPoRT observations'+' ---',
+                    '--- Writing 2D leaflet JSON file to: %s ---', out_file_sport,
                 )
-                nc_sat = Dataset(netcdf_file_sat, 'r')
-                lons_sport = np.asarray(nc_sat.variables['lon'][:])
-                lats_sport = np.asarray(nc_sat.variables['lat'][:])
-                lons_sport, lats_sport = np.meshgrid(lons_sport, lats_sport)
-                dtime_sport = pd.to_datetime(
-                    nc_sat['time'][:], unit='s', origin='1981-01-01',
+                write_2d_arrays_to_json(
+                    lat_grid, lon_grid,
+                    np.round(sst_sat_sport, decimals=2),
+                    out_file_sport,
                 )
-                sst_in_sport = nc_sat['analysed_sst'][:]-273.15
-                for i, t in enumerate(dtime_sport):
-                    out_file_sport = os.path.join(
-                        outdir[1], str(
-                            prop1.ofs+'_' +
-                            t.strftime('%Y%m%d-%Hz')+'_sst_SPoRT.json',
-                        ),
-                    )
-                    out_file_sportL = os.path.join(
-                        outdir[1], str(
-                            prop1.ofs+'_' +
-                            t.strftime('%Y%m%d-%Hz')+'_lnc_SPoRT.json',
-                        ),
-                    )
-                    sst_sat_sport = interp_grid(
-                        lons_sport.ravel(),
-                        lats_sport.ravel(),
-                        sst_in_sport[i, :, :].ravel(),
-                        lon_grid, lat_grid, logger, prop1,
-                    )
 
-                    latency_sat_sport = interp_grid(
-                        lons_sport.ravel(),
-                        lats_sport.ravel(),
-                        nc_sat['latency'][:][i, :, :].ravel(),
-                        lon_grid, lat_grid, logger, prop1,
-                    )
-
-                    logger.info(
-                        '--- Writing 2D leaflet JSON file to: %s ---', out_file_sport,
-                    )
-                    write_2d_arrays_to_json(
-                        lat_grid, lon_grid,
-                        np.round(sst_sat_sport, decimals=2),
-                        out_file_sport,
-                    )
-
-                    write_2d_arrays_to_json(
-                        lat_grid, lon_grid,
-                        np.round(latency_sat_sport, decimals=2),
-                        out_file_sportL,
-                    )
-                nc_sat.close()
-                return
-        except (UnboundLocalError, FileNotFoundError) as e:
+                write_2d_arrays_to_json(
+                    lat_grid, lon_grid,
+                    np.round(latency_sat_sport, decimals=2),
+                    out_file_sportL,
+                )
+            nc_sat.close()
+        except (UnboundLocalError, FileNotFoundError, OSError,
+                KeyError, IndexError) as e:
+            # A SPoRT file missing an expected variable should degrade
+            # to model-only output, not end the run.
             logger.warning('Problem processing SPoRT satellite file: %s. '
                            'Processing model data only.', e)
             if 'nc_sat' in locals():
                 nc_sat.close()
 
+    else:
         # process satellite netcdf (L3C)
         try:
             logger.info('--- '+'Satellite: Processing l3c observations'+' ---')
@@ -377,6 +396,13 @@ def parse_leaflet_json(model, netcdf_file_sat, prop1) -> None:
             has_satellite_data = True
         except FileNotFoundError:
             logger.warning('L3C Satellite data not found. Processing model data only.')
+
+    if not write_model:
+        logger.info(
+            '--- Model 2D JSONs already written for this window; '
+            'skipping model output for this satellite source ---',
+        )
+        return
 
     ### This section does the daily averages ###
     # Compute and write daily avg for model
@@ -786,12 +812,15 @@ def _build_ascii_grid_filename(
         # Match the scalar model JSON hour tag so the front end can pair the
         # vector layers with the SST/SSH/SSS layers on the same time axis.
         date_str = dtime.strftime('%Y%m%d-%Hz')
+        try:
+            date_str = date_str.split('-')[0] + '-' + whichcast[0] + date_str.split('-')[1]
+        except IndexError:
+            pass
         suffix = None
     if suffix is None:
-        return os.path.join(
-            outdir,
-            f'{ofs}_{derived_var}_{date_str}.txt',
-        )
+        fname = f'{ofs}_{derived_var}_{date_str}.txt'
+        return os.path.join(outdir, fname)
+
     return os.path.join(
         outdir,
         f'{ofs}_{derived_var}_{date_str}_{suffix}.txt',
@@ -918,6 +947,47 @@ def _process_variables_parallel(
     return velocity_cache
 
 
+def _domain_mask_paths(prop1, logger: Logger) -> tuple[str, str]:
+    """
+    Locate the OFS extent shapefile and the derived domain-mask cache.
+
+    The shapefile is an input asset that ships with the installation, so it
+    goes through :func:`utils.resolve_asset_path` — the same lookup
+    ``create_2dplot`` validates the run with — and a copy under the working
+    directory wins. The mask is *generated*, so it belongs with the run's
+    output: writing it back beside the shapefile fails outright when the
+    installation is read-only, and otherwise leaves one user's derived
+    artifact in shared installation state.
+
+    Parameters
+    ----------
+    prop1
+        Properties object carrying ``ofs``, ``path`` and ``config_file``.
+    logger : Logger
+        Logger passed through to the config reader.
+
+    Returns
+    -------
+    tuple of str
+        ``(shapefile_path, mask_cache_path)``.
+    """
+    base_path = getattr(prop1, 'path', None)
+    extents_path = getattr(prop1, 'ofs_extents_path', '') or \
+        utils.resolve_asset_path(base_path, 'ofs_extents')
+    shapefile_path = os.path.join(str(extents_path), f'{prop1.ofs}.shp')
+
+    _conf = getattr(prop1, 'config_file', None)
+    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    cache_dir = os.path.join(
+        str(base_path or '.'),
+        dir_params['data_dir'],
+        dir_params['model_dir'],
+        '2d_masks',
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    return shapefile_path, os.path.join(cache_dir, f'{prop1.ofs}_mask.npy')
+
+
 def interp_grid(
     lons: npt.NDArray,
     lats: npt.NDArray,
@@ -955,7 +1025,8 @@ def interp_grid(
         5. Apply OFS domain mask from cached/generated shapefile mask
 
     Notes:
-        - Caches domain mask as {ofs}.shp_mask.npy for reuse
+        - Caches the domain mask as {ofs}_mask.npy under the configured
+          data_dir so a read-only installation is never written to
         - Uses vertex decimation (every 5th point) for fast polygon checks
         - Parallel processing disabled (num_threads=0) for compatibility
 
@@ -1053,11 +1124,8 @@ def interp_grid(
     # --- Apply Shapefile Mask ---
     # ==========================================
     logger.info('--- Applying OFS Shapefile Mask ---')
-    grid_shapefile = Path(__file__).parents[3] / 'ofs_extents' / f'{prop1.ofs}.shp'
+    grid_shapefile, mask_cache_file = _domain_mask_paths(prop1, logger)
     logger.debug('Shapefile path: %s', grid_shapefile)
-
-    # Define cache file path
-    mask_cache_file = str(grid_shapefile).replace('.shp', '_mask.npy')
     mask_to_apply = None
 
     # Try to load from cache
@@ -1072,7 +1140,7 @@ def interp_grid(
         mask_to_apply = generate_domain_mask_bool(
             targets[:, 0],
             targets[:, 1],
-            str(grid_shapefile),
+            grid_shapefile,
             logger
         )
         # Save for future use

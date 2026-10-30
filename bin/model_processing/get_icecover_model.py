@@ -5,11 +5,9 @@ Returns 2D model output, lats, lons, and time as numpy arrays.
 from __future__ import annotations
 
 import argparse
-import logging.config
 import os
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -56,23 +54,13 @@ def get_indices_for_day(datetime_list, target_date):
     return [i for i, dt_obj in enumerate(datetime_list) if dt_obj.date() == target_date.date()]
 
 
-def _setup_logger(logger, config_file=None):
+def _setup_logger(logger, config_file=None, base_path=None):
     """Initialize logger if not provided."""
     if logger is not None:
         return logger
 
-    config_file = utils.Utils(config_file).get_config_file()
-    log_config_file = (Path(__file__).parent.parent.parent / 'conf/logging.conf').resolve()
-
-    for file in [log_config_file, config_file]:
-        if not os.path.isfile(file):
-            sys.exit(-1)
-
-    logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger('root')
-    logger.info('Using config %s', config_file)
-    logger.info('Using log config %s', log_config_file)
-    return logger
+    return utils.init_root_logger(
+        base_path, utils.Utils(config_file).get_config_file())
 
 
 def _get_variable_names(model_src):
@@ -128,7 +116,8 @@ def _process_daily_composite(prop, logger, list_files, list_days, ice_name, x_na
 def get_icecover_model(prop, logger):
     """Main function to retrieve OFS ice cover model data."""
     prop.model_source = model_source.model_source(prop.ofs)
-    logger = _setup_logger(logger, getattr(prop, 'config_file', None))
+    logger = _setup_logger(
+        logger, getattr(prop, 'config_file', None), getattr(prop, 'path', None))
     logger.info('--- Starting OFS ice cover process ---')
 
     # Validate model source.
@@ -201,6 +190,30 @@ def get_icecover_model(prop, logger):
     return icecover_m, lon_m, lat_m, time_m
 
 
+def _build_properties(run_args):
+    """Assemble the ModelProperties object from parsed CLI arguments.
+
+    Split out of ``__main__`` so the path resolution is testable. ``-p`` is
+    optional here, and ``ofs_extents/`` ships with the installation, so the
+    extents directory goes through ``resolve_asset_path`` rather than being
+    concatenated onto ``run_args.Path`` — which required a trailing slash and
+    raised TypeError outright when ``-p`` was omitted.
+    """
+    prop1 = model_properties.ModelProperties()
+    prop1.ofs = run_args.OFS
+    prop1.path = run_args.Path
+    prop1.config_file = run_args.config
+    prop1.ofs_extents_path = utils.resolve_asset_path(
+        run_args.Path, 'ofs_extents')
+    prop1.start_date_full = run_args.StartDate
+    prop1.end_date_full = run_args.EndDate
+    prop1.whichcast = run_args.Whichcasts
+    prop1.model_source = model_source.model_source(run_args.OFS)
+    prop1.forecast_hr = (
+        run_args.Forecast_Hr if prop1.whichcast == 'forecast_a' else None)
+    return prop1
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog='python get_icecover_fvcom.py',
@@ -217,15 +230,5 @@ if __name__ == '__main__':
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
     args = parser.parse_args()
-    prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.OFS
-    prop1.path = args.Path
-    prop1.config_file = args.config
-    prop1.ofs_extents_path = args.Path + 'ofs_extents/'
-    prop1.start_date_full = args.StartDate
-    prop1.end_date_full = args.EndDate
-    prop1.whichcast = args.Whichcasts
-    prop1.model_source = model_source.model_source(args.OFS)
-    prop1.forecast_hr = args.Forecast_Hr if prop1.whichcast == 'forecast_a' else None
 
-    get_icecover_model(prop1, None)
+    get_icecover_model(_build_properties(args), None)

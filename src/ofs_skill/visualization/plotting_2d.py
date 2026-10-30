@@ -456,7 +456,7 @@ def plot_2dstats(stats1d_all, time_all, prop1, logger):
     logger.debug(f'Finished writing file: {output_file}')
 
 
-def plot_2d(prop1,logger):
+def plot_2d(prop1, logger: Logger) -> None:
     """
     this big 'ol function takes the ofs and satellite data, does stats,
     saves maps to JSON format, and saves 1D time series to plots.
@@ -464,8 +464,12 @@ def plot_2d(prop1,logger):
     # Lazy import to avoid pyinterp dependency issues at module load time
     from ofs_skill.visualization.processing_2d import write_2d_arrays_to_json
 
-    # Should we make plotly maps for offline viewing? True or False
-    make_plotly_maps = False
+    # Should we make plotly maps for offline viewing? True or False.
+    # Driven by the [settings] make_plotly_2d_maps config key, which
+    # create_2dplot.py resolves onto prop1 before calling this function.
+    # Default to False when the attribute is absent (e.g. standalone calls)
+    # so behavior is unchanged for configs that omit the key.
+    make_plotly_maps = getattr(prop1, 'make_plotly_2d_maps', False)
     logger.info('Make plotly express maps? %s.', make_plotly_maps)
 
     #
@@ -556,10 +560,11 @@ def plot_2d(prop1,logger):
         if is_it_nans:
             logger.error('Satellite data is entirely NaNs for each time step! '
                          'No stats can be calculated.')
-            logger.info('Even though satellite data is blank, we can still '
-                        'make plotly express maps of the model data.')
-            make_2d_skill_maps.make_2d_skill_maps\
-                (z_mod,y_sat,x_sat,sat_dates,'mod',sat_source,prop1,logger)
+            if make_plotly_maps:
+                logger.info('Even though satellite data is blank, we can still '
+                            'make plotly express maps of the model data.')
+                make_2d_skill_maps.make_2d_skill_maps\
+                    (z_mod,y_sat,x_sat,sat_dates,'mod',sat_source,prop1,logger)
             return
 
         #Get time steps for looping, if model and satellite shapes are the same

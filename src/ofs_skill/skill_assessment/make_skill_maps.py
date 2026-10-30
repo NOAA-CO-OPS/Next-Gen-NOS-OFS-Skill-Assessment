@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 
 from ofs_skill.obs_retrieval.utils import resolve_asset_path
 from ofs_skill.skill_assessment.nos_metrics import get_error_threshold
+from ofs_skill.utils import plot_units
 
 
 def make_skill_maps(
@@ -131,25 +132,15 @@ def make_skill_maps(
     datestrend = (prop.end_date_full).split('T')[0]
     datestrbeg = (prop.start_date_full).split('T')[0]
 
-    title_map = {'water_level': 'water level',
-                 'water_level_hw': 'water level high water extrema',
-                 'water_level_lw': 'water level low water extrema',
-                 'salinity': 'salinity',
-                 'water_temperature': 'temperature',
-                 'currents': 'current speed',
-                 'currents_dir': 'current direction',
-                 }
-    unit_map = {'water_level': 'm',
-                'water_level_hw': 'm',
-                'water_level_lw': 'm',
-                'salinity': 'PSU',
-                'water_temperature': '\u00b0C',
-                'currents': 'm/s',
-                'currents_dir': '\u00b0',
-                }
-
-    title_var = title_map.get(variable, variable)
-    title_unit = unit_map.get(variable, variable)
+    # Variable naming and units come from ofs_skill.utils.plot_units so
+    # the maps, the station summary bars and the horizon plots can never
+    # disagree about what a variable is measured in. An unmapped variable
+    # echoes its own name in the title and renders no unit at all, rather
+    # than the old unit_map.get(variable, variable) fallback which
+    # printed the variable name in the unit slot.
+    title_var = plot_units.quantity_label(
+        variable, logger, fallback=str(variable)).lower()
+    unit_sfx = plot_units.unit_suffix(variable, logger=logger)
 
     map_width = 1000
     map_height = 650
@@ -169,15 +160,25 @@ def make_skill_maps(
         zoom_lat = math.log2(180 / lat_diff) if lat_diff > 0 else 15.0
         zoom_level = min(zoom_lon, zoom_lat) - 0.25
 
-    # Base Titles
-    plottitle_rmse = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} RMSE statistics, {datestrbeg} - {datestrend}"
-    plottitle_cf = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} central frequency, {datestrbeg} - {datestrend}"
-    plottitle_mb = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var} mean bias, {datestrbeg} - {datestrend}"
+    # Base Titles. Plotly does not wrap a figure title, it clips it at
+    # the figure edge, and at font size 22 in a 1000px-wide figure the
+    # longest single-line variants (e.g. STOFS_3D_ATL water level high
+    # water extrema) already overflowed before the unit was added. The
+    # explicit '<br>' puts the date range on its own line so every
+    # variant fits, and it also buys back vertical room next to the
+    # legend.
+    title_head = f"{prop.ofs.upper()} {prop.whichcast.split('_')[0]} {title_var}"
+    daterange = f'{datestrbeg} - {datestrend}'
+    plottitle_rmse = f'{title_head} RMSE{unit_sfx} statistics,<br>{daterange}'
+    plottitle_cf = f'{title_head} central frequency (%),<br>{daterange}'
+    plottitle_mb = f'{title_head} mean bias{unit_sfx},<br>{daterange}'
 
     # ========================================================
     #                     CALCULATE RMSE LOGIC
     # ========================================================
-    threshold_key = 'cu_dir' if variable == 'currents_dir' else name_var
+    # Same normalization that resolved the unit above, so the target
+    # error and the unit can never be looked up under different keys.
+    threshold_key = plot_units.canonical_key(variable) or name_var
     target_error, _ = get_error_threshold(
         threshold_key, resolve_asset_path(prop.path, 'conf', 'error_ranges.csv'),
     )
@@ -281,10 +282,25 @@ def make_skill_maps(
         'PO freq pass/fail ', 'Negative outlier freq ', 'NO freq pass/fail '
     ]
 
+    # Unit suffixes for the hover rows, keyed on the raw dataframe column
+    # names (which must not change -- they are px custom_data keys).
+    # Anything absent is dimensionless: R and the pass/fail flags, and
+    # also 'Worst case outlier freq', which for the water level extrema
+    # actually carries timing RMSE in hours rather than a frequency (a
+    # pre-existing mislabel, tracked separately).
+    hover_units = {
+        'RMSE ': unit_sfx,
+        'Target RMSE ': unit_sfx,
+        'Mean bias ': unit_sfx,
+        'Central freq ': ' (%)',
+        'Positive outlier freq ': ' (%)',
+        'Negative outlier freq ': ' (%)',
+    }
+
     def build_hovertemplate(cols):
         template = '<b>%{hovertext}</b><br><br>'
         for i, col in enumerate(cols):
-            label = col.strip()
+            label = col.strip() + hover_units.get(col, '')
             template += f'{label}: %{{customdata[{i}]}}<br>'
         template += '<extra></extra>'
         return template
@@ -349,7 +365,7 @@ def make_skill_maps(
             colorscale=color_scale_rmse,
             cmin=0, cmax=display_max_rmse,
             colorbar=dict(
-                title=dict(text=f'RMSE ({title_unit})', font=dict(color='black')),
+                title=dict(text=f'RMSE{unit_sfx}', font=dict(color='black')),
                 tickfont=dict(color='black'),
                 tickvals=tick_values_rmse,
                 ticktext=tick_labels_rmse,
@@ -379,7 +395,7 @@ def make_skill_maps(
             cmin=-mb_cap, cmax=mb_cap,
             showscale=False,
             colorbar=dict(
-                title=dict(text=f'Mean bias ({title_unit})', font=dict(color='black')),
+                title=dict(text=f'Mean bias{unit_sfx}', font=dict(color='black')),
                 tickfont=dict(color='black'),
                 tickvals=tick_values_mb,
                 ticktext=tick_labels_mb,

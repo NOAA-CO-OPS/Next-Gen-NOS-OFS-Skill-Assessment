@@ -42,7 +42,18 @@ from ofs_skill.utils.file_headers import (
     series_header,
     strip_model_ctl_header,
 )
-from ofs_skill.utils.timeseries_coverage import covers_run_window, parse_run_window
+from ofs_skill.utils.series_continuation import (
+    MAX_SEAM_GAP_HOURS,
+    SEAM_CHECK_WINDOW_HOURS,
+    merge_and_write,
+)
+from ofs_skill.utils.timeseries_coverage import (
+    clamp_window_to_coverage,
+    covers_run_window,
+    created_this_run,
+    dataset_time_bounds,
+    parse_run_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1690,10 +1701,103 @@ def read_custom_filenames(filepath):
     return lines
 
 
-def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var, expected_timesteps, logger):
+def _merge_filename_key(filepath, serieskey, logger):
+    """Combine a continuation tail's filename key with the existing one.
+
+    Rows are keyed on ``DateTime``; the newly extracted span wins, since
+    a re-extraction may legitimately have used a different model file for
+    a timestamp. Returns the incoming frame unchanged if the file on disk
+    cannot be read, so a damaged key can never take the tail down with
+    it.
+    """
+    try:
+        previous = pd.read_csv(filepath, index_col='DateTime',
+                               parse_dates=['DateTime'])
+    except (OSError, ValueError, KeyError) as ex:
+        logger.warning(
+            'Could not read the existing filename key %s (%s); writing '
+            'only the newly extracted span.', filepath, ex)
+        return serieskey
+    combined = pd.concat([previous, serieskey])
+    combined = combined[~combined.index.duplicated(keep='last')]
+    return combined.sort_index()
+
+
+# get_datum_offset signals every failure mode (missing vdatum file,
+# unreachable bucket, unconvertible point) with a large negative
+# sentinel, and format_waterlevel then writes the series unshifted. The
+# guards there are `> -999` / `-999 < x < 999`, so this mirrors them.
+def _datum_offset_applied(datum_offset):
+    """True if this station's water levels actually got a datum shift."""
+    if datum_offset is None:
+        return None
+    return -999 < float(datum_offset) < 999
+
+
+def _write_prd(path, formatted_series, name_var, prop_local, logger,
+               datum_offset=None):
+    """Write one station's model series, extending it in continuation mode.
+
+    Outside a continuation run this is the plain truncate-and-write the
+    extraction has always done. Inside one, ``formatted_series`` holds
+    only the tail span that was just extracted, so it is merged into the
+    rows already on disk. A refused merge leaves the file untouched and
+    logs why; the coverage gate in ``_ensure_prd_files`` then sees the
+    file still short of the window and re-extracts it in full.
+
+    ``datum_offset`` guards the water-level case: the tail run resolves
+    the vertical datum independently of the run that wrote the head, and
+    that lookup can fail (unreachable vdatum bucket, missing file) in
+    which case the rows are written unshifted. Splicing unshifted rows
+    onto shifted ones would put a step of tens of centimeters in the
+    middle of the series with nothing in the file to show for it, so the
+    merge is refused instead.
+
+    Returns ``True`` when the file on disk now reflects this run (a plain
+    write, or an accepted merge) and ``False`` when a continuation merge
+    was refused and the file was left as it was. Callers use that to
+    decide whether to stamp the cache manifest: stamping a file we did
+    not actually update would certify the *old* span under the new run's
+    signature, and the next run would then reuse a short series.
+    """
+    if getattr(prop_local, 'continuation_prd_merge', False):
+        if _datum_offset_applied(datum_offset) is False:
+            logger.warning(
+                'Continuation run: the vertical datum could not be '
+                'resolved for %s, so the newly extracted rows are '
+                'unshifted and cannot be joined to the existing series. '
+                'Leaving the file for a full re-extraction.', path)
+            return False
+        if merge_and_write(
+                path, formatted_series, series_header(name_var), logger,
+                max_seam_gap_seconds=MAX_SEAM_GAP_HOURS * 3600,
+                seam_window=timedelta(hours=SEAM_CHECK_WINDOW_HOURS)):
+            return True
+        logger.warning(
+            'Could not extend %s with the newly extracted span; it will '
+            'be re-extracted over the full window.', path)
+        return False
+
+    with open(path, 'w', encoding='utf-8') as output:
+        if len(formatted_series) > 0:
+            output.write(series_header(name_var))
+        for line in formatted_series:
+            output.write(str(line) + '\n')
+    logger.info('%s created successfully', path)
+    return True
+
+
+def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var,
+                            expected_timesteps, logger,
+                            time_bounds=None):
     """Return ``True`` iff every per-station ``.prd`` file for this
     (variable, whichcast, ofsfiletype) combo exists on disk with the
     expected number of data rows.
+
+    ``time_bounds`` is the model dataset's (first, last) time-axis
+    span when the caller has it; the run-window coverage check below is
+    clamped to it so files covering everything the catalog can provide
+    are reused instead of being re-extracted on every run.
 
     A SIGKILL during the per-station write loop can leave one ``.prd``
     truncated to N-1 rows. Without a row-count check the next run would
@@ -1708,6 +1812,14 @@ def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var, expected_timestep
     """
     n_stations = len(ofs_ctlfile[1])
     if n_stations == 0:
+        return False
+
+    if getattr(prop_local, 'continuation_prd_merge', False):
+        # Continuation tail extraction. Every check below is written
+        # against the *run* window, which here is only the tail, so a
+        # full-window file on disk would look complete and short-circuit
+        # the very extraction we came to do. The merge at the write site
+        # is what makes re-running it cheap and idempotent.
         return False
 
     def _prd_path(idx):
@@ -1769,12 +1881,21 @@ def _all_prd_files_complete(prop_local, ofs_ctlfile, name_var, expected_timestep
     # Row counts alone cannot distinguish a fresh file from one left over
     # by an earlier run of the same window length (daily operational runs
     # produce identical row counts every day). Check that the files
-    # actually cover the requested run window before reusing them.
+    # actually cover the reachable run window before reusing them —
+    # clamped to the catalog's own coverage, since re-extracting cannot
+    # produce data the archive does not have.
     run_window = parse_run_window(prop_local, logger)
+    run_window = clamp_window_to_coverage(
+        run_window, time_bounds, logger=logger, label=name_var)
     if run_window is not None:
         for i in range(n_stations):
             path = _prd_path(i)
-            if not covers_run_window(path, run_window[0], run_window[1], logger=logger):
+            if created_this_run(path):
+                # Written by the current process; re-extracting would
+                # reproduce it identically.
+                continue
+            if not covers_run_window(path, run_window[0], run_window[1],
+                                     logger=logger):
                 logger.warning(
                     'Resume check: %s does not cover the run window '
                     '%s to %s — likely left over from an earlier run. '
@@ -1815,17 +1936,7 @@ def get_node_ofs(prop, logger, model_dataset=None):
     """
     prop.model_source = get_model_source(prop.ofs)
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent / log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(prop.path)
 
     logger.info('--- Starting OFS Model process ---')
 
@@ -1968,7 +2079,15 @@ def get_node_ofs(prop, logger, model_dataset=None):
         # time series
         logger.info('Writing model time series filename key!')
         filename = f'{prop.ofs}_{prop.whichcast}_filename_key.csv'
-        filepath = Path(os.path.join(prop.data_model_1d_node_path, filename)).as_posix()
+        filepath = Path(os.path.join(prop.data_model_1d_node_path,
+                                     filename)).as_posix()
+        if (getattr(prop, 'continuation_prd_merge', False)
+                and os.path.isfile(filepath)):
+            # A continuation pass only loaded the tail's model files, so
+            # writing this key wholesale would drop every filename the
+            # earlier run recorded -- and the plot-side merge would then
+            # lose the hover text for the whole head of the series.
+            serieskey = _merge_filename_key(filepath, serieskey, logger)
         serieskey.to_csv(filepath, index_label='DateTime')
     except KeyError:
         logger.error(
@@ -2082,8 +2201,9 @@ def get_node_ofs(prop, logger, model_dataset=None):
                     expected_ts = None
 
                 if n_stations > 0 and _all_prd_files_complete(
-                    prop_local, ofs_ctlfile, name_conventions[0], expected_ts, logger
-                ):
+                        prop_local, ofs_ctlfile, name_conventions[0],
+                        expected_ts, logger,
+                        time_bounds=dataset_time_bounds(model)):
                     logger.info(
                         '[%s] all %d .prd file(s) on disk look complete '
                         '— skipping precompute and per-station writes',
@@ -2160,45 +2280,26 @@ def get_node_ofs(prop, logger, model_dataset=None):
                 if (prop_local.whichcast == 'forecast_a' and
                     not prop_local.horizonskill):
                     prd_path_fa = (
-                        r''
-                        + f'{prop_local.data_model_1d_node_path}'
-                          f'/{ofs_ctlfile[4][i]}_'
-                          f'{prop_local.ofs}_{name_conventions[0]}_'
-                          f'{ofs_ctlfile[1][i]}_'
-                          f'{prop_local.whichcast}_{prop_local.forecast_hr}_'
-                          f'{prop_local.ofsfiletype}_model.prd'
-                    )
-                    with open(
-                        prd_path_fa,
-                        'w',
-                        encoding='utf-8',
-                    ) as output:
-                        # Same header as the other .prd branch so the
-                        # file format is not cast-dependent; omitted
-                        # for empty series to keep blank files 0 bytes.
-                        if len(formatted_series) > 0:
-                            output.write(series_header(name_conventions[0]))
-                        for line in formatted_series:
-                            output.write(str(line) + '\n')
-                        logger.info(
-                            '%s/%s_%s_%s_%s_%s_%s_%s_model.prd created ' 'successfully',
-                            prop_local.data_model_1d_node_path,
-                            ofs_ctlfile[4][i],
-                            prop_local.ofs,
-                            name_conventions[0],
-                            ofs_ctlfile[1][i],
-                            prop_local.whichcast,
-                            prop_local.forecast_hr,
-                            prop_local.ofsfiletype,
-                        )
-                    cache_manifest.record_artifact(
-                        prd_path_fa,
-                        cache_manifest.run_signature(
-                            prop_local, variable=variable,
-                            extra={'whichcast': prop_local.whichcast,
-                                   'forecast_hr': prop_local.forecast_hr}),
-                        prop.data_model_1d_node_path,
-                        logger)
+                        f'{prop_local.data_model_1d_node_path}'
+                        f'/{ofs_ctlfile[4][i]}_'
+                        f'{prop_local.ofs}_{name_conventions[0]}_'
+                        f'{ofs_ctlfile[1][i]}_'
+                        f'{prop_local.whichcast}_{prop_local.forecast_hr}_'
+                        f'{prop_local.ofsfiletype}_model.prd')
+                    # Same header as the other .prd branch so the file
+                    # format is not cast-dependent; omitted for empty
+                    # series to keep blank files 0 bytes.
+                    if _write_prd(prd_path_fa, formatted_series,
+                                  name_conventions[0], prop_local, logger,
+                                  datum_offset):
+                        cache_manifest.record_artifact(
+                            prd_path_fa,
+                            cache_manifest.run_signature(
+                                prop_local, variable=variable,
+                                extra={'whichcast': prop_local.whichcast,
+                                       'forecast_hr': prop_local.forecast_hr}),
+                            prop.data_model_1d_node_path,
+                            logger)
                 elif (prop_local.horizonskill and os.path.isfile(
                         f'{prop_local.data_model_1d_node_path}/'
                         f'{ofs_ctlfile[-1][i]}_{prop_local.ofs}_{name_conventions[0]}_'
@@ -2248,43 +2349,25 @@ def get_node_ofs(prop, logger, model_dataset=None):
                         return (datum_offset, model_station)
                 else:
                     prd_path_std = (
-                        r''
-                        + f'{prop_local.data_model_1d_node_path}/'
-                          f'{ofs_ctlfile[4][i]}_'
-                          f'{prop_local.ofs}_'
-                          f'{name_conventions[0]}_{ofs_ctlfile[1][i]}'
-                          f'_{prop_local.whichcast}_'
-                          f'{prop_local.ofsfiletype}_model.prd'
-                    )
-                    with open(
-                        prd_path_std,
-                        'w',
-                        encoding='utf-8',
-                    ) as output:
-                        # Header only when there is data: an empty .prd
-                        # must stay 0 bytes so the getsize() blank-file
-                        # checks downstream keep working.
-                        if len(formatted_series) > 0:
-                            output.write(series_header(name_conventions[0]))
-                        for line in formatted_series:
-                            output.write(str(line) + '\n')
-                        logger.info(
-                            '%s/%s_%s_%s_%s_%s_%s_model.prd created successfully',
-                            prop_local.data_model_1d_node_path,
-                            ofs_ctlfile[4][i],
-                            prop_local.ofs,
-                            name_conventions[0],
-                            ofs_ctlfile[1][i],
-                            prop_local.whichcast,
-                            prop_local.ofsfiletype,
-                        )
-                    cache_manifest.record_artifact(
-                        prd_path_std,
-                        cache_manifest.run_signature(
-                            prop_local, variable=variable,
-                            extra={'whichcast': prop_local.whichcast}),
-                        prop.data_model_1d_node_path,
-                        logger)
+                        f'{prop_local.data_model_1d_node_path}/'
+                        f'{ofs_ctlfile[4][i]}_'
+                        f'{prop_local.ofs}_'
+                        f'{name_conventions[0]}_{ofs_ctlfile[1][i]}'
+                        f'_{prop_local.whichcast}_'
+                        f'{prop_local.ofsfiletype}_model.prd')
+                    # Header only when there is data: an empty .prd must
+                    # stay 0 bytes so the getsize() blank-file checks
+                    # downstream keep working.
+                    if _write_prd(prd_path_std, formatted_series,
+                                  name_conventions[0], prop_local, logger,
+                                  datum_offset):
+                        cache_manifest.record_artifact(
+                            prd_path_std,
+                            cache_manifest.run_signature(
+                                prop_local, variable=variable,
+                                extra={'whichcast': prop_local.whichcast}),
+                            prop.data_model_1d_node_path,
+                            logger)
 
                 return (datum_offset, model_station)
 

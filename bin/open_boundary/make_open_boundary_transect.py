@@ -10,13 +10,12 @@ Usage:
 """
 
 import argparse
-import logging
-import logging.config
 import os
 import re
 import sys
 
 from ofs_skill.model_processing import model_properties, model_source
+from ofs_skill.obs_retrieval import utils
 from ofs_skill.open_boundary.obc_plotting import plot_fvcom_obc
 from ofs_skill.open_boundary.obc_processing import load_obc_file, parameter_validation
 
@@ -47,7 +46,9 @@ def make_open_boundary_transects(prop, logger=None):
             attributes such as ofs, path, start_date_full, and model_cycle.
         logger (logging.Logger, optional): A logger instance for status
             and error reporting. If None, the function initializes a
-            logger using 'conf/logging.conf'.
+            logger from ``conf/logging.conf``, resolved from the working
+            directory when a copy is present there and from the
+            installation root otherwise.
 
     Returns:
         None
@@ -58,20 +59,7 @@ def make_open_boundary_transects(prop, logger=None):
     """
 
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(os.getcwd(), log_config_file)
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            print(
-                f'ERROR: logging config file not found at {log_config_file}',
-                file=sys.stderr)
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(getattr(prop, 'path', None))
 
     logger.info('--- Starting open boundary transect ---')
 

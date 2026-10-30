@@ -36,17 +36,19 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env install pre-commit setup info clean ci-local
+.PHONY: help env install pre-commit proj-grids setup info clean ci-local
 
 ## Show available targets
 help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  setup        Full developer setup (env + install + pre-commit + pre-push)"
+	@echo "  setup        Full developer setup (env + install + hooks + proj-grids)"
+	@echo "               proj-grids needs outbound HTTPS to cdn.proj.org"
 	@echo "  env          Create or update the conda environment"
 	@echo "  install      Install the package in development mode (pip install -e .[dev])"
 	@echo "  pre-commit   Install pre-commit and pre-push git hooks"
+	@echo "  proj-grids   Download the GEOID18 grid PROJ needs for datum conversion"
 	@echo "  ci-local     Fast local gate (ruff==0.7.0 + detect-secrets + smoke tests)"
 	@echo "               Windows: Git Bash, or: powershell -File scripts/ci-local.ps1"
 	@echo "  info         Show detected solver and environment info"
@@ -74,12 +76,42 @@ pre-commit:
 	$(CONDA_RUN) pre-commit install --install-hooks
 	$(CONDA_RUN) pre-commit install --hook-type pre-push
 
+## Download the GEOID18 grid that PROJ resolves by bare filename
+# coastalmodeling-vdatum names seven of its eight grids by absolute
+# https:// URL on the NOAA bucket, which PROJ fetches on demand. The
+# eighth, us_noaa_g2018u0.tif (GEOID18), is named by *bare filename*, so
+# PROJ resolves it from local disk and falls back to cdn.proj.org — a
+# different host, and one many operational networks do not allow. The
+# conda environment ships no .tif grids at all, so without this step
+# every navd88 <-> mllw conversion fails with ProjError 1029
+# ("File not found or invalid") and the affected stations are dropped.
+#
+# --system-directory puts the grid in $CONDA_PREFIX/share/proj so it is
+# scoped to the environment and applies no matter which account later
+# runs the job. --user-writable-directory would target $HOME and would
+# silently not apply to a scheduled run under a different user.
+# projsync is idempotent: a second run prints "already downloaded."
+proj-grids:
+	@echo "Downloading GEOID18 grid (us_noaa_g2018u0.tif, ~15 MB) into the env..."
+	@$(CONDA_RUN) projsync --system-directory --file us_noaa_g2018u0.tif || \
+	  (echo "" && \
+	   echo "ERROR: could not download us_noaa_g2018u0.tif." && \
+	   echo "PROJ fetches this grid from cdn.proj.org. Check that outbound" && \
+	   echo "HTTPS to cdn.proj.org is allowed, then re-run: make proj-grids" && \
+	   echo "Until it succeeds, NAVD88 <-> MLLW datum conversions will fail" && \
+	   echo "and those stations will be dropped from the skill assessment." && \
+	   exit 1)
+
 ## Fast local gate used by pre-push (not the full CI matrix)
 ci-local:
 	$(CONDA_RUN) bash scripts/ci-local.sh
 
-## Full developer setup: create/update env, install package, install hooks
-setup: env install pre-commit
+## Full developer setup: create/update env, install package, hooks, PROJ grids
+# proj-grids is ordered last on purpose: it is the only step that needs
+# the network beyond the solver, so if it fails the environment, the
+# package and the git hooks are already in place and only this one step
+# has to be retried.
+setup: env install pre-commit proj-grids
 	@echo "Setup complete. Activate with: conda activate $(ENV_NAME)"
 	@echo "Before pushing, hooks run make ci-local (or: make ci-local)."
 

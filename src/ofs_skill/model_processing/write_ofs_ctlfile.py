@@ -231,6 +231,12 @@ def _drop_bins_below_model_bottom(
     drop: set[int] = set()
     bathy_cache: dict[int, float] = {}
     ledger = getattr(prop, 'station_ledger', None)
+    if ledger is not None:
+        # ``depth_match`` only emits rows when a bin is actually pruned, so
+        # a pass in which every bin sits inside the water column writes
+        # nothing. Declare that the stage ran, otherwise the merging ledger
+        # write would keep an earlier run's prunings alive (issue #224).
+        ledger.mark_stage_run('depth_match', variable='currents')
     for (parent, node), members in groups.items():
         # Coord token [3] is the water depth on every obs ctl line
         # width (5-token scalar, 6/7-token currents).
@@ -295,13 +301,18 @@ def _drop_bins_below_model_bottom(
                 parent, dropped_desc, water_depth, node)
         if ledger is not None:
             for i in group_drops:
+                # Explicitly stamped: this writer builds the ctl files
+                # for every variable in one call, so the ledger context
+                # attached to ``prop`` may name a different variable
+                # (issue #224). Bin pruning only ever runs for currents.
                 ledger.drop(
                     str(station_id[i]), stage='depth_match',
                     reason=(
                         f'bin depth {depths[i]:.2f} m exceeds model '
                         f'water depth {water_depth:.2f} m at node '
                         f'{node}; bottom model layer already compared '
-                        'once'))
+                        'once'),
+                    variable='currents')
     return drop
 
 

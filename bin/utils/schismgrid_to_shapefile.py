@@ -6,13 +6,14 @@ Created on Tue Oct 8 2025
 """
 from __future__ import annotations
 
-import logging.config
 import os
 import sys
 from pathlib import Path
 
 import geopandas as gpd
 import ocsmesh
+
+from ofs_skill.obs_retrieval.utils import init_root_logger
 
 parent_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(parent_dir))
@@ -31,13 +32,7 @@ def create_SCHISM_mesh_extent_shapefile(mesh_path: str, shapefile_name: str):
     """
 
     # Specify defaults (can be overridden with command line options)
-    log_config_rel = 'conf/logging.conf'
-    log_config_file = (Path(__file__).parent.parent.parent /
-                       log_config_rel).resolve()
-
-    logging.config.fileConfig(log_config_file)
-    logger = logging.getLogger('root')
-    logger.info('Using log config %s', log_config_file)
+    logger = init_root_logger()
     logger.info('--- Starting the program ---')
 
 

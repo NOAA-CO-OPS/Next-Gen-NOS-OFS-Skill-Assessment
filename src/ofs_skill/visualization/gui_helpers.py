@@ -399,6 +399,11 @@ class GuiParams:
     )
     Currents_Bins_Csv: str | None = None
     Disable_Model_File_Check: bool = True
+    # Continuation runs are a CLI-only mode for now; the fields exist so
+    # a GUI launch reaches _run_pipeline with the same shape argparse
+    # produces rather than tripping over a missing attribute.
+    Continue_Run: bool = False
+    Continue_Overlap: float = 24.0
     config: str | None = None
 
 

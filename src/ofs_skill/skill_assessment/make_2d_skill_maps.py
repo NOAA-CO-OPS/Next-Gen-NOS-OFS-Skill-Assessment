@@ -23,6 +23,8 @@ import plotly
 import plotly.express as px
 import plotly.io as pio
 
+from ofs_skill.utils import plot_units
+
 
 def get_stat_name(stat: str) -> str:
     """
@@ -159,9 +161,13 @@ def make_2d_skill_maps(
     datestrend = datestrend[4:6] + '/' + datestrend[6:] + '/' + datestrend[0:4]
     datestrbeg = (prop1.start_date_full).split('-')[0]
     datestrbeg = datestrbeg[4:6] + '/' + datestrbeg[6:] + '/' + datestrbeg[0:4]
+    # Frequency statistics are percentages; every other mapped statistic
+    # carries the variable's own unit.
+    stat_unit = (' (%)' if maptype in ('cf', 'pof', 'nof')
+                 else plot_units.unit_suffix(variable, logger=logger))
     plottitle = prop1.ofs.upper() + ' ' + cast + ' ' + 'SST ' +\
-        '[' + str(sat_source) + '] ' + get_stat_name(maptype) + ', ' +\
-        datestrbeg + ' - ' + datestrend
+        '[' + str(sat_source) + '] ' + get_stat_name(maptype) + stat_unit +\
+        ', ' + datestrbeg + ' - ' + datestrend
     # Make custom colormap if doing diff/error plot
     colorscale: Any
     if 'diff' in maptype:
@@ -181,7 +187,7 @@ def make_2d_skill_maps(
         ]
         range_color = [-9, 9]
         tickvals = [-9, -6, -3, 0, 3, 6, 9]
-        cbartitle = 'Error (\u00b0C)'
+        cbartitle = plot_units.with_unit('Error', variable, logger=logger)
     elif maptype == 'cf':
         colorscale = [
         [0, '#e35336'],  # dark red
@@ -216,14 +222,27 @@ def make_2d_skill_maps(
         colorscale = 'deep'
         range_color = [0, errorrange*2]
         tickvals = np.arange(range_color[0], range_color[1]+1)
-        cbartitle = 'RMSE (\u00b0C)'
+        cbartitle = plot_units.with_unit('RMSE', variable, logger=logger)
     elif maptype == 'mod' or maptype == 'obs':
         colorscale = 'deep'
         min_val = 10*(np.floor(np.nanmin(df[get_stat_name(maptype)])/10))
         max_val = 10*(np.ceil(np.nanmax(df[get_stat_name(maptype)])/10))
+        # For a nearly-isothermal field the floor/ceil-to-10 heuristic can
+        # collapse to a single value (min_val == max_val), which plotly
+        # rejects and renders as a blank colorbar. Fall back to the raw data
+        # range (widened by 1 unit if still degenerate) so the map stays
+        # readable.
+        if min_val >= max_val:
+            data_min = float(np.nanmin(df[get_stat_name(maptype)]))
+            data_max = float(np.nanmax(df[get_stat_name(maptype)]))
+            if data_min == data_max:
+                data_min -= 1.0
+                data_max += 1.0
+            min_val, max_val = data_min, data_max
         range_color = [min_val, max_val]
         tickvals = np.arange(range_color[0], range_color[1]+2, 2)
-        cbartitle = get_stat_name(maptype) + ' (\u00b0C)'
+        cbartitle = plot_units.with_unit(get_stat_name(maptype), variable,
+                                         logger=logger)
     else:
         logger.error('Incorrect map type in make_2d_skill_maps! Abort')
         sys.exit(-1)
@@ -237,6 +256,11 @@ def make_2d_skill_maps(
                                  get_stat_name(maptype): ':.2f',
                                  'Date': False
                                  },
+                     # Display name for the statistic column, so the
+                     # hover row carries the same unit as the colorbar
+                     # without renaming the dataframe column (which is
+                     # also the color and animation_group key).
+                     labels={get_stat_name(maptype): cbartitle},
                      zoom=6,
                      title=plottitle,
                      color_continuous_scale=colorscale,

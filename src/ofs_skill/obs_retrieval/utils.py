@@ -6,6 +6,7 @@ Utility class for configuration management and helper functions.
 
 import configparser
 import logging
+import logging.config
 import math
 import os
 import sys
@@ -69,11 +70,36 @@ class Utils:
         project_root = Path(__file__).parent.parent.parent.parent
 
         if config_file is not None:
-            self.config_file = Path(config_file).resolve()
-            if not self.config_file.is_file():
-                raise FileNotFoundError(
-                    f'Configuration file not found: {self.config_file}'
+            candidate = Path(config_file)
+            resolved = candidate.resolve()
+            installed = None
+            if not resolved.is_file() and not candidate.is_absolute():
+                # A relative -c (the GUI panes all default to the literal
+                # 'conf/ofs_dps.conf') is resolved against the current
+                # working directory first, then against the installation
+                # root, so launching from an external directory still finds
+                # the shipped config. Note this is the *process* working
+                # directory, not -p/home= — Utils has no visibility of -p,
+                # which is what resolve_asset_path is for.
+                installed = (project_root / candidate).resolve()
+                if not installed.is_file():
+                    raise FileNotFoundError(
+                        f'Configuration file not found: {resolved} '
+                        f'(also looked for {installed})'
+                    )
+                # Loud, because the run is about to use a different config
+                # than the one that was asked for — including a different
+                # home=, which decides where every output file lands.
+                logging.getLogger(__name__).warning(
+                    'Config %s not found under the working directory; '
+                    'using the installed %s instead.', resolved, installed,
                 )
+                resolved = installed
+            if not resolved.is_file():
+                raise FileNotFoundError(
+                    f'Configuration file not found: {resolved}'
+                )
+            self.config_file = resolved
         else:
             config_file_path = (project_root / 'conf' / 'ofs_dps.conf').resolve()
             example_file = (project_root / 'conf' / 'ofs_dps.conf.example').resolve()
@@ -253,7 +279,8 @@ def resolve_asset_path(base_path, *parts) -> str:
     Parameters
     ----------
     base_path : str or Path or None
-        The working directory (usually ``prop.path``). May be None.
+        The working directory (usually ``prop.path``). May be None or an
+        empty string, both of which mean "not set".
     *parts : str
         Path components of the asset relative to either root,
         e.g. ``('conf', 'error_ranges.csv')``.
@@ -266,11 +293,72 @@ def resolve_asset_path(base_path, *parts) -> str:
         to exist — callers that require the asset should check.
     """
     relative = os.path.join(*parts)
-    if base_path is not None:
+    # An empty base_path is the ModelProperties default for "not set", not a
+    # request to resolve against the process working directory - treat it the
+    # same as None so the returned path is always absolute.
+    if base_path:
         candidate = os.path.join(str(base_path), relative)
         if os.path.exists(candidate):
             return candidate
     return str(get_project_root() / relative)
+
+
+def init_root_logger(
+    base_path: str | Path | None = None,
+    config_file: str | Path | None = None,
+) -> logging.Logger:
+    """
+    Configure the root logger from ``conf/logging.conf`` and return it.
+
+    Every CLI entry point needs the same bootstrap: find the shipped
+    ``conf/logging.conf``, fail loudly and non-zero when it is missing, and
+    hand back a configured ``root`` logger. Resolution goes through
+    :func:`resolve_asset_path`, so a copy under the working directory
+    (``-p`` / ``home=``) wins and the installation copy is the fallback —
+    which is what lets the working directory live on an external disk
+    without any of the shipped assets being copied there.
+
+    Parameters
+    ----------
+    base_path : str or Path or None
+        The working directory (usually ``prop.path``). May be None or an
+        empty string, in which case only the installation root is
+        consulted.
+    config_file : str or Path or None
+        Optional path to the resolved main config (``ofs_dps.conf``).
+        When given, its existence is checked with the same fail-loud
+        treatment and the selected file is logged. Pass
+        ``Utils(prop.config_file).get_config_file()`` to honor ``-c``.
+
+    Returns
+    -------
+    logging.Logger
+        The configured ``root`` logger.
+
+    Raises
+    ------
+    SystemExit
+        With status -1 when either file is missing. The message naming the
+        missing file is written to stderr, because at that point there is
+        no logger to write it to.
+    """
+    log_config_file = resolve_asset_path(base_path, 'conf', 'logging.conf')
+
+    if not os.path.isfile(log_config_file):
+        print(f'Logging config not found: {log_config_file}. Abort!',
+              file=sys.stderr)
+        sys.exit(-1)
+    if config_file is not None and not os.path.isfile(config_file):
+        print(f'Configuration file not found: {config_file}. Abort!',
+              file=sys.stderr)
+        sys.exit(-1)
+
+    logging.config.fileConfig(log_config_file)
+    logger = logging.getLogger('root')
+    if config_file is not None:
+        logger.info('Using config %s', config_file)
+    logger.info('Using log config %s', log_config_file)
+    return logger
 
 
 def get_s3_cache_dir(config_file=None, logger=None) -> str:

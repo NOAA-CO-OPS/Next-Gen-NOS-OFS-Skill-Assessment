@@ -7,11 +7,8 @@ Created on Fri Nov 21 10:38:14 2025
 from __future__ import annotations
 
 import logging
-import logging.config
 import os
-import sys
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -57,24 +54,15 @@ def get_variable_names(name_var):
 def main(logger, _conf=None):
     '''This function plot time series from .prd files'''
 
-    # Directories from conf file
-    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    # Directories from conf file. read_config_section logs its own errors,
+    # so it needs a logger even before the root logger is configured below.
+    dir_params = utils.Utils(_conf).read_config_section(
+        'directories', logger or logging.getLogger(__name__))
     home_path = dir_params['home']
     # Logger
     if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(Path(home_path), log_config_file)
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit()
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            home_path, utils.Utils(_conf).get_config_file())
 
     logger.info('--- Starting Visualization Process ---')
     prd_folder = os.path.join(

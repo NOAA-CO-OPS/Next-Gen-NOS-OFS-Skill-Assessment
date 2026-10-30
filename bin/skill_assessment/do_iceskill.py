@@ -74,12 +74,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-import logging.config
 import os
 import sys
 import warnings
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -160,7 +158,7 @@ def ice_climatology(prop, time_all_dt, ice_clim):
     Handles loading and parsing 1D and 2D Great Lakes ice
     cover climatology.
     '''
-    filename = os.path.join(prop.path, 'conf', 'gl_1d_clim.csv')
+    filename = utils.resolve_asset_path(prop.path, 'conf', 'gl_1d_clim.csv')
     df = pd.read_csv(filename, header=0)
     df['DateTime'] = pd.to_datetime(
         df[['Year', 'Month', 'Day']],
@@ -183,10 +181,7 @@ def ice_climatology(prop, time_all_dt, ice_clim):
     icecover_hist = dfsubset[prop.ofs.removesuffix('2')].to_numpy()
 
     # Now do 2D
-    filename = os.path.join(
-        prop.path, 'conf',
-        'unique_dates.csv',
-    )
+    filename = utils.resolve_asset_path(prop.path, 'conf', 'unique_dates.csv')
     clim_dates = pd.read_csv(filename)
     uniq = clim_dates['unique_dates'].tolist()
 
@@ -267,25 +262,8 @@ def do_iceskill(prop, logger):
 
     _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (
-            Path(__file__).
-            parent.parent.parent / log_config_file
-        ).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-
-        # Create logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            prop.path, utils.Utils(_conf).get_config_file())
 
     logger.info('--- Starting ice skill assessment, put on a coat ---')
 

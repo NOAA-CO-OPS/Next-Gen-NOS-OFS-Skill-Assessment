@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from ofs_skill.model_processing.station_distance import calculate_station_distance
+from ofs_skill.model_processing.station_ledger import LONG_VARIABLE_NAMES
 
 
 def _coords_lookup_key(obs_lat: float, obs_lon: float) -> tuple:
@@ -478,10 +479,10 @@ def index_nearest_node(
 
             x_np = np.array(x_coords)
             y_np = np.array(y_coords)
-            
+
             # Normalize model longitudes from [0, 360] to [-180, 180]
             x_np = np.where(x_np > 180, x_np - 360, x_np)
-            
+
             for obs_p in range(len(ctl_file_extract)):
                 obs_lon = float(ctl_file_extract[obs_p][1])
                 obs_lat = float(ctl_file_extract[obs_p][0])
@@ -1040,6 +1041,10 @@ def index_nearest_station(
         else STATION_MATCH_MAX_DIST_KM
     )  # km - cutoff for distance matching AND pre-filter box sizing
     ledger = getattr(prop, 'station_ledger', None)
+    # This function is called once per variable from the model ctl writer's
+    # all-variables loop, so the ledger context attached to ``prop`` is not
+    # necessarily this variable's. Stamp every record explicitly (issue #224).
+    ledger_variable = LONG_VARIABLE_NAMES.get(str(name_var), str(name_var))
     index_min_dist = []
     min_dist: list[float] = []
 
@@ -1061,7 +1066,8 @@ def index_nearest_station(
             sid = id_extract[obs_idx][0]
         except (IndexError, TypeError):
             sid = f'obs#{obs_idx}'
-        ledger.drop(sid, stage='node_match', reason=reason)
+        ledger.drop(sid, stage='node_match', reason=reason,
+                    variable=ledger_variable)
 
     def _distance_drop_reason(dist_km: float | None) -> str:
         """Build the drop reason for a station that failed the km cutoff."""
@@ -1258,6 +1264,7 @@ def index_nearest_station(
             ledger.note_stage(
                 'node_match_collision',
                 note=f'{sid_list} share model index {node_int}',
+                variable=ledger_variable,
             )
 
     if ledger is not None:
@@ -1266,6 +1273,7 @@ def index_nearest_station(
             count_in=len(index_min_dist),
             count_out=matched,
             note=f'cutoff {max_dist:.1f} km',
+            variable=ledger_variable,
         )
 
     logger.info(

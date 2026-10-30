@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -264,54 +264,54 @@ class TestBuildAsciiGridFilename:
     """Tests for _build_ascii_grid_filename."""
 
     def test_nowcast_filename(self):
-        """Hourly nowcast grids are tagged with the YYYYMMDD-HHz hour so the
+        """Hourly nowcast grids are tagged with the YYYYMMDD-{whichcast[0]}HHz hour so the
         vector layers align with the scalar model JSON time axis."""
         result = _build_ascii_grid_filename(
             '/out', 'cbofs',
-            datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 20, 3, 0, tzinfo=UTC),
             'mag', 'nowcast', 4,
         )
-        assert result == os.path.join('/out', 'cbofs_mag_20260120-03z.txt')
+        assert result == os.path.join('/out', 'cbofs_mag_20260120-n03z.txt')
 
     def test_first_step(self):
         """Hour tag reflects the model hour, not a sequential counter."""
         result = _build_ascii_grid_filename(
             '/out', 'wcofs',
-            datetime(2026, 1, 20, 3, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 20, 3, 0, tzinfo=UTC),
             'dir', 'nowcast', 1,
         )
-        assert result == os.path.join('/out', 'wcofs_dir_20260120-03z.txt')
+        assert result == os.path.join('/out', 'wcofs_dir_20260120-n03z.txt')
 
     def test_forecast_filename(self):
         """Forecast hourly grids use the same YYYYMMDD-HHz hour tag."""
         result = _build_ascii_grid_filename(
             '/out', 'dbofs',
-            datetime(2026, 1, 20, 6, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 20, 6, 0, tzinfo=UTC),
             'mag', 'forecast_a', 7,
         )
-        assert result == os.path.join('/out', 'dbofs_mag_20260120-06z.txt')
+        assert result == os.path.join('/out', 'dbofs_mag_20260120-f06z.txt')
 
     def test_step_number_ignored_for_hourly(self):
         """The step_number arg no longer affects hourly filenames; the hour
         tag comes solely from dtime (regression guard for issue #195)."""
         early = _build_ascii_grid_filename(
             '/out', 'sfbofs',
-            datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 6, 20, 10, 0, tzinfo=UTC),
             'mag', 'nowcast', 25,
         )
         late = _build_ascii_grid_filename(
             '/out', 'sfbofs',
-            datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 6, 20, 10, 0, tzinfo=UTC),
             'mag', 'nowcast', 1,
         )
         assert early == late
-        assert early == os.path.join('/out', 'sfbofs_mag_20260620-10z.txt')
+        assert early == os.path.join('/out', 'sfbofs_mag_20260620-n10z.txt')
 
     def test_daily_filename(self):
         """Daily filename uses 'daily' suffix instead of an hour tag."""
         result = _build_ascii_grid_filename(
             '/out', 'cbofs',
-            datetime(2026, 1, 20, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 20, 0, 0, tzinfo=UTC),
             'mag', 'nowcast', 0,
             is_daily=True,
         )
@@ -321,7 +321,7 @@ class TestBuildAsciiGridFilename:
         """Hindcast hourly grids use the YYYYMMDD-HHz hour tag."""
         result = _build_ascii_grid_filename(
             '/out', 'loofs2',
-            datetime(2026, 1, 20, 2, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 20, 2, 0, tzinfo=UTC),
             'dir', 'hindcast', 3,
         )
-        assert result == os.path.join('/out', 'loofs2_dir_20260120-02z.txt')
+        assert result == os.path.join('/out', 'loofs2_dir_20260120-h02z.txt')

@@ -10,7 +10,7 @@ Technical Contact(s): Name:  FC
 Abstract:
 
    This is the main script of the 2d observations module.
-   This function calls GOES 16 and 18 retrieval
+   This function calls GOES 16, 18, and 19 retrieval
    Then it extract the variable of interest (temp)
    and clips the concatenated satellite data for the OFS
 
@@ -54,7 +54,6 @@ Revisions:
 from __future__ import annotations
 
 import argparse
-import logging.config
 import os
 import sys
 import time
@@ -175,7 +174,9 @@ def list_of_urls_goes_east(hours_range1, url_params):
     changedate = datetime.strptime(
         '2025-04-07T21:00:00Z', '%Y-%m-%dT%H:%M:%SZ')
 
-    url_root = url_params['nesdis_thredds']
+    url_root_thredds = url_params['nesdis_thredds']
+    url_root_g19 = url_params.get('coastwatch_direct_g19', 'https://coastwatch.noaa.gov/data/pub0014/coastwatch/sst/nrt/abi/g19/l3c/')
+
     url_east_list = []
     for i in hours_range1:
         mydate = datetime.strptime(i, '%Y-%m-%dT%H:%M:%SZ')
@@ -185,24 +186,48 @@ def list_of_urls_goes_east(hours_range1, url_params):
             V_num = '3.00'
             v_num = '02.1'
             fv_num = '01.0'
+
+            url_direct = (
+                f'{url_root_g19}'
+                f"{mydate.strftime('%Y')}/"
+                f"{mydate.strftime('%j')}/"
+                f"{mydate.strftime('%Y')}{mydate.strftime('%m')}"
+                f"{mydate.strftime('%d')}{mydate.strftime('%H')}0000"
+                f'-{name_num}-L3C_GHRSST-SSTsubskin-'
+                f'ABI_G{east_num}-ACSPO_V{V_num}-v{v_num}-fv{fv_num}.nc'
+            )
+
+            url_thredds = (
+                f'{url_root_thredds}'
+                f'gridG{east_num}ABINRTL3CWW00/'
+                f"{mydate.strftime('%Y')}/"
+                f"{mydate.strftime('%j')}/"
+                f"{mydate.strftime('%Y')}{mydate.strftime('%m')}"
+                f"{mydate.strftime('%d')}{mydate.strftime('%H')}0000"
+                f'-{name_num}-L3C_GHRSST-SSTsubskin-'
+                f'ABI_G{east_num}-ACSPO_V{V_num}-v{v_num}-fv{fv_num}.nc'
+            )
+
+            url_east_list.append((url_direct, url_thredds))
         else:
             east_num = '16'
             name_num = 'STAR'
             V_num = '2.70'
             v_num = '02.0'
             fv_num = '01.0'
-        url_east = (
-            f'{url_root}'
-            f'gridG{east_num}ABINRTL3CWW00/'
-            f"{mydate.strftime('%Y')}/"
-            f"{mydate.strftime('%j')}/"
-            f"{mydate.strftime('%Y')}{mydate.strftime('%m')}"
-            f"{mydate.strftime('%d')}{mydate.strftime('%H')}0000"
-            f'-{name_num}-L3C_GHRSST-SSTsubskin-'
-            f'ABI_G{east_num}-ACSPO_V{V_num}-v{v_num}-fv{fv_num}.nc'
-        )
 
-        url_east_list.append(url_east)
+            url_thredds = (
+                f'{url_root_thredds}'
+                f'gridG{east_num}ABINRTL3CWW00/'
+                f"{mydate.strftime('%Y')}/"
+                f"{mydate.strftime('%j')}/"
+                f"{mydate.strftime('%Y')}{mydate.strftime('%m')}"
+                f"{mydate.strftime('%d')}{mydate.strftime('%H')}0000"
+                f'-{name_num}-L3C_GHRSST-SSTsubskin-'
+                f'ABI_G{east_num}-ACSPO_V{V_num}-v{v_num}-fv{fv_num}.nc'
+            )
+
+            url_east_list.append(url_thredds)
 
     return url_east_list
 
@@ -212,13 +237,25 @@ def list_of_urls_g18(hours_range1, url_params):
     This function will list the API's for all the GOES 18
     files between the range of data (output from hour_range())
     """
-    url_root = url_params['nesdis_thredds']
+    url_root_thredds = url_params['nesdis_thredds']
+    url_root_g18 = url_params.get('coastwatch_direct_g18', 'https://coastwatch.noaa.gov/data/pub0014/coastwatch/sst/nrt/abi/g18/l3c/')
+
     url_18_list = []
     for i in hours_range1:
         mydate = datetime.strptime(i, '%Y-%m-%dT%H:%M:%SZ')
 
-        url_18 = (
-            f'{url_root}'
+        url_direct = (
+            f'{url_root_g18}'
+            f"{mydate.strftime('%Y')}/"
+            f"{mydate.strftime('%j')}/"
+            f"{mydate.strftime('%Y')}{mydate.strftime('%m')}"
+            f"{mydate.strftime('%d')}{mydate.strftime('%H')}0000"
+            f'-STAR-L3C_GHRSST-SSTsubskin-'
+            f'ABI_G18-ACSPO_V2.90-v02.0-fv01.0.nc'
+        )
+
+        url_thredds = (
+            f'{url_root_thredds}'
             f'gridG18ABINRTL3CWW00/'
             f"{mydate.strftime('%Y')}/"
             f"{mydate.strftime('%j')}/"
@@ -228,7 +265,7 @@ def list_of_urls_g18(hours_range1, url_params):
             f'ABI_G18-ACSPO_V2.90-v02.0-fv01.0.nc'
         )
 
-        url_18_list.append(url_18)
+        url_18_list.append((url_direct, url_thredds))
 
     return url_18_list
 
@@ -780,9 +817,13 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
     — the missing hour shows up as a gap in the concat output rather
     than aborting the run.
     """
+    # Normalize to a list to support fallbacks
+    urls_to_try = sat_dat if isinstance(sat_dat, list | tuple) else [sat_dat]
+    primary_url = urls_to_try[0]
+
     sat_fname = obs2d_dir
 
-    subdir = _resolve_sat_subdir(sat_dat)
+    subdir = _resolve_sat_subdir(primary_url)
     if subdir is not None:
         sat_fname = os.path.join(sat_fname, subdir)
 
@@ -790,7 +831,7 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
 
     sat_fname = os.path.join(
         sat_fname, str(
-            f'{sat_dat}'.split('/')[-1].split('.')[0]
+            f'{primary_url}'.split('/')[-1].split('.')[0]
             + '_sst.nc',
         ),
     )
@@ -816,23 +857,31 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
     if not _should_download(sat_fname, sat_type):
         return None
 
-    logger.info('Downloading satellite data: %s', sat_dat)
+    # --- Network fetch with fallback loops ---
+    raw_path = None
+    download_success = False
+    active_url = None
 
-    raw_path = os.path.join(obs2d_dir, f'{sat_dat}'.split('/')[-1])
+    for url in urls_to_try:
+        active_url = url
+        raw_path = os.path.join(obs2d_dir, f'{url}'.split('/')[-1])
+        logger.info('Downloading satellite data: %s', url)
 
-    # --- Network fetch (timeout + size cap; cleanup on any failure) ---
-    if not _download_with_limits(sat_dat, raw_path, logger):
-        return None
+        if _download_with_limits(url, raw_path, logger):
+            if os.path.exists(raw_path) and os.path.getsize(raw_path) >= _RAW_SAT_MIN_BYTES:
+                download_success = True
+                break
+            else:
+                actual = os.path.getsize(raw_path) if os.path.exists(raw_path) else 0
+                logger.warning(
+                    'Skipping undersized download for %s: %d bytes < %d',
+                    url, actual, _RAW_SAT_MIN_BYTES,
+                )
+                _safe_remove(raw_path, logger)
+        else:
+            logger.warning('Download failed for %s', url)
 
-    # --- Validate raw download size before trying to parse it ---
-    if (not os.path.exists(raw_path)
-            or os.path.getsize(raw_path) < _RAW_SAT_MIN_BYTES):
-        actual = os.path.getsize(raw_path) if os.path.exists(raw_path) else 0
-        logger.warning(
-            'Skipping undersized download for %s: %d bytes < %d',
-            sat_dat, actual, _RAW_SAT_MIN_BYTES,
-        )
-        _safe_remove(raw_path, logger)
+    if not download_success:
         return None
 
     # --- Parse + trim ---
@@ -859,7 +908,7 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
         data_set.to_netcdf(sat_fname, mode='w')
         data_set.close()
     except (ValueError, OSError, RuntimeError) as ex:
-        if 'G16' in sat_dat:
+        if 'G16' in active_url:
             try:
                 g16date = datetime.strptime(
                     sat_fname.split('-')[0][-14:-1],
@@ -876,16 +925,16 @@ def _download_single_file(sat_dat, obs2d_dir, logger, sat_type):
                 else:
                     logger.error(
                         'Error: %s. Failed downloading files %s!!',
-                        ex, sat_dat,
+                        ex, active_url,
                     )
             except ValueError:
                 logger.error(
                     'Error: %s. Failed downloading files %s!!',
-                    ex, sat_dat,
+                    ex, active_url,
                 )
         else:
             logger.error(
-                'Error: %s. Failed downloading files %s!!', ex, sat_dat,
+                'Error: %s. Failed downloading files %s!!', ex, active_url,
             )
         _safe_remove(raw_path, logger)
         _safe_remove(sat_fname, logger)
@@ -1234,23 +1283,8 @@ def get_satellite(prop, logger):
 
     _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (
-            Path(__file__).parent.parent.parent / log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            prop.path, utils.Utils(_conf).get_config_file())
 
     # logger.info("--- Starting Visulization Process ---")
 
@@ -1318,8 +1352,8 @@ def get_satellite(prop, logger):
     """
 
     logger.info(
-        'Begin retriving the following files:%s',
-        [i.split('/')[-1] for i in list_of_urls],
+        'Begin retrieving the following files:%s',
+        [(i[0] if isinstance(i, tuple) else i).split('/')[-1] for i in list_of_urls],
     )
 
     try:
@@ -1346,8 +1380,10 @@ def get_satellite(prop, logger):
         # warning. Counts by sat_type so a SPoRT outage doesn't get
         # masked by GOES success (or vice versa).
         n_hours_requested = len(hours)
-        n_goes_urls = len([u for u in list_of_urls if 'ABI_G' in u])
-        n_sport_urls = len([u for u in list_of_urls if 'SPoRT' in u])
+
+        n_goes_urls = len([u for u in list_of_urls if 'ABI_G' in (u[0] if isinstance(u, tuple) else u)])
+        n_sport_urls = len([u for u in list_of_urls if 'SPoRT' in (u[0] if isinstance(u, tuple) else u)])
+
         coverage_log = logger.info
         if (n_goes_urls and len(list_of_files_goes) < n_goes_urls) or \
                 (n_sport_urls and len(list_of_files_sport) < n_sport_urls):

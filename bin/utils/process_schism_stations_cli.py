@@ -9,8 +9,6 @@ Created on Fri Jan 23 15:01:50 2026
 """
 
 import argparse
-import logging
-import logging.config
 import os
 import shutil
 import sys
@@ -368,23 +366,13 @@ def process_schism_stations(prop, logger):
     None.
 
     '''
+    _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent / log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            print('No log file! Cannot continue.')
-            sys.exit()
-
-        # Create logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            prop.path, utils.Utils(_conf).get_config_file())
 
     logger.info('--- Start loading SCHISM station output text files ---')
     # Directory parameters
-    _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
     # Parameter validation
     parameter_validation(prop, dir_params, logger)

@@ -181,6 +181,27 @@ def test_mismatched_list_lengths_bail_out(logger):
     assert drop == set()
 
 
+def test_ledger_declares_the_stage_even_with_nothing_to_prune(logger):
+    """A clean prune pass must still declare that depth_match ran.
+
+    depth_match only writes rows when a bin is removed, so without the
+    declaration the combined ledger would keep an earlier run's prunings
+    alive forever.
+    """
+    ledger = StationLedger(ofs='cbofs', variable='water_level',
+                           whichcast='nowcast', filetype='stations')
+    rows = [('cb0201_b01', _cu_coords(1.5)), ('cb0201_b05', _cu_coords(6.0))]
+    drop = _run_drop(rows, nodes=[0, 0], layers=[2, 0],
+                     depths=[0.0, 10.48], h=[10.48, 50.0],
+                     logger=logger, ledger=ledger)
+
+    assert drop == set()
+    assert ledger.drops == []
+    # Stamped under currents (bin pruning is currents-only) and under the
+    # cast-independent 'all' whichcast, matching the rows it supersedes.
+    assert ('currents', 'all', 'stations', 'depth_match') in ledger.stages_run
+
+
 def test_ledger_records_each_drop(logger):
     """Every pruned bin lands on the station ledger with stage depth_match."""
     ledger = StationLedger(ofs='necofs', variable='currents',

@@ -20,8 +20,6 @@ OFS of interest, and saved as a separate concatenated netcdf.
 """
 
 import argparse
-import logging
-import logging.config
 import os
 import sys
 import urllib.request
@@ -202,7 +200,7 @@ def masksat_by_ofs(sat_path, shape_file, prop):
     masked_sat = sat_nc.where(mask_sat == 0)
 
     # Now mask 2D climatology dataset
-    filename = os.path.join(prop.path,'conf','gl_2d_clim.npy')
+    filename = utils.resolve_asset_path(prop.path, 'conf', 'gl_2d_clim.npy')
     gl_clim = np.load(filename,allow_pickle=True)
     lat_all = np.array(sat_nc.variables['lat'][:])
     lon_all = np.array(sat_nc.variables['lon'][:])
@@ -303,6 +301,21 @@ def parameter_dir_validation (prop,dir_params, logger):
         logger.error(error_message)
         sys.exit(-1)
 
+    # Output directory. do_iceskill sets this itself before calling in, so
+    # only derive it when the caller has not. Resolving prop.path to an
+    # absolute path keeps the download / concat / mask stages agreed on one
+    # directory regardless of the process working directory, and makes an
+    # external -p actually take effect: without this the attribute stayed at
+    # its '' default and every write landed at the filesystem root.
+    if not getattr(prop, 'data_observations_2d_satellite_path', ''):
+        prop.data_observations_2d_satellite_path = os.path.join(
+            str(Path(prop.path).resolve()),
+            dir_params['data_dir'],
+            dir_params['observations_dir'],
+            dir_params['2d_satellite_ice_dir'],
+        )
+    os.makedirs(prop.data_observations_2d_satellite_path, exist_ok=True)
+
 
 def get_icecover_observations(prop, logger):
     """
@@ -314,22 +327,8 @@ def get_icecover_observations(prop, logger):
     """
     _conf = getattr(prop, 'config_file', None)
     if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent / log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            prop.path, utils.Utils(_conf).get_config_file())
 
 
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
@@ -341,11 +340,8 @@ def get_icecover_observations(prop, logger):
 
     # First check for existing GLSEA files, and remove any that are partial/
     # incomplete. This prevents a common concatenation error.
-    if os.path.isdir(prop.data_observations_2d_satellite_path):
-        remove_outlier_size_files(prop.data_observations_2d_satellite_path,
-                                  logger)
-    else:
-        logger.error(f'Directory not found: {prop.data_observations_2d_satellite_path}')
+    remove_outlier_size_files(prop.data_observations_2d_satellite_path,
+                              logger)
 
     logger.info(
         'Begin retrieving the following files:%s',

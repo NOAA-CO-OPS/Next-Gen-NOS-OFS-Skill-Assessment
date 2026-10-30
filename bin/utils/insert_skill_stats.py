@@ -58,27 +58,13 @@ def main(skill_stats_file_path,db_path,period,ofs,logger,_conf=None):
     # skill_cbofs_water_level_nowcast.csv
     # skill_cbofs_water_temperature_forecast_b.csv
     # skill_cbofs_water_temperature_nowcast.csv
-    dir_params = utils.Utils(_conf).read_config_section('directories', logger)
+    # read_config_section logs its own errors, so it needs a logger even
+    # before the root logger is configured below.
+    dir_params = utils.Utils(_conf).read_config_section(
+        'directories', logger or logging.getLogger(__name__))
     if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(Path(dir_params['home']),
-                                       log_config_file)
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            print('Cannot find logging config file! Bye.')
-            return
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            print('Cannot find main config file! Bye.')
-            return
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(
+            dir_params.get('home'), utils.Utils(_conf).get_config_file())
 
     # Input arguments -->
     # Path to database file

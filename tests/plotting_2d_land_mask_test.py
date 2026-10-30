@@ -21,6 +21,7 @@ rather than back to a blank map.
 import logging
 
 import pytest
+from shapely.geometry import Polygon
 
 from ofs_skill.visualization import plotting_2d
 
@@ -57,6 +58,18 @@ def test_returns_none_and_does_not_retry_when_geometry_fails(monkeypatch):
     assert plotting_2d._land_without_lakes(logger) is None
     assert len(calls) == 1
 
+def test_lake_probes_guard_returns_false_when_probes_outside_lakes(monkeypatch):
+    """The guard must return False if probes do not intersect the lakes."""
+    class MockLakesFeature:
+        def geometries(self):
+            # A small polygon far from the Great Lakes (e.g., near Null Island)
+            yield Polygon([(0, 0), (0, 1), (1, 1), (1, 0)])
+
+    # Patch cartopy.feature.LAKES before the function imports it
+    monkeypatch.setattr('cartopy.feature.LAKES', MockLakesFeature())
+
+    # Call the guard function directly
+    assert _lake_probes_are_resolvable() is False
 
 def test_cached_feature_is_reused(monkeypatch):
     """A built feature is served from the cache, not rebuilt per figure.
@@ -74,20 +87,59 @@ def test_cached_feature_is_reused(monkeypatch):
     assert plotting_2d._land_without_lakes(logger) is sentinel
 
 
-def _natural_earth_available():
-    """True when the Natural Earth land/lakes shapefiles resolve offline."""
+# (name, lon, lat) inside each Great Lake. These are each lake's interior
+# representative point rather than an eyeballed centre, which roughly
+# doubles the smallest clearance to a lake boundary (Erie 0.14 deg -> 0.34
+# deg). cfeature.LAKES is cartopy's 110m dataset, where the lakes are coarse
+# enough that a point 0.14 deg from an edge sits inside the vertex-spacing
+# noise -- see _lake_probes_are_resolvable below.
+_LAKE_PROBES = (
+    ('Lake Superior', -87.6, 47.8),
+    ('Lake Michigan', -87.1, 43.9),
+    ('Lake Erie', -81.1, 42.2),
+    ('Lake Ontario', -77.8, 43.7),
+)
+
+
+def _lake_probes_are_resolvable():
+    """True when the installed Natural Earth data can answer this test.
+
+    The previous guard only checked that *something* loaded, which is not
+    the property the assertions rely on. cartopy fetches these shapefiles
+    over the network at runtime, and the Great Lakes are narrow at 110m, so
+    a different Natural Earth vintage -- or a cartopy release whose default
+    points at one -- moves the boundary vertices enough to flip a probe from
+    inside the lake to outside it. That produced intermittent CI failures on
+    unrelated PRs, naming a different lake on each platform (issue #329).
+
+    A probe only carries signal when the installed data puts it inside BOTH
+    the land polygons (the misclassification under test) and the lakes
+    polygons (what must be subtracted). When it does not, this test has
+    nothing to say, and skipping beats failing a PR that changed none of it.
+    """
     try:
         import cartopy.feature as cfeature
-        next(iter(cfeature.LAND.geometries()))
-        next(iter(cfeature.LAKES.geometries()))
+        from shapely.geometry import Point
+        from shapely.ops import unary_union
+
+        land = unary_union(list(cfeature.LAND.geometries()))
+        lakes = unary_union(list(cfeature.LAKES.geometries()))
     except Exception:
         return False
-    return True
+
+    return all(
+        land.contains(Point(lon, lat)) and lakes.contains(Point(lon, lat))
+        for _name, lon, lat in _LAKE_PROBES
+    )
 
 
 @pytest.mark.skipif(
-    not _natural_earth_available(),
-    reason='Natural Earth land/lakes shapefiles not available offline',
+    not _lake_probes_are_resolvable(),
+    reason=(
+        'Installed Natural Earth data does not place the Great Lakes probes '
+        'inside both the land and lakes polygons, so this assertion has no '
+        'signal (see issue #329)'
+    ),
 )
 def test_great_lakes_are_not_covered_but_real_land_is():
     """The overlay must exclude the lakes and still cover actual land."""
@@ -97,13 +149,8 @@ def test_great_lakes_are_not_covered_but_real_land_is():
     assert feature is not None
     geom = next(iter(feature.geometries()))
 
-    # (lon, lat) points inside each Great Lake must not be covered.
-    for name, lon, lat in (
-        ('Lake Erie', -81.0, 42.0),
-        ('Lake Ontario', -77.5, 43.6),
-        ('Lake Michigan', -87.0, 43.5),
-        ('Lake Superior', -87.5, 47.5),
-    ):
+    # Points inside each Great Lake must not be covered.
+    for name, lon, lat in _LAKE_PROBES:
         assert not geom.contains(Point(lon, lat)), name
 
     # Real land is still covered, so coastal bleed-through stays hidden.

@@ -123,7 +123,7 @@ def make_horizon_series(prop, logger):
                 'Forecast cycles are %s percent ' 'complete!\n',
                 str(np.round(((i + 1) / len(filenames)) * 100, decimals=2)),
             )
-        except Exception as e_x:
+        except (Exception, SystemExit) as e_x:
             logger.error(
                 'Error making horizon series! ' 'Passing to next horizon. ' 'Error: %s',
                 e_x,

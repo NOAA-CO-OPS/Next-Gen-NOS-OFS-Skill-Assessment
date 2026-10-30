@@ -41,6 +41,7 @@ def inventory_chs_station(
             - Y: Latitude
             - Source: Data source ('CHS')
             - Name: Station name
+            - operating: Whether CHS still records at this station
         Returns None if metadata download fails.
 
     Note:
@@ -81,6 +82,14 @@ def inventory_chs_station(
             'Y': data['latitude'],
             'Source': 'CHS',
             'Name': data['officialName'],
+            # A station advertises a time series for as long as its
+            # metadata entry exists, which outlives the station: the
+            # has_* flags below say what it measures, not whether it is
+            # still recording. Decommissioned stations return nothing for
+            # any window, so carrying this through lets the retrieval
+            # stage skip them instead of spending ~8 requests each
+            # against a 30 req/min budget to discover they are empty.
+            'operating': data['operating'].astype(bool),
             'has_wl': codes_per_station.apply(
                 lambda c: 'wlo' in c),
             'has_temp': codes_per_station.apply(

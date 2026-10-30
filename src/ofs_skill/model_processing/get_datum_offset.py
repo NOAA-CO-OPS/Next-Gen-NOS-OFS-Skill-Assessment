@@ -523,8 +523,17 @@ def get_datum_offset(prop: Any, node: int, model: xr.Dataset,
             if prop.datum.lower() == 'mllw':
                 try:
                     vdatums = pd.read_csv(path, sep='\t')
-                    # Find ID number in dataframe
-                    if datetime.strptime(prop.start_date_full,'%Y-%m-%dT%H:%M:%SZ')\
+                    # Find ID number in dataframe.
+                    # Key the correction column on the assessment
+                    # window's start, not on whatever start date this
+                    # extraction pass happens to carry -- a continuation
+                    # run extracts only a tail span, and letting the tail
+                    # pick its own column would put the head and tail of
+                    # one series on two different model zeros.
+                    reference_date = (
+                        getattr(prop, 'datum_reference_date', None)
+                        or prop.start_date_full)
+                    if datetime.strptime(reference_date,'%Y-%m-%dT%H:%M:%SZ')\
                         > datetime.strptime(SECOFS_MODELZERO_TRANSITION,'%m/%d/%Y'):
                         corr_col = 'Correction2'
                     else:

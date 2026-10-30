@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from ofs_skill.visualization import summary_barplots
+from tests.conftest import decode_plotly_escapes
 
 
 def _write_error_ranges(root: str) -> None:
@@ -217,3 +218,79 @@ def test_make_summary_bars_emits_hw_lw_for_water_level(tmp_path):
     for name in expected:
         assert os.path.isfile(
             os.path.join(prop.visuals_1d_station_path, name)), name
+
+
+def test_html_rmse_labels_carry_units(tmp_path):
+    """Issue #217: every RMSE label in the summary figure names its unit."""
+    _write_error_ranges(str(tmp_path))
+    prop = _make_prop(tmp_path)
+    _write_wl_csv(prop)
+
+    summary_barplots.make_summary_bars(
+        prop, ['water_level', 'wl', []], logging.getLogger('test'))
+
+    html_path = os.path.join(
+        prop.visuals_1d_station_path,
+        f'{prop.ofs}_summary_barplot_water_level_nowcast_stations.html')
+    with open(html_path, encoding='utf-8') as fh:
+        content = fh.read()
+
+    assert 'RMSE (meters)' in content, 'RMSE y-axis title is missing its unit'
+    assert 'RMSE (target 0.15 meters)' in content, \
+        'subplot title still shows a bare threshold number'
+    assert 'RMSE: %{y:.3f} meters' in content, \
+        'hover row is missing its unit'
+    assert 'Target error range (0.15 meters)' in content, \
+        'threshold annotation is missing its unit'
+    # Do not regress the already-unit-bearing companion axis.
+    assert 'Central frequency (%)' in content
+
+
+def test_currents_rmse_labels_use_speed_units(tmp_path):
+    _write_error_ranges(str(tmp_path))
+    prop = _make_prop(tmp_path)
+    df = pd.read_csv(_write_wl_csv(prop))
+    df['obs_water_depth'] = [2.0, 4.0, 6.0, 8.0, 10.0]
+    df.to_csv(os.path.join(
+        prop.data_skill_stats_path,
+        f'skill_{prop.ofs}_currents_{prop.whichcast}_'
+        f'{prop.ofsfiletype}.csv'))
+
+    summary_barplots.make_summary_bars(
+        prop, ['currents', 'cu', []], logging.getLogger('test'))
+
+    html_path = os.path.join(
+        prop.visuals_1d_station_path,
+        f'{prop.ofs}_summary_barplot_currents_nowcast_stations.html')
+    with open(html_path, encoding='utf-8') as fh:
+        content = decode_plotly_escapes(fh.read())
+    assert 'RMSE (m/s)' in content
+    assert 'RMSE (meters)' not in content
+
+
+def test_static_rmse_axis_label_has_no_html_tags(tmp_path):
+    """matplotlib cannot render HTML, so the PNG labels must be plain."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    _write_error_ranges(str(tmp_path))
+    prop = _make_prop(tmp_path, static=True)
+    _write_wl_csv(prop)
+
+    labels: list[str] = []
+    original = plt.Axes.set_ylabel
+
+    def _capture(self, label, *args, **kwargs):
+        labels.append(label)
+        return original(self, label, *args, **kwargs)
+
+    plt.Axes.set_ylabel = _capture
+    try:
+        summary_barplots.make_summary_bars(
+            prop, ['water_level', 'wl', []], logging.getLogger('test'))
+    finally:
+        plt.Axes.set_ylabel = original
+
+    assert 'RMSE (meters)' in labels, labels
+    assert all('<' not in label for label in labels), labels

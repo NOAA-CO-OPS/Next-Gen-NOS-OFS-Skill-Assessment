@@ -2,17 +2,15 @@
 Compute the spatial intersection of two OFS shapefiles and build an
 observation-station inventory restricted to the overlap region.
 
-Outputs:
-    ofs_extents/{ofs1}_{ofs2}_overlap.shp
-    control_files/inventory_all_{ofs1}_{ofs2}_overlap.csv
+Outputs, written under the working directory given by -p:
+    {ofs_extents_dir}/{ofs1}_{ofs2}_overlap.shp
+    {control_files_dir}/inventory_all_{ofs1}_{ofs2}_overlap.csv
 
 @author: PL
 """
 from __future__ import annotations
 
 import argparse
-import logging
-import logging.config
 import os
 import sys
 from datetime import datetime
@@ -23,7 +21,11 @@ import geopandas as gpd
 from ofs_skill.obs_retrieval.filter_inventory import filter_inventory
 from ofs_skill.obs_retrieval.ofs_geometry import ofs_geometry
 from ofs_skill.obs_retrieval.ofs_inventory_stations import retrieving_inventories
-from ofs_skill.obs_retrieval.utils import resolve_asset_path
+from ofs_skill.obs_retrieval.utils import (
+    Utils,
+    init_root_logger,
+    resolve_asset_path,
+)
 
 
 def _resolve_ofs_shapefile(ofs_name, shape_path):
@@ -46,20 +48,21 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
 
     # --- Logger Setup ---
     if logger is None:
-        log_config_file = os.path.join(home_path, 'conf', 'logging.conf')
-
-        if not os.path.isfile(log_config_file):
-            print(f'CRITICAL ERROR: Log config file not found at {log_config_file}')
-            sys.exit(1)
-
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = init_root_logger(home_path)
 
     logger.info('--- Starting Overlap Process ---')
 
+    dir_params = Utils().read_config_section('directories', logger)
+
     # --- Shapefile Setup & Loading ---
-    shape_path = resolve_asset_path(home_path, 'ofs_extents')
+    # The two inputs are shipped assets, so they resolve from the working
+    # directory first and the installation second. Everything this script
+    # writes goes to the working directory only.
+    shape_path = resolve_asset_path(home_path, dir_params['ofs_extents_dir'])
+    output_shape_path = os.path.join(
+        home_path, dir_params['ofs_extents_dir'])
+    control_files_path = os.path.join(
+        home_path, dir_params['control_files_dir'])
 
     try:
         shp1_path = _resolve_ofs_shapefile(shp1, shape_path)
@@ -122,8 +125,15 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
         intersection_gdf = intersection_gdf.to_crs(4326)
 
     # --- Save New Shapefile ---
-    logger.info('Saving overlapping areas to %s...', shape_path)
+    logger.info('Saving overlapping areas to %s...', output_shape_path)
     new_ofs = f'{shp1}_{shp2}_overlap'
+
+    if not os.path.isdir(output_shape_path) and output_shape_path != shape_path:
+        logger.warning(
+            'Creating %s. A working-directory ofs_extents/ takes precedence '
+            'over the installation copy, so copy any other shapefiles you '
+            'need into it.', output_shape_path,
+        )
 
     try:
         # Drop the overlay-suffixed metadata columns (OBJECTID_1/_2,
@@ -132,11 +142,12 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
         # which can collide _1/_2 pairs into a single column. The overlap
         # polygon is the only attribute any downstream consumer needs.
         intersection_gdf = intersection_gdf[['geometry']]
-        shp3_path = os.path.join(shape_path, f'{new_ofs}.shp')
+        os.makedirs(output_shape_path, exist_ok=True)
+        shp3_path = os.path.join(output_shape_path, f'{new_ofs}.shp')
         intersection_gdf.to_file(shp3_path)
         logger.info('Successfully saved %s.shp!', new_ofs)
     except (OSError, ValueError) as exc:
-        logger.error('Error saving to %s: %s', shape_path, exc)
+        logger.error('Error saving to %s: %s', output_shape_path, exc)
         sys.exit(1)
 
     # --- Inventory Retrieval ---
@@ -161,7 +172,7 @@ def get_shapefile_intersection(shp1, shp2, home_path, stationowner, logger=None)
         dataset_final = filter_inventory(dataset_final, [], logger)
         logger.info('Duplicate station filter complete!')
 
-        control_files_path = os.path.join(home_path, 'control_files')
+        os.makedirs(control_files_path, exist_ok=True)
         inventory_file_path = os.path.join(
             control_files_path, f'inventory_all_{new_ofs}.csv'
         )
@@ -206,7 +217,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '-p', '--home_path',
         required=True,
-        help='Path to directory where package is installed',
+        help=(
+            'Working directory. The overlap shapefile and the inventory CSV '
+            'are written here; the two input shapefiles are read from here '
+            'when present and from the installation otherwise.'
+        ),
     )
     parser.add_argument(
         '-so', '--station_owner',

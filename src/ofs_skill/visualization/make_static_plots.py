@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 import ofs_skill.visualization.plotting_functions as plotting_functions
+from ofs_skill.utils import plot_units
 
 
 def _add_assumed_surface_note(ax, station_id, name_var):
@@ -383,13 +384,22 @@ def bar_plots(data, info, ytitle, prop, logger):
     dpi = 100
 
     #Format y axis label
-    ytitle=ytitle.replace('<br>', '\n').replace('<i>','').replace(' or error','')
+    # Strip the closing tag first: get_yaxis_label now emits well-formed
+    # '<i>...</i>' via plot_units, whereas it previously emitted '<i>'
+    # for both the open and the close tag.
+    ytitle = (ytitle.replace('<br>', '\n').replace('</i>', '')
+              .replace('<i>', '').replace(' or error', ''))
 
     # Get title
     figtitle = get_title_static(prop, info[1], [info[2],info[3],info[4]], info[0], logger)
 
-    # Get target error range
-    X1, _ = plotting_functions.get_error_range(info[0], prop, logger)
+    # Get target error range. info[7] (the long variable name) is the
+    # only key that separates current direction from current speed, so
+    # the threshold and the unit printed beside it are resolved through
+    # the same name -- see plot_forecast_hours.make_horizonbin_plots.
+    label_var = plot_units.resolve_variable(info[7], info[0])
+    X1, _ = plotting_functions.get_error_range(
+        plot_units.canonical_key(label_var) or info[0], prop, logger)
 
     # --- Do plots, huzzah --------------------------------------------
     fig, axs = plt.subplots(2, 1)
@@ -409,7 +419,8 @@ def bar_plots(data, info, ytitle, prop, logger):
             ymaxmult = 2
         ymax = X1*ymaxmult
         axhline = X1
-        axhlinetext = 'Target error range'
+        axhlinetext = ('Target error range '
+                       f'({plot_units.value_with_unit(X1, label_var)})')
         for value in data[1][0]:
             if -X1 <= value <= X1:
                 colors.append('palegreen')
