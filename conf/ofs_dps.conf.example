@@ -73,18 +73,6 @@ om_dir_ice=om_files_ice
 tidal_analysis_dir=tidal_analysis
 model_historical_dir_backup=Add_model_historical_dir_backup
 
-
-
-[vdatum]
-# Force online PROJ network streaming mode
-online = true
-
-# Retry attempts for S3 grid fetching before falling back
-max_retries = 5
-
-# Timeout setting for HTTP grid requests (in seconds)
-network_timeout = 30
-
 # Local fallback path for the vertical datum NetCDF file. Only used if the
 # vdatum file cannot be read from the NODD S3 bucket (noaa-nos-ofs-pds).
 # Set this to the full path of a local copy of {ofs}_vdatums.nc.
