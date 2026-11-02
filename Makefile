@@ -44,11 +44,11 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  setup        Full developer setup (env + install + hooks + proj-grids)"
-	@echo "               proj-grids needs outbound HTTPS to cdn.proj.org"
+	@echo "               proj-grids needs outbound HTTPS to cdn.proj.org and the NOAA S3 bucket"
 	@echo "  env          Create or update the conda environment"
 	@echo "  install      Install the package in development mode (pip install -e .[dev])"
 	@echo "  pre-commit   Install pre-commit and pre-push git hooks"
-	@echo "  proj-grids   Download the GEOID18 grid PROJ needs for datum conversion"
+	@echo "  proj-grids   Download the GEOID18 and NOAA VDatum grids PROJ needs for datum conversion"
 	@echo "  ci-local     Fast local gate (ruff==0.7.0 + detect-secrets + smoke tests)"
 	@echo "               Windows: Git Bash, or: powershell -File scripts/ci-local.ps1"
 	@echo "  info         Show detected solver and environment info"
@@ -77,9 +77,11 @@ pre-commit:
 	$(CONDA_RUN) pre-commit install --hook-type pre-push
 
 ## Download the GEOID18 grid that PROJ resolves by bare filename
-# coastalmodeling-vdatum names seven of its eight grids by absolute
-# https:// URL on the NOAA bucket, which PROJ fetches on demand. The
-# eighth, us_noaa_g2018u0.tif (GEOID18), is named by *bare filename*, so
+# coastalmodeling-vdatum names most of its grids by absolute https://
+# URL on the NOAA bucket, which PROJ fetches on demand; the NOAA grids
+# below are downloaded so they also resolve offline (online=False),
+# including xGEOID20B.tif, needed for -d xgeoid20b. GEOID18,
+# us_noaa_g2018u0.tif, is named by *bare filename*, so
 # PROJ resolves it from local disk and falls back to cdn.proj.org — a
 # different host, and one many operational networks do not allow. The
 # conda environment ships no .tif grids at all, so without this step
@@ -108,7 +110,8 @@ proj-grids:
 	files = ['us_noaa_nos_LWD-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif', 'us_noaa_nos_IGLD85-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
 	'us_noaa_nos_MLLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
 	'us_noaa_nos_MHHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
-	'us_noaa_nos_LMSL-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif'];\
+	'us_noaa_nos_LMSL-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'xGEOID20B.tif'];\
 	proj_dir = os.path.join(os.environ['CONDA_PREFIX'], 'share', 'proj');\
 	os.makedirs(proj_dir, exist_ok=True);\
 	[(print(f'{f} already exists.') if os.path.exists(os.path.join(proj_dir, f)) else (urllib.request.urlretrieve(base_url + f, os.path.join(proj_dir, f)), print(f'{f} download complete.'))) for f in files]"
