@@ -783,15 +783,16 @@ def index_nearest_depth(
                 # therefore, we use depth layes at time 0
                 #z_coords_1d = model_netcdf['zCoordinates'].load()
                 try:
-                    z_coords_1d = np.asarray(model_netcdf['zCoordinates'])[0,:,:]
+                    z_coords_1d = model_netcdf['zCoordinates'].isel(time=0).values
                 except KeyError:
                     logger.warning('SECOFS field file does not have depth '
                                    'info! Taking surface value...')
                     return np.asarray(model_netcdf['salinity']).shape[1]-1, 0
-                if np.asarray(model_netcdf['temp']).shape[1] == len(z_coords_1d):
-                    # Transpose for secofs, or other OFS
-                    # where the depth and node dims are reversed
-                    z_coords_1d = z_coords_1d.T
+                if  ofs in ['secofs']:
+                    if np.asarray(model_netcdf['temp']).shape[1] == len(z_coords_1d) :
+                        # Transpose for secofs, or other OFS
+                        # where the depth and node dims are reversed
+                        z_coords_1d = z_coords_1d.T
                 node = index_min_dist[idx]
 
                 if np.isnan(node) or np.isnan(float(station_ctl_file_extract[idx][3])):
