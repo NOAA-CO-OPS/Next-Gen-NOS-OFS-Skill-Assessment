@@ -3,7 +3,6 @@ from __future__ import annotations
 import configparser
 import math
 import os
-from pathlib import Path
 
 from ofs_skill.obs_retrieval import (
     find_nearest_tidal_stations,
@@ -11,6 +10,14 @@ from ofs_skill.obs_retrieval import (
     vdatum_resilient,
 )
 from ofs_skill.obs_retrieval.retrieve_properties import RetrieveProperties
+from ofs_skill.obs_retrieval.utils import Utils
+
+# Datums the CO-OPS predictions product can serve. Model-only / GL-only
+# references are excluded from the API call and converted after a native
+# fetch when needed.
+_COOPS_PREDICTION_DATUMS = frozenset({
+    'MHHW', 'MHW', 'MTL', 'MSL', 'MLW', 'MLLW', 'NAVD88', 'STND',
+})
 
 
 def _convert_tidal_datum(tidal_data, used_datum, requested_datum, lat, lon, logger):
@@ -34,100 +41,120 @@ def _convert_tidal_datum(tidal_data, used_datum, requested_datum, lat, lon, logg
     used_datum_temp = used_datum
     if used_datum_temp.upper() == 'MSL':
         used_datum_temp = 'lmsl'
-    _,_,z = vdatum_resilient.convert(
+    _, _, z = vdatum_resilient.convert(
         used_datum_temp.lower(),
         requested_datum.lower(),
         lat,
         lon,
-        dummy_val, #use dummy value
+        dummy_val,  # use dummy value
         epoch=None,
         logger=logger,
         )
     if math.isinf(z):
         return None, used_datum
-    tidal_data['TIDE'] = tidal_data['TIDE'] + (float(round(z-dummy_val, 2)))
+    tidal_data['TIDE'] = tidal_data['TIDE'] + (float(round(z - dummy_val, 2)))
     return tidal_data, requested_datum
 
 
-def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
-    """
-    Retrieves tidal prediction data for a station or its nearest neighbors.
+def _parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('true', '1', 'yes')
 
-    The function first attempts to pull data for the primary station using the
-    requested datum. If that fails, it iterates through a list of fallback datums.
-    If data is still not found (or if the station is not a CO-OPS station),
-    it identifies the 10 nearest tidal stations via coordinates and repeats the
-    search until valid data is retrieved.
 
-    Args:
-        obs_df (pandas.DataFrame): Dataframe containing observation data.
-            Must include a 'DateTime' column to determine the search window.
-        prop (object): Properties object containing configuration settings such as
-            'datum', 'ofs', 'control_files_path', and model metadata.
-        station_id (list/tuple): A collection where index 0 is the station ID string
-            and index 2 is the station source (e.g., 'CO-OPS').
-        logger (logging.Logger): Logger instance for tracking errors and info.
-
-    Returns:
-        tuple: A five-element tuple containing:
-            - tidal_data (pd.DataFrame or None): The retrieved tidal predictions.
-            - used_datum (str or None): The specific datum that successfully returned data.
-            - tidal_station_id (str or None): ID of the station that provided the data.
-            - tidal_station_name (str or None): Name of the fallback station used.
-            - tidal_station_distance (float or None): Distance in km from the original station.
-    """
-    # 1. Initialize variables and inputs
-    retrieve_input = RetrieveProperties()
-    obs_station_id = str(station_id)
-    station_source = 'CO-OPS' if len(station_id) == 7 else 'USGS/NDBC/CHS'
-
-    # 2. Set date range from observation data
-    retrieve_input.start_date = start_dt.strftime('%Y%m%d%H%M%S')
-    retrieve_input.end_date = end_dt.strftime('%Y%m%d%H%M%S')
-
-    # 3. Handle Datum logic (Requested + Fallbacks)
-    requested_datum = prop.datum
-    fallback_datums = ['MLLW', 'MHHW', 'MHW', 'MLW', 'NAVD88']
-
-    config_file = Path(__file__).resolve().parent.parent.parent.parent / 'conf' / 'ofs_dps.conf'
-    if config_file.exists():
-        try:
-            config = configparser.ConfigParser()
-            config.read(config_file)
-            if config.has_option('datums', 'datum_list'):
-                datum_list_str = config.get('datums', 'datum_list')
-                fallback_datums = [d.strip() for d in datum_list_str.split()]
-        except Exception as ex:
-            logger.warning('Could not read datum_list from config, using defaults: %s', ex)
-
-    datums_to_try = [requested_datum] + [d for d in fallback_datums if d != requested_datum]
-
-    # 4. Define helper for data retrieval attempts
-    def try_get_tidal_data(station_id_to_try):
-        retrieve_input.station = station_id_to_try
-        for datum in datums_to_try:
-            retrieve_input.datum = datum
-            data = retrieve_tidal_predictions(retrieve_input, logger)
-            if data is False:
-                continue
-            if data is not None and len(data) > 0:
-                return data, datum
-        return None, None
-
-    # 5. Extract coordinates for proximity search
-    lat, lon = None, None
+def _allow_nearby_tidal_stations(logger) -> bool:
+    """Read ``[tides] allow_nearby_tidal_stations``; default False if unset."""
     try:
-        ctl_file = os.path.join(prop.control_files_path, f'{prop.ofs}_wl_station.ctl')
+        config_path = Utils().get_config_file()
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        if config.has_option('tides', 'allow_nearby_tidal_stations'):
+            return _parse_bool(
+                config.get('tides', 'allow_nearby_tidal_stations'), False)
+    except Exception as ex:
+        logger.debug(
+            'Could not read allow_nearby_tidal_stations; defaulting to false: %s',
+            ex)
+    return False
+
+
+def _api_datum_for_request(requested_datum: str) -> str:
+    """Return a CO-OPS-servable datum for the predictions API call."""
+    datum = str(requested_datum).upper()
+    if datum in _COOPS_PREDICTION_DATUMS:
+        return datum
+    return 'MLLW'
+
+
+def _station_coords(control_files_path, ofs, obs_station_id, logger):
+    """Read lat/lon for ``obs_station_id`` from the water-level ctl file."""
+    try:
+        ctl_file = os.path.join(
+            control_files_path, f'{ofs}_wl_station.ctl')
         with open(ctl_file) as f:
             for line in f:
                 if line.strip().startswith(obs_station_id):
                     coords = next(f).split()
-                    lat, lon = float(coords[0]), float(coords[1])
-                    break
+                    return float(coords[0]), float(coords[1])
     except Exception as ex:
-        logger.warning('Could not find coordinates for station %s: %s', obs_station_id, ex)
+        logger.warning(
+            'Could not find coordinates for station %s: %s',
+            obs_station_id, ex)
+    return None, None
 
-    # 6. Attempt Primary Retrieval
+
+def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
+    """
+    Retrieve tidal prediction data for a station, optionally from neighbors.
+
+    Tries the observation station first when it is a CO-OPS ID. Each station
+    is queried once with a CO-OPS-servable datum (the requested datum when
+    supported, otherwise MLLW with conversion). If the API reports no
+    predictions, remaining datums for that station are not tried.
+
+    Nearby CO-OPS tide stations are searched only when
+    ``[tides] allow_nearby_tidal_stations`` is true in ``ofs_dps.conf``
+    (default false).
+
+    Args:
+        start_dt: Start of the prediction window.
+        end_dt: End of the prediction window.
+        prop: Properties with ``datum``, ``ofs``, and ``control_files_path``.
+        station_id: Observation station ID string.
+        logger: Logger instance.
+
+    Returns:
+        tuple: ``(tidal_data, tidal_info)`` where ``tidal_info`` has
+        ``tidal_station_id``, ``tidal_station_name``,
+        ``tidal_station_distance``, and ``used_datum``.
+    """
+    retrieve_input = RetrieveProperties()
+    obs_station_id = str(station_id)
+    station_source = 'CO-OPS' if len(obs_station_id) == 7 else 'USGS/NDBC/CHS'
+
+    retrieve_input.start_date = start_dt.strftime('%Y%m%d%H%M%S')
+    retrieve_input.end_date = end_dt.strftime('%Y%m%d%H%M%S')
+
+    requested_datum = prop.datum
+    api_datum = _api_datum_for_request(requested_datum)
+    allow_nearby = _allow_nearby_tidal_stations(logger)
+
+    def try_get_tidal_data(station_id_to_try):
+        # One prediction request per station. A False return means the
+        # station rejected the query (no predictions / bad datum); do not
+        # walk the rest of datum_list for this ID.
+        retrieve_input.station = station_id_to_try
+        retrieve_input.datum = api_datum
+        data = retrieve_tidal_predictions(retrieve_input, logger)
+        if data is False:
+            return None, None
+        if data is not None and len(data) > 0:
+            return data, api_datum
+        return None, None
+
+    lat, lon = _station_coords(
+        prop.control_files_path, prop.ofs, obs_station_id, logger)
+
     tidal_data = None
     used_datum = None
     tidal_station_id = None
@@ -140,33 +167,47 @@ def get_station_tidal_data(start_dt, end_dt, prop, station_id, logger):
             if used_datum != requested_datum:
                 tidal_data, used_datum = _convert_tidal_datum(
                     tidal_data, used_datum, requested_datum, lat, lon, logger)
-            tidal_station_id = obs_station_id
-            tidal_station_distance = 0.0
+            if tidal_data is not None:
+                tidal_station_id = obs_station_id
+                tidal_station_distance = 0.0
 
-    # 7. Attempt Secondary Retrieval (Nearby Stations)
-    if tidal_data is None and lat is not None and lon is not None:
-        logger.info('Finding nearby tidal stations for %s station %s...', station_source, obs_station_id)
-        nearby_stations = find_nearest_tidal_stations(lat, lon, logger, max_stations=10)
+    if tidal_data is None and allow_nearby and lat is not None and lon is not None:
+        logger.info(
+            'Finding nearby tidal stations for %s station %s...',
+            station_source, obs_station_id)
+        nearby_stations = find_nearest_tidal_stations(
+            lat, lon, logger, max_stations=10)
 
         for candidate_id, candidate_name, candidate_dist in nearby_stations:
             if candidate_id == obs_station_id:
                 continue
 
-            logger.info('Trying tidal station %s (%s) at %.1f km...', candidate_id, candidate_name, candidate_dist)
+            logger.info(
+                'Trying tidal station %s (%s) at %.1f km...',
+                candidate_id, candidate_name, candidate_dist)
             tidal_data, used_datum = try_get_tidal_data(candidate_id)
 
             if tidal_data is not None:
                 if used_datum != requested_datum:
                     tidal_data, used_datum = _convert_tidal_datum(
-                        tidal_data, used_datum, requested_datum, lat, lon, logger)
+                        tidal_data, used_datum, requested_datum, lat, lon,
+                        logger)
+                if tidal_data is None:
+                    continue
                 tidal_station_id = candidate_id
                 tidal_station_name = candidate_name
                 tidal_station_distance = candidate_dist
                 break
+    elif tidal_data is None and not allow_nearby:
+        logger.info(
+            'Skipping nearby tidal search for %s station %s '
+            '(allow_nearby_tidal_stations=false).',
+            station_source, obs_station_id)
 
-    tidal_info = {'tidal_station_id': tidal_station_id,
-                  'tidal_station_name': tidal_station_name,
-                  'tidal_station_distance': tidal_station_distance,
-                  'used_datum': used_datum,
-        }
+    tidal_info = {
+        'tidal_station_id': tidal_station_id,
+        'tidal_station_name': tidal_station_name,
+        'tidal_station_distance': tidal_station_distance,
+        'used_datum': used_datum,
+    }
     return tidal_data, tidal_info

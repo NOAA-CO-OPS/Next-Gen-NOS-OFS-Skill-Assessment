@@ -113,6 +113,14 @@ coastwatch_direct_g19=https://coastwatch.noaa.gov/data/pub0014/coastwatch/sst/nr
 # is added to the package, include it here!
 datum_list=MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B MSL
 
+[tides]
+# Nearby CO-OPS tide fallback used when computing WOF for water-level stations
+# that are not themselves CO-OPS prediction sites (NDBC / USGS / CHS).
+# false (default): only query the observation station itself for predictions.
+# true: if that station has no tides, search nearby CO-OPS prediction stations.
+# Each candidate is still queried once (requested/servable datum only); remaining
+# datums are not walked when the API reports no predictions.
+allow_nearby_tidal_stations=False
 
 [station_IDs]
 # Optional input list of observation station IDs to assess.
