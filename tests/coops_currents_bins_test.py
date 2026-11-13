@@ -594,6 +594,8 @@ def test_station_ctl_file_extract_preserves_virtual_id(tmp_path):
 
     ctl = tmp_path / 'cbofs_cu_station.ctl'
     ctl.write_text(
+        'Station ID, Source ID, Station Name\n'
+        '  Latitude, Longitude, Target-to-station datum offset (m), Water depth (m), Station datum (if applicable; zero otherwise)\n'
         '8454000_b05 8454000_b05_cu_cbofs_CO-OPS "Providence (bin 05)"\n'
         '  41.807 -71.401 0.0  -10.00  0.0\n'
     )
@@ -647,6 +649,8 @@ def test_get_title_includes_bin_line_for_virtual_id(
     # is the path that exercises the issue #141 fix.
     ctl = tmp_path / 'cbofs_cu_station.ctl'
     ctl.write_text(
+        'Station ID, Source ID, Station Name\n'
+        '  Latitude, Longitude, Target-to-station datum offset (m), Water depth (m), Station datum (if applicable; zero otherwise)\n'
         '8454000_b02 8454000_b02_cu_cbofs_CO-OPS "Providence (bin 02)"\n'
         '  41.807 -71.401 0.0  -4.00  0.0  0.50  up\n'
     )
@@ -716,6 +720,7 @@ def test_get_title_includes_model_depth_from_ctl(
     ctl_dir = tmp_path / 'control_files'
     ctl_dir.mkdir()
     (ctl_dir / 'cbofs_cu_model_station.ctl').write_text(
+        'Node/station index, Depth layer index, Latitude, Longitude, Station ID, Model layer depth (m)\n'
         '41 6 41.807 -71.401 8454000_b02 3.8\n'
     )
 

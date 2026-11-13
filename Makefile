@@ -36,17 +36,21 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env install pre-commit setup info clean
+.PHONY: help env install pre-commit proj-grids setup info clean ci-local
 
 ## Show available targets
 help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  setup        Full developer setup (env + install + pre-commit)"
+	@echo "  setup        Full developer setup (env + install + hooks + proj-grids)"
+	@echo "               proj-grids needs outbound HTTPS to cdn.proj.org and the NOAA S3 bucket"
 	@echo "  env          Create or update the conda environment"
 	@echo "  install      Install the package in development mode (pip install -e .[dev])"
-	@echo "  pre-commit   Install pre-commit git hooks"
+	@echo "  pre-commit   Install pre-commit and pre-push git hooks"
+	@echo "  proj-grids   Download the GEOID18 and NOAA VDatum grids PROJ needs for datum conversion"
+	@echo "  ci-local     Fast local gate (ruff==0.7.0 + detect-secrets + smoke tests)"
+	@echo "               Windows: Git Bash, or: powershell -File scripts/ci-local.ps1"
 	@echo "  info         Show detected solver and environment info"
 	@echo "  clean        Remove the conda environment"
 	@echo ""
@@ -67,13 +71,62 @@ endif
 install:
 	$(CONDA_RUN) pip install -e ".[dev]"
 
-## Install pre-commit hooks into the local .git/hooks
+## Install pre-commit and pre-push hooks into the local .git/hooks
 pre-commit:
-	$(CONDA_RUN) pre-commit install
+	$(CONDA_RUN) pre-commit install --install-hooks
+	$(CONDA_RUN) pre-commit install --hook-type pre-push
 
-## Full developer setup: create/update env, install package, install hooks
-setup: env install pre-commit
+## Download the GEOID18 grid that PROJ resolves by bare filename
+# coastalmodeling-vdatum names most of its grids by absolute https://
+# URL on the NOAA bucket, which PROJ fetches on demand; the NOAA grids
+# below are downloaded so they also resolve offline (online=False),
+# including xGEOID20B.tif, needed for -d xgeoid20b. GEOID18,
+# us_noaa_g2018u0.tif, is named by *bare filename*, so
+# PROJ resolves it from local disk and falls back to cdn.proj.org — a
+# different host, and one many operational networks do not allow. The
+# conda environment ships no .tif grids at all, so without this step
+# every navd88 <-> mllw conversion fails with ProjError 1029
+# ("File not found or invalid") and the affected stations are dropped.
+#
+# --system-directory puts the grid in $CONDA_PREFIX/share/proj so it is
+# scoped to the environment and applies no matter which account later
+# runs the job. --user-writable-directory would target $HOME and would
+# silently not apply to a scheduled run under a different user.
+# projsync is idempotent: a second run prints "already downloaded."
+proj-grids:
+	@echo "Downloading GEOID18 grid (us_noaa_g2018u0.tif, ~15 MB) into the env..."
+	@$(CONDA_RUN) projsync --system-directory --file us_noaa_g2018u0.tif || \
+	  (echo "" && \
+	   echo "ERROR: could not download us_noaa_g2018u0.tif." && \
+	   echo "PROJ fetches this grid from cdn.proj.org. Check that outbound" && \
+	   echo "HTTPS to cdn.proj.org is allowed, then re-run: make proj-grids" && \
+	   echo "Until it succeeds, NAVD88 <-> MLLW datum conversions will fail" && \
+	   echo "and those stations will be dropped from the skill assessment." && \
+	   exit 1)
+	@echo "Downloading NOAA VDatum grids..."
+	@$(CONDA_RUN) python -c "\
+	import urllib.request, os;\
+	base_url = 'https://noaa-nos-stofs2d-pds.s3.amazonaws.com/_archive/coastalmodeling-vdatum/';\
+	files = ['us_noaa_nos_LWD-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif', 'us_noaa_nos_IGLD85-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_MLLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MLW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_MHHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif','us_noaa_nos_MHW-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'us_noaa_nos_LMSL-ITRF2020_2020.0_nwldatum_4.7.0_20240621_3.tif',\
+	'xGEOID20B.tif'];\
+	proj_dir = os.path.join(os.environ['CONDA_PREFIX'], 'share', 'proj');\
+	os.makedirs(proj_dir, exist_ok=True);\
+	[(print(f'{f} already exists.') if os.path.exists(os.path.join(proj_dir, f)) else (urllib.request.urlretrieve(base_url + f, os.path.join(proj_dir, f)), print(f'{f} download complete.'))) for f in files]"
+## Fast local gate used by pre-push (not the full CI matrix)
+ci-local:
+	$(CONDA_RUN) bash scripts/ci-local.sh
+
+## Full developer setup: create/update env, install package, hooks, PROJ grids
+# proj-grids is ordered last on purpose: it is the only step that needs
+# the network beyond the solver, so if it fails the environment, the
+# package and the git hooks are already in place and only this one step
+# has to be retried.
+setup: env install pre-commit proj-grids
 	@echo "Setup complete. Activate with: conda activate $(ENV_NAME)"
+	@echo "Before pushing, hooks run make ci-local (or: make ci-local)."
 
 ## Show which solver (mamba/conda) was detected
 info:

@@ -8,6 +8,8 @@
 
 This repository contains a prototype of the Next Gen NOS Ocean Forecast Model Skill Assessment and Processing Software, currently under development by NOAA's Center for Operational Oceanographic Products and Services (CO-OPS) and Office of Coast Survey (OCS) as part of the Bipartisan Infrastructure Law (BIL) Coastal and Inland Flood Inundation Mapping (CIFIM) project.
 
+**Developers:** for conda setup (`make setup`), pre-push checks (`make ci-local`), pytest markers, and CI job expectations, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 NOAA develops and maintains several [Operational Forecast Systems (OFS)](https://tidesandcurrents.noaa.gov/models.html "Operational Forecast System (OFS) NOAA main page") that provide nowcast (past 24 hours to present time) and forecast (up to 120 hours in the future) guidance of water level, current velocity, salinity, water temperature, and ice concentration. OFS are located in coastal waters around the nation, including the Great Lakes, to support critical ports, harbors, and infrastructure. Model predictions and guidance should therefore be as skillful as possible. Oceanographic output from OFSs can be used for, for example, shipping channel navigation, search and rescue, recreational boating and fishing, and tracking of storm effects.
 
 This software provides near real-time evaluation of OFS model skill by comparing model guidance to observations at specific point locations (e.g., established buoys and gauges, referred to as **1D**) and across the entire two-dimensional sea or lake surface of OFS domains using remote sensing products (referred to as **2D**). This new Python-based skill assessment software will replace the [existing Fortran-based NOS skill assessment software](https://tidesandcurrents.noaa.gov/ofs/publications/CS_Techrpt_024_SkillAss_WLsCUs_2006.pdf "Existing skill assessment details"). A map-based interface to view skill assessment results produced by this software will also be available, but is not detailed here.
@@ -27,41 +29,69 @@ conda activate ofs_dps
 cp conf/ofs_dps.conf.example conf/ofs_dps.conf
 #    ...then edit conf/ofs_dps.conf and set home=/path/to/working_directory
 
-# 3. Download model data for your OFS and date range
+# 2b. (Optional, recommended) Add a USGS API key to raise the USGS rate
+#     limit from 50 to 1000 requests/hour. Runs work without one, but
+#     USGS stations may be dropped if the request limit is exceeded.
+cp conf/api_keys.conf.example conf/api_keys.conf
+#    ...then set API_USGS_PAT in conf/api_keys.conf
+#    How to request a key: https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/01.-Setup-and-Installation#configuring-a-usgs-api-key
+
+# 3a. (Preferred) Ensure use_s3_fallback=True is set in conf/ofs_dps.conf, and the skill
+#     assessment routine will read and stream model files from the
+#     NODD S3 bucket on demand when local files are missing.
+
+# 3b. (Alternate) If you prefer to download model data locally:
+#     Download model data for your OFS and date range
 python ./bin/utils/get_model_data.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-02T00:00:00Z -ws nowcast -t stations
 python ./bin/utils/get_model_data.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-02T00:00:00Z -ws forecast_b -t stations
 
 # 4. Run the 1D skill assessment
 python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-02T00:00:00Z -d MLLW -ws nowcast,forecast_b
+
+# 5. (Optional) Later, extend that assessment to a later end date without
+#    redoing the part you already ran. Pass the FULL window and add -cr;
+#    only the new span is downloaded, extracted and fetched.
+python ./bin/visualization/create_1dplot.py -p ./ -o cbofs -s 2025-07-01T00:00:00Z -e 2025-07-05T00:00:00Z -d MLLW -ws nowcast,forecast_b -cr
 ```
 
-Prefer a graphical interface? Run `ofs-skill-gui` to open the [GUI launcher](../../wiki/10.-Graphical-User-Interfaces-(GUI)). Prefer pip/venv or manual conda setup instead of `make setup`? See [Setup and Installation](../../wiki/01.-Setup-and-Installation).
+Prefer a graphical interface? Run `ofs-skill-gui` to open the [GUI launcher](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/10.-Graphical-User-Interfaces-(GUI)). Prefer pip/venv or manual conda setup instead of `make setup`? See [Setup and Installation](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/01.-Setup-and-Installation#quick-start-make-setup), which also covers [configuring a USGS API key](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/01.-Setup-and-Installation#configuring-a-usgs-api-key).
+
+Water level runs convert between vertical datums, which needs a PROJ grid on disk and outbound HTTPS to the NOAA vdatum bucket. `make setup` handles the download; if you set the environment up by hand, or datum conversions fail with `ProjError` 1029, see [Vertical datum grids and network access](CONTRIBUTING.md#vertical-datum-grids-and-network-access).
 
 ## Documentation
 
-Full documentation lives in the [project wiki](../../wiki):
+Full documentation lives in the [project wiki](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki):
 
 **Setup**
-- [Setup and Installation](../../wiki/01.-Setup-and-Installation) — getting the code, `make setup`, manual pip/conda routes, USGS API key, Windows notes
-- [Configuration File Reference](../../wiki/02.-Configuration-File-Reference) — every `conf/ofs_dps.conf` setting, plus `logging.conf`
-- [Package Structure and Programmatic Usage](../../wiki/03.-Package-Structure-and-Programmatic-Usage) — repository layout and using `ofs_skill` from your own code (see also [API_REFERENCE.md](API_REFERENCE.md) and [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md))
+- [Setup and Installation](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/01.-Setup-and-Installation#quick-start-make-setup) — getting the code, `make setup`, manual pip/conda routes, USGS API key, Windows notes
+- [Configuration File Reference](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/02.-Configuration-File-Reference) — every `conf/ofs_dps.conf` setting, plus `logging.conf`
+- [Package Structure and Programmatic Usage](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/03.-Package-Structure-and-Programmatic-Usage) — repository layout and using `ofs_skill` from your own code (see also [API_REFERENCE.md](API_REFERENCE.md) and [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md))
 
 **User guide**
-- [OFS Background and Concepts](../../wiki/04.-OFS-Background-and-Concepts) — supported OFS, nowcasts vs. forecasts, run modes, file formats, data retention, vertical datums, observation data sources
-- [Downloading OFS Model Data](../../wiki/05.-Downloading-OFS-Model-Data) — retrieving model output from the NODD S3 bucket
-- [Running the 1D Skill Assessment](../../wiki/06.-Running-the-1D-Skill-Assessment) — argument reference, example calls, custom station lists, standalone CLI tools
-- [1D Output Reference](../../wiki/07.-1D-Output-Reference) — control files, plots, file formats, skill metrics, maps, datum report
-- [2D Skill Assessment](../../wiki/08.-2D-Skill-Assessment) — satellite SST vs. model fields: running the pipeline and its outputs
-- [Great Lakes Ice Skill Assessment](../../wiki/09.-Great-Lakes-Ice-Skill-Assessment) — ice concentration and extent skill for the GLOFS models
-- [Graphical User Interfaces](../../wiki/10.-Graphical-User-Interfaces-(GUI)) — the GUI launcher and tool GUIs
-- [Troubleshooting](../../wiki/11.-Troubleshooting) — common errors and how to fix them
+- [OFS Background and Concepts](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/04.-OFS-Background-and-Concepts) — supported OFS, nowcasts vs. forecasts, run modes, file formats, data retention, vertical datums, observation data sources
+- [Downloading OFS Model Data](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/05.-Downloading-OFS-Model-Data) — retrieving model output from the NODD S3 bucket
+- [Running the 1D Skill Assessment](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/06.-Running-the-1D-Skill-Assessment) — argument reference, example calls, custom station lists, standalone CLI tools
+- [1D Output Reference](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/07.-1D-Output-Reference) — control files, plots, file formats, skill metrics, maps, datum report
+- [2D Skill Assessment](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/08.-2D-Skill-Assessment) — satellite SST vs. model fields: running the pipeline and its outputs
+- [Great Lakes Ice Skill Assessment](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/09.-Great-Lakes-Ice-Skill-Assessment) — ice concentration and extent skill for the GLOFS models
+- [Graphical User Interfaces](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/10.-Graphical-User-Interfaces-%28GUI%29) — the GUI launcher and tool GUIs
+- [Troubleshooting](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/11.-Troubleshooting) — common errors and how to fix them
+- [HF Radar Surface Currents](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/12.-HF-Radar-Surface-Currents) — retrieving gridded HF radar surface current observations for an OFS domain
 
-**Development and analysis**
-- [Code Development Tips](../../wiki/A.-Code-Development-Tips)
-- [Contributing Code: Pull Request Template](../../wiki/B.-Contributing-Code:-Pull-Request-Template)
-- [Parallelization and Performance Optimization Guide](../../wiki/C.-Parallelization-and-Performance-Optimization-Guide)
-- [Harmonic Analysis](../../wiki/D.-Harmonic-Analysis)
-- [CO-OPS ADCP Current Processing](../../wiki/E.-CO‐OPS-ADCP-current-processing)
+**Development**
+- [Architecture and Data Flow](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/I.-Architecture-and-Data-Flow) — how a run moves through the package: which module owns which stage, what each writes to disk, and the cross-cutting mechanisms
+- [Code Development Tips](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/A.-Code-Development-Tips) — pre-commit hooks, code style, docstrings, logging and config conventions
+- [Testing Guide](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/J.-Testing-Guide) — running the suite, markers, fixtures and mocks, coverage, writing a new test
+- [Continuous Integration](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/K.-Continuous-Integration) — the GitHub Actions workflows, reproducing them locally, reading a failure
+- [Contributing Code: Pull Request Template](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/B.-Contributing-Code%3A-Pull-Request-Template)
+- [Reviewing and Testing Pull Requests](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/F.-Reviewing-and-Testing-Pull-Requests)
+- [Publishing a Release](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/H.-Publishing-a-Release)
+- [Syncing the Wiki to the Public Repository](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/G.-Syncing-the-Wiki-to-the-Public-Repository)
+
+**Analysis**
+- [Parallelization and Performance Optimization Guide](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/C.-Parallelization-and-Performance-Optimization-Guide)
+- [Harmonic Analysis](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/D.-Harmonic-Analysis)
+- [CO-OPS ADCP Current Processing](https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment/wiki/E.-CO%E2%80%90OPS-ADCP-current-processing)
 
 ## Additional resources
 

@@ -16,11 +16,9 @@ plots and tables. More specifically,
 from __future__ import annotations
 
 import argparse
-import logging.config
 import os
 import sys
 from datetime import datetime
-from pathlib import Path
 
 import matplotlib.colors as mcolors
 import numpy as np
@@ -570,27 +568,14 @@ def make_OM_view_ice(prop, logger):
 
     # Specify defaults (can be overridden with command line options)
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (
-            Path(__file__).parent.parent.parent /
-            log_config_file
-        ).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-
-        # Create logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(prop.path)
 
     logger.info('--- Starting O&M ice dashboard processing ---')
 
     # Parameter validation & paths
     _conf = getattr(prop, 'config_file', None)
     dir_params = utils.Utils(_conf).read_config_section('directories', logger)
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     argu_list = (
         prop.path,
         prop.whichcasts,

@@ -59,7 +59,6 @@ Revisions:
 from __future__ import annotations
 
 import argparse
-import logging.config
 import os
 import sys
 import warnings
@@ -846,22 +845,10 @@ if __name__ == '__main__':
     prop1.start_date_full = prop1.start_date_full.replace('T', '-')
     prop1.end_date_full = prop1.end_date_full.replace('T', '-')
 
-    logger = None
-    if logger is None:
-        config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = 'conf/logging.conf'
-        log_config_file = os.path.join(os.getcwd(), log_config_file)
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-        # Check if config file exists
-        if not os.path.isfile(config_file):
-            sys.exit(-1)
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using config %s', config_file)
-        logger.info('Using log config %s', log_config_file)
+    # This entry point has no -p, so its working directory is wherever it
+    # was launched from.
+    logger = utils.init_root_logger(
+        os.getcwd(), utils.Utils(_conf).get_config_file())
 
     try:
         prop1.startdate = (

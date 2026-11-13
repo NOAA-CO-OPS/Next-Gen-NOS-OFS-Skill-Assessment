@@ -229,6 +229,18 @@ Use conda (Option 2) or manually install Boost (Option 3)
 - **Alternative:** Try `pip install pyinterp` (may fail on Windows)
 - **Last resort:** Compile from source (Option 3 above)
 
+### "ProjError ... Error 1029 (File not found or invalid)" during a water level run
+The vertical datum grids PROJ needs are not all reachable. Download the
+one grid that must live on disk:
+
+```bash
+projsync --system-directory --file us_noaa_g2018u0.tif
+```
+
+and make sure outbound HTTPS to `noaa-nos-stofs2d-pds.s3.amazonaws.com`
+is allowed. Full explanation of both requirements:
+[Vertical datum grids and network access](CONTRIBUTING.md#vertical-datum-grids-and-network-access).
+
 ### Import errors for other packages
 ```bash
 pip install --upgrade pip setuptools wheel

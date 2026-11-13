@@ -11,6 +11,7 @@ import pytest
 
 from ofs_skill.skill_assessment.get_skill import (
     _cache_key,
+    _close_cached_model,
     _get_valid_cached_model,
     _set_cached_model,
 )
@@ -191,3 +192,66 @@ def test_set_cached_model_no_close_when_no_prior_cache(props):
     _set_cached_model(props, ds)  # Must not raise.
     assert ds.closed is False
     assert _get_valid_cached_model(props) is ds
+
+
+def test_close_cached_model_closes_and_clears(props):
+    """The final cached dataset must be closed and dropped at end of run.
+
+    This is the issue #94 fix: without it the h5netcdf-backed model dataset
+    is finalized at interpreter shutdown, after h5py teardown, printing the
+    noisy 'bad operand type for unary ~' tracebacks.
+    """
+    ds = _ClosableDataset('model-ds')
+    _set_cached_model(props, ds)
+
+    _close_cached_model(props)
+
+    assert ds.closed is True, 'cached model should be closed on teardown'
+    assert props._cached_model is None
+    assert props._cached_model_key is None
+    # A subsequent lookup is a clean miss, not a stale hit.
+    assert _get_valid_cached_model(props) is None
+
+
+def test_close_cached_model_no_cache_is_noop(props):
+    """No cached model: teardown is a harmless no-op."""
+    # Must not raise even though nothing was ever cached.
+    _close_cached_model(props)
+    assert getattr(props, '_cached_model', None) is None
+
+
+def test_close_cached_model_swallows_close_exception(props):
+    """A close() that raises must not propagate out of teardown, and the
+    cache must still be cleared."""
+
+    class _BrokenClose:
+        def __init__(self):
+            self.close_called = False
+
+        def close(self):
+            self.close_called = True
+            raise RuntimeError('simulated close failure')
+
+    old = _BrokenClose()
+    _set_cached_model(props, old)
+
+    _close_cached_model(props)  # Must not raise.
+
+    assert old.close_called is True
+    assert props._cached_model is None
+    assert _get_valid_cached_model(props) is None
+
+
+def test_close_cached_model_tolerates_dataset_without_close(props):
+    """A cached object lacking a close() method (defensive) is dropped
+    without error."""
+
+    class _NoClose:
+        pass
+
+    obj = _NoClose()
+    _set_cached_model(props, obj)
+
+    _close_cached_model(props)  # Must not raise.
+
+    assert props._cached_model is None

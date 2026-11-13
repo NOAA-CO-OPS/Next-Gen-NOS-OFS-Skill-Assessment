@@ -388,7 +388,7 @@ def run_harmonic_analysis_station_loop(
     # ------------------------------------------------------------------
     # Phase 2: Dispatch work items to ProcessPoolExecutor
     # ------------------------------------------------------------------
-    parallel_config = get_parallel_config(logger)
+    parallel_config = get_parallel_config(logger, config_file=_conf)
     max_workers = parallel_config['ha_workers']
 
     if work_items:
@@ -901,7 +901,8 @@ def run_harmonic_analysis(prop, logger):
     _conf = getattr(prop, 'config_file', None)
     if logger is None:
         config_file = utils.Utils(_conf).get_config_file()
-        log_config_file = os.path.join(Path(prop.path), 'conf/logging.conf')
+        log_config_file = utils.resolve_asset_path(
+            prop.path, 'conf', 'logging.conf')
 
         if not os.path.isfile(log_config_file):
             print(f'Log config file not found: {log_config_file}')
@@ -971,7 +972,7 @@ def run_harmonic_analysis(prop, logger):
     if prop.path is None:
         prop.path = dir_params['home']
 
-    ofs_extents_path = os.path.join(prop.path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(prop.path, dir_params['ofs_extents_dir'])
     if not os.path.exists(ofs_extents_path):
         logger.error(
             'ofs_extents/ folder not found. Please check path - %s. Abort!',
@@ -1106,7 +1107,8 @@ def run_harmonic_analysis(prop, logger):
             )
 
     # Dispatch variable processing — parallel or sequential
-    parallel_cfg = get_parallel_config(logger)
+    parallel_cfg = get_parallel_config(
+        logger, config_file=getattr(prop, 'config_file', None))
     ha_vars = [v for v in prop.var_list if v in ('water_level', 'currents')]
     if parallel_cfg['parallel_variables'] and len(ha_vars) > 1:
         logger.info('Processing %d HA variables in parallel', len(ha_vars))

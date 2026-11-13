@@ -21,12 +21,26 @@
 
 home=/path/to/sa_homedir/
 
-# Data directory
+# Directory settings below may be either:
+#   - relative (default): created as subdirectories of the working
+#     directory (the -p command line argument, or home= when -p is
+#     not given), e.g. data_dir=data
+#   - absolute: used as-is, e.g. data_dir=/mnt/bigdisk/ofs_data.
+#     Use this to write output to another disk when the installation
+#     location has limited space. A leading ~ is expanded.
+# Input assets that ship with the installation (ofs_extents/, conf/)
+# are always found automatically - they never need to be copied to
+# the output location.
+
+# Data directory - the bulk of the output (model data, observations,
+# skill statistics, plots) is written here
 #data_dir=%(home)s/data/
 data_dir=data
 
 # OFS directories
 ofs_extents_dir=ofs_extents
+# Control files directory - station control files, inventories, and
+# station ledgers are written here (relative or absolute, see above)
 control_files_dir=control_files
 observations_dir=observations
 1d_station_dir=1d_station
@@ -37,6 +51,7 @@ skill_dir=skill
 model_historical_dir=%(home)s/example_data
 model_obc_dir=%(home)s/example_data
 netcdf_dir=netcdf
+netcdf_dir_stofs=
 1d_node_dir=1d_node
 horizon_model_dir=horizon_model
 model_icesave_dir=2D_ice_cover
@@ -63,6 +78,12 @@ model_historical_dir_backup=Add_model_historical_dir_backup
 # Set this to the full path of a local copy of {ofs}_vdatums.nc.
 local_vdatum = Add_path_to/file.nc
 
+# Cache directory for model files streamed from the NODD S3 buckets.
+# Streamed files can accumulate several GB here, so point this at a
+# large disk if your home directory has a size quota. Leave commented
+# out (or blank) to use the default of ~/.ofs_cache/s3
+#s3_cache_dir=/path/to/large_disk/ofs_cache
+
 [urls]
 # Station URLs
 co_ops_mdapi_base_url=https://api.tidesandcurrents.noaa.gov/mdapi/prod/
@@ -84,13 +105,22 @@ nesdis_npp=https://www.star.nesdis.noaa.gov/pub/socd2/coastwatch/sst/nrt/viirs/n
 nesdis_coastwatch=https://www.star.nesdis.noaa.gov/data/pub0053/coastwatch/sst/l3s
 nesdis_dodsC=https://www.star.nesdis.noaa.gov/thredds/dodsC
 nssr_sport=https://nssrgeo.ndc.nasa.gov/SPoRT/enhanced_sst/ghrsst_netcdf
-
+coastwatch_direct_g18=https://coastwatch.noaa.gov/data/pub0014/coastwatch/sst/nrt/abi/g18/l3c/
+coastwatch_direct_g19=https://coastwatch.noaa.gov/data/pub0014/coastwatch/sst/nrt/abi/g19/l3c/
 
 [datums]
 # List of vertical datums that the program can convert between. If a new datum
 # is added to the package, include it here!
-datum_list=MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B
+datum_list=MHHW MHW MLLW MLW NAVD88 IGLD85 LWD XGEOID20B MSL
 
+[tides]
+# Nearby CO-OPS tide fallback used when computing WOF for water-level stations
+# that are not themselves CO-OPS prediction sites (NDBC / USGS / CHS).
+# false (default): only query the observation station itself for predictions.
+# true: if that station has no tides, search nearby CO-OPS prediction stations.
+# Each candidate is still queried once (requested/servable datum only); remaining
+# datums are not walked when the API reports no predictions.
+allow_nearby_tidal_stations=False
 
 [station_IDs]
 # Optional input list of observation station IDs to assess.
@@ -161,6 +191,25 @@ plot_workers=auto
 # a single pipeline stage. Only enable if you have sufficient memory.
 parallel_variables=False
 
+# Max concurrent model-data extractions (dask.compute calls) across the
+# variable threads when parallel_variables=True. Only takes effect when
+# the model files are NetCDF-4/HDF5 (read via the thread-safe h5netcdf
+# engine); NetCDF-3 files are always extracted one variable at a time.
+# Each slot holds one variable's data in memory during extraction
+# (roughly 4-5 GB for a multi-month run of a large OFS), so raise this
+# only if you have RAM to spare. 1 = fully serialized extraction.
+parallel_extract_slots=2
+
+# CO-OPS API rate limiting. The process-wide limiter allows
+# coops_request_concurrency simultaneous requests and spaces request
+# starts by coops_request_gap_sec seconds. The defaults (2 / 0.5) were
+# tuned against CO-OPS throttling on long historical windows — raising
+# them speeds up observation retrieval but risks HTTP 403 chunk drops
+# if CO-OPS throttles your IP. Note obs_coops_workers above this limit
+# adds no throughput; the limiter is the effective cap.
+coops_request_concurrency=2
+coops_request_gap_sec=0.5
+
 # Workflow-level parallelism: run obs download + model extraction concurrently
 parallel_workflow=False
 
@@ -187,6 +236,15 @@ parallel_2d_interp=False
 # False = just interactive plots
 static_plots=False
 
+# Would you like to generate the interactive plotly express 2D maps
+# (time-slider maps of observations/model/difference plus per-statistic
+# maps) during the 2D skill assessment (create_2dplot.py)?
+# True  = write plotly 2D maps to data/skill/2d/plotly_maps
+# False = skip plotly 2D maps (default)
+# Note: this is independent of static_plots, which controls the static
+# .png 2D maps.
+make_plotly_2d_maps=False
+
 # NODD S3 bucket usage for model files. Three modes:
 #   True  = prefer local model files; read from the NODD S3 bucket only
 #           when local files are missing (recommended default)
@@ -203,3 +261,63 @@ use_s3_fallback=True
 # If True, set 'filename_path' to the path to your text file, including the filename.
 use_custom_filenames=False
 filename_path=path/to/filename.txt
+
+# Maximum assessment window (in days) allowed when forecast-horizon skill
+# (-hs / --Horizon_Skill) is enabled. Runs longer than this auto-disable the
+# horizon skill option to guard against very long run times. The horizon
+# workflow scales roughly linearly with the number of model cycles in the
+# window (~cycles_per_day * days), so raise this if you want week+ horizon
+# skill and can accept the longer run time.
+horizon_max_days=2
+
+# Make the extra forecast-horizon-skill plots? Only applies when
+# forecast-horizon skill (-hs / --Horizon_Skill) is enabled. These are the
+# per-station model-cycle time-series plots (with a model-cycle dropdown) and
+# the pass/fail central-frequency scorecards. Disabled by default because they
+# add run time and produce many files (esp. per-station currents scorecards).
+# True = also make the time-series + scorecard plots
+# False = just the standard RMSE / central-frequency bar plots
+horizon_extra_plots=False
+
+# Maximum distance (km) between an observation station and its nearest model
+# output location for the two to be paired in the skill assessment. Stations
+# whose nearest model location is farther than this are not assessed.
+# The same value is used to size the candidate search box, so it is applied
+# consistently across both the pre-filter and the final match test.
+# Keep this tight: proximity matters for the validity of the comparison.
+# Default is 4 km if this key is omitted.
+# Scope: applies to stations-filetype runs (-t stations) only. Fields runs
+# match each station to the nearest wet grid node with no distance cutoff,
+# and STOFS stations files are matched by station name, not distance.
+station_match_max_dist_km=4.0
+
+# NetCDF engine selection for reading model files. Three modes:
+#   auto     = detect each batch's on-disk format from its magic bytes
+#              (recommended default). NetCDF-4/HDF5 files are read with
+#              the thread-safe h5netcdf engine, which allows concurrent
+#              variable extraction (see parallel_extract_slots);
+#              NetCDF-3 files (e.g. NECOFS, stofs_2d_glo stations) are
+#              read with the netcdf4 or scipy engine and extracted
+#              serially.
+#   netcdf4  = force the netcdf4 engine for every open (reads all
+#              formats, fully serialized extraction)
+#   h5netcdf = force the h5netcdf engine (NetCDF-4/HDF5 files only;
+#              fails on NetCDF-3 files)
+engine_strategy=auto
+
+# Ctl-file creation decides per-bin CO-OPS ADCP currents availability
+# with short probe requests (one full-window scan per station plus one
+# short confirmation per bin) instead of downloading the full window
+# for every bin — the ctl stage only needs a yes/no per bin, and the
+# full downloads dominated multi-month run times. Set False to restore
+# the full-download scan (e.g. to cross-check probe decisions).
+ctl_availability_probe=True
+
+# Disable the auto-deletion of stale control files in 1D pipeline. A stale
+# file is one that was generated by a previous run with different parameters/flags.
+# This override ONLY applies to control files -- .obs, .prd, and .int files will
+# always be rewritten if they are stale.
+# True = leaves stale control files on disk, and resuses them (Warning: may produce
+# incorrect results downstream)
+# False = safely deletes and regenerates stale control files (default)
+keep_stale_artifacts=False

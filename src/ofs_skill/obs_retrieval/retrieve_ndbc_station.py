@@ -12,7 +12,7 @@ This script replaces three different NDBC scripts:
 """
 
 from logging import Logger
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -25,7 +25,7 @@ def retrieve_ndbc_station(
     id_number: str,
     variable: str,
     logger: Logger
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """
     Retrieve NDBC station data using SEARVEY library.
 

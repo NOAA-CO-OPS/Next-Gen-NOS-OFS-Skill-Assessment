@@ -48,7 +48,12 @@ from ofs_skill.obs_retrieval.get_station_tidal_data import get_station_tidal_dat
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.obs_retrieval.t_and_c_properties import TidesandCurrentsProperties
 from ofs_skill.obs_retrieval.usgs_properties import USGSProperties
-from ofs_skill.obs_retrieval.utils import Utils, load_api_keys, parse_arguments_to_list
+from ofs_skill.obs_retrieval.utils import (
+    Utils,
+    load_api_keys,
+    parse_arguments_to_list,
+    redact_secrets,
+)
 from ofs_skill.obs_retrieval.write_obs_ctlfile import write_obs_ctlfile
 
 # Load API keys from config file into environment variables.
@@ -60,6 +65,8 @@ __all__ = [
     'Utils',
     'load_api_keys',
     'parse_arguments_to_list',
+    'redact_secrets',
+
     'station_ctl_file_extract',
     'scalar',
     'vector',

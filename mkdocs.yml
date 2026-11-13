@@ -1,0 +1,76 @@
+site_name: OFS Skill Assessment
+site_description: Developer documentation for the Next-Gen NOS OFS Skill Assessment package
+repo_url: https://github.com/NOAA-CO-OPS/dev-Next-Gen-NOS-OFS-Skill-Assessment
+edit_uri: ""
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: blue grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: blue grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            # Google style, with parser warnings ON so malformed or
+            # incomplete docstrings fail `mkdocs build --strict` instead
+            # of silently rendering wrong.
+            docstring_style: google
+            docstring_options:
+              warnings: true
+              warn_missing_types: false
+              warn_unknown_params: false
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            signature_crossrefs: false
+            filters:
+              - "!^_"
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - API:
+      - Overview: api/index.md
+      - Observation retrieval: api/obs_retrieval.md
+      - Model processing: api/model_processing.md
+      - Skill assessment: api/skill_assessment.md
+      - Visualization: api/visualization.md
+      - Tidal analysis: api/tidal_analysis.md
+      - Utils: api/utils.md
+      - Open boundary: api/open_boundary.md
+  - Development:
+      - Contributing: development/contributing.md
+      - API notes (hand-written): development/api-reference.md
+      - Migration Guide: development/migration-guide.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+strict: true

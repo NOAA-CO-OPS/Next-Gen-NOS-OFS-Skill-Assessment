@@ -504,7 +504,7 @@ def create_1dplot_icestats(prop, time_all, logger):
         polyorder = 2
         s = pd.Series(dflist[i].SS)
         interpolated_s = s.bfill().ffill().interpolate()  # Fill NaNs
-        if interpolated_s.isna().all() == False:
+        if interpolated_s.isna().all() is False:
             smoothed_y = savgol_filter(interpolated_s, window_length, polyorder)
             # Reinsert NaNs
             smoothed_y[np.argwhere(np.isnan(dflist[i].SS))] = np.nan
@@ -583,7 +583,7 @@ def create_1dplot_icestats(prop, time_all, logger):
             range=[0, 100],
             row=2, col=i+1,
         )
-        if np.isnan(dflist[i].SS).all() == False:
+        if np.isnan(dflist[i].SS).all() is False:
             ss_ymin = np.floor(np.nanmin(dflist[i].SS))
             if ss_ymin > -1:
                 ss_ymin = -1

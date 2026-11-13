@@ -95,8 +95,8 @@ Revisions:
 import argparse
 import socket
 
-from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 from ofs_skill.model_processing import model_properties
+from ofs_skill.obs_retrieval.get_station_observations import get_station_observations
 
 # Import directly from module to avoid circular import
 
@@ -106,12 +106,42 @@ TIMEOUT_SEC = 120 # default API timeout in seconds
 socket.setdefaulttimeout(TIMEOUT_SEC)
 
 
-### Execution:
-if __name__ == '__main__':
+def _run_pipeline(run_args):
+    """Execute observation retrieval with the given arguments."""
+    prop1 = model_properties.ModelProperties()
+    prop1.ofs = run_args.OFS.lower()
+    prop1.path = run_args.Path
+    prop1.config_file = getattr(run_args, 'config', None)
+    prop1.start_date_full = run_args.StartDate_full
+    prop1.end_date_full = run_args.EndDate_full
+    prop1.datum = run_args.Datum.upper()
+    prop1.currents_bins_csv = getattr(run_args, 'Currents_Bins_Csv', None)
 
-    # Parse (optional and required) command line arguments
+    if getattr(run_args, 'Station_Owner', None) is None:
+        prop1.stationowner = 'co-ops,ndbc,usgs,chs'
+    else:
+        owners = run_args.Station_Owner
+        if isinstance(owners, list):
+            prop1.stationowner = ','.join(owners)
+        else:
+            prop1.stationowner = owners.lower()
+
+    if getattr(run_args, 'Var_Selection', None) is None:
+        prop1.var_list = 'water_level,water_temperature,salinity,currents'
+    else:
+        vs = run_args.Var_Selection
+        if isinstance(vs, list):
+            prop1.var_list = ','.join(vs)
+        else:
+            prop1.var_list = vs.lower()
+
+    get_station_observations(prop1, None)
+
+
+def main(argv=None):
+    """Entry point for the get-station-observations console script."""
     parser = argparse.ArgumentParser(
-        prog='python write_obs_ctlfile.py',
+        prog='get-station-observations',
         usage='%(prog)s',
         description='ofs write Station Control File',
     )
@@ -119,21 +149,22 @@ if __name__ == '__main__':
     parser.add_argument(
         '-o',
         '--OFS',
-        required=True,
+        required=False,
+        default=None,
         help='Choose from the list on the ofs_Extents folder, you can also '
              'create your own shapefile, add it top the ofs_Extents folder and '
              'call it here',
     )
-    parser.add_argument('-p', '--Path', required=True,
+    parser.add_argument('-p', '--Path', required=False,
                         help='Inventary File path')
-    parser.add_argument('-s', '--StartDate_full', required=True,
+    parser.add_argument('-s', '--StartDate_full', required=False,
         help="Start Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
-    parser.add_argument('-e', '--EndDate_full', required=True,
+    parser.add_argument('-e', '--EndDate_full', required=False,
         help="End Date_full YYYY-MM-DDThh:mm:ssZ e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument(
         '-d',
         '--Datum',
-        required=True,
+        required=False,
         help="prop.datum: 'MHHW', 'MHW', 'MLW', 'MLLW', 'NAVD88', 'LWD', "
         "'IGLD85', 'xgeoid20b'",
     )
@@ -161,28 +192,14 @@ if __name__ == '__main__':
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.OFS.lower()
-    prop1.path = args.Path
-    prop1.config_file = args.config
-    prop1.start_date_full = args.StartDate_full
-    prop1.end_date_full = args.EndDate_full
-    prop1.datum = args.Datum.upper()
-    prop1.currents_bins_csv = args.Currents_Bins_Csv
+    if args.OFS is None:
+        from ofs_skill.visualization import create_gui_obs
+        create_gui_obs.create_gui_obs(runner=_run_pipeline)
+    else:
+        _run_pipeline(args)
 
-    # Make all station owners default, unless user specifies station owners
-    if args.Station_Owner is None:
-        prop1.stationowner = 'co-ops,ndbc,usgs,chs'
-    elif args.Station_Owner is not None:
-        prop1.stationowner = args.Station_Owner.lower()
 
-    #Handle variable selection
-    if args.Var_Selection is None:
-        # Default: include all vars
-        prop1.var_list = 'water_level,water_temperature,salinity,currents'
-    elif args.Var_Selection is not None:
-        prop1.var_list = args.Var_Selection.lower()
-
-    get_station_observations(prop1, None)
+if __name__ == '__main__':
+    main()

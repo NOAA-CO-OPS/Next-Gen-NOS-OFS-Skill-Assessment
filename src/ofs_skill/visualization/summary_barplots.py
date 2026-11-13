@@ -24,6 +24,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import ofs_skill.visualization.plotting_functions as plotting_functions
+from ofs_skill.utils import plot_units
 
 _PASS = 'palegreen'
 _FAIL = 'lightcoral'
@@ -134,13 +135,16 @@ def write_static_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
     x_positions = np.arange(len(labels))
     axs[0].bar(x_positions, rmse_vals, color=_rmse_colors(rmse_vals, x1),
                edgecolor='black', linewidth=1)
-    axs[0].set_ylabel('RMSE', fontsize=18)
+    axs[0].set_ylabel(plot_units.with_unit('RMSE', variable, logger=logger),
+                      fontsize=18)
     axs[0].tick_params(axis='y', labelsize=14)
     axs[0].set_xticks(x_positions)
     axs[0].set_xticklabels(labels, rotation=60, ha='right', fontsize=12)
     axs[0].set_ylim(0, rmse_ymax)
-    axs[0].axhline(y=x1, color='red', linewidth=1, linestyle='--',
-                   label=f'Target error range ({x1})')
+    axs[0].axhline(
+        y=x1, color='red', linewidth=1, linestyle='--',
+        label=('Target error range '
+               f'({plot_units.value_with_unit(x1, variable, logger)})'))
     axs[0].legend(fontsize=14, loc='upper right',
                   facecolor='white', framealpha=0.75)
 
@@ -197,7 +201,8 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
         shared_xaxes=True,
         vertical_spacing=0.08,
         subplot_titles=(
-            f'RMSE (target {x1})',
+            'RMSE (target '
+            f'{plot_units.value_with_unit(x1, variable, logger)})',
             'Central frequency (≥ 90% pass)',
         ),
     )
@@ -215,16 +220,24 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
                 'Station: %{customdata[0]}<br>'
                 'Node: %{customdata[1]}<br>'
                 'Obs depth: %{customdata[2]} m<br>'
-                'RMSE: %{y:.3f}<extra></extra>'
+                f"RMSE: {plot_units.value_with_unit('%{y:.3f}', variable, logger)}"
+                '<extra></extra>'
             ),
-            name='RMSE',
+            # Trace metadata only: showlegend is off and the
+            # hovertemplate ends in '<extra></extra>', so this string has
+            # no render path today. It is kept in step with the axis
+            # title so re-enabling either surface shows the unit.
+            name=plot_units.with_unit('RMSE', variable, logger=logger),
             showlegend=False,
         ),
         row=1, col=1,
     )
-    fig.add_hline(y=x1, line_dash='dash', line_color='red', row=1, col=1,
-                  annotation_text=f'Target error range ({x1})',
-                  annotation_position='top right')
+    fig.add_hline(
+        y=x1, line_dash='dash', line_color='red', row=1, col=1,
+        annotation_text=(
+            'Target error range '
+            f'({plot_units.value_with_unit(x1, variable, logger)})'),
+        annotation_position='top right')
 
     fig.add_trace(
         go.Bar(
@@ -252,7 +265,9 @@ def write_html_summary_bars(df: pd.DataFrame, name_var: str, variable: str,
     axis_title_font = dict(family='Open Sans', color='black')
     axis_tick_font = dict(family='Open Sans', size=14, color='black')
     rmse_ymax = _ymax_for_rmse(rmse_vals, x1)
-    fig.update_yaxes(title_text='RMSE', title_font=axis_title_font,
+    fig.update_yaxes(title_text=plot_units.with_unit('RMSE', variable,
+                                                     logger=logger),
+                     title_font=axis_title_font,
                      tickfont=axis_tick_font,
                      range=[0, rmse_ymax], row=1, col=1)
     fig.update_yaxes(title_text='Central frequency (%)',

@@ -92,15 +92,12 @@ Revisions:
 
 """
 import copy
-import logging
-import logging.config
 import os
 import socket
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -115,11 +112,22 @@ from ofs_skill.obs_retrieval.currents_bins_override import (
 )
 from ofs_skill.obs_retrieval.retrieve_chs_station import retrieve_chs_station
 from ofs_skill.obs_retrieval.retrieve_ndbc_station import retrieve_ndbc_station
-from ofs_skill.obs_retrieval.retrieve_t_and_c_station import retrieve_t_and_c_station
+from ofs_skill.obs_retrieval.retrieve_t_and_c_station import (
+    configure_coops_rate_limit,
+    retrieve_t_and_c_station,
+)
 from ofs_skill.obs_retrieval.retrieve_usgs_station import retrieve_usgs_station
 from ofs_skill.obs_retrieval.station_ctl_file_extract import station_ctl_file_extract
 from ofs_skill.obs_retrieval.utils import get_parallel_config
+from ofs_skill.obs_retrieval.vdatum_resilient import validate_proj_vdatum_grids
 from ofs_skill.obs_retrieval.write_obs_ctlfile import write_obs_ctlfile
+from ofs_skill.utils import cache_manifest
+from ofs_skill.utils.file_headers import series_header
+from ofs_skill.utils.series_continuation import (
+    MAX_SEAM_GAP_HOURS,
+    SEAM_CHECK_WINDOW_HOURS,
+    merge_and_write,
+)
 
 # Import directly from module to avoid circular import
 
@@ -127,6 +135,23 @@ from ofs_skill.obs_retrieval.write_obs_ctlfile import write_obs_ctlfile
 
 TIMEOUT_SEC = 120 # default API timeout in seconds
 socket.setdefaulttimeout(TIMEOUT_SEC)
+
+# Variable -> ctl/obs/prd name-part mapping. Single source of truth so the
+# obs, ctl-manifest, and reuse gates agree on the ``wl``/``temp``/``salt``/
+# ``cu`` suffixes rather than re-deriving them inline at each site.
+_VAR_TO_NAME = {
+    'water_level': 'wl',
+    'water_temperature': 'temp',
+    'salinity': 'salt',
+    'currents': 'cu',
+}
+
+# Serializes the station ctl file build across variable threads.
+# ``write_obs_ctlfile`` creates the ctl files for ALL variables in a
+# single pass, so under parallel_variables every variable thread that
+# finds its own ctl file missing would otherwise launch the same full
+# build concurrently — quadruplicating the CO-OPS currents scan.
+_ctl_create_lock = threading.Lock()
 
 def parameter_validation(argu_list, datum_list, logger):
     """ Parameter validation """
@@ -200,7 +225,7 @@ def is_number(n):
     return True
 
 
-def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
+def _split_virtual_currents_id(sid: str) -> tuple[str, int | None]:
     """Backwards-compat shim around :func:`split_virtual_currents_id`.
 
     Existing tests import this private name; the canonical helper now
@@ -211,6 +236,7 @@ def _split_virtual_currents_id(sid: str) -> tuple[str, Optional[int]]:
 def _apply_datum_shift(
     timeseries, variable, station_id, source, ofs, datum, datum_list,
     datum_shift, retrieve_input, logger, control_files_path, config_file=None,
+    strict_datum=False,
 ):
     """Apply datum shift to water_level timeseries, with CO-OPS multi-datum fallback.
 
@@ -240,6 +266,13 @@ def _apply_datum_shift(
         RetrieveProperties instance (used only for CO-OPS fallback).
     logger : logging.Logger
         Logger instance.
+    strict_datum : bool
+        Continuation run: skip the multi-datum fallback. The fallback
+        keeps whichever datum first returns data, and a short tail
+        window is far likelier to come back empty on the primary datum
+        than a full one -- so the fallback could silently put the tail on
+        a different vertical datum than the head, offset by tens of
+        centimeters, with nothing in the file to show it.
 
     Returns
     -------
@@ -247,7 +280,7 @@ def _apply_datum_shift(
         The timeseries with datum shift applied (if applicable).
     """
     # CO-OPS multi-datum fallback: try alternative datums when primary fails
-    if source in ('TC', 'TAC', 'COOPS', 'CO-OPS'):
+    if source in ('TC', 'TAC', 'COOPS', 'CO-OPS') and not strict_datum:
         if isinstance(timeseries, pd.DataFrame) is False:
             all_datums = [
                 'NAVD', 'MSL', 'MLLW', 'IGLD', 'LWD',
@@ -342,10 +375,46 @@ def _format_timeseries(timeseries, variable, start_date_full, end_date_full):
         return scalar(timeseries, start_date_full, end_date_full)
 
 
+# Providers whose retrieval is fully pinned by the observation control
+# file, so asking for a short tail window returns the same series the
+# full window would have returned for those timestamps.
+#
+# The others are deliberately excluded. USGS picks its parameter code and
+# sensor from whatever the queried span happens to contain (and queries
+# by a `period` day count derived from that span); NDBC scans datamodes
+# for the first non-empty one; CHS resolves its series the same way. A
+# short tail window can therefore resolve a *different* instrument than
+# the run that wrote the head, and nothing in the .obs records which one
+# produced a row. Those stations still get merged - they just get their
+# tail from a full-window fetch, so the resolution cannot drift.
+_TAIL_NARROWABLE_SOURCES = frozenset({'TC', 'TAC', 'COOPS', 'CO-OPS'})
+
+
+def _tail_fetch_window(tail_start, source, start_date, end_date,
+                       start_date_full, end_date_full):
+    """Narrow a station's retrieval window to a continuation tail.
+
+    Returns ``(start_date, start_date_full)`` for the fetch. The caller's
+    full-window values come back unchanged when there is no
+    ``tail_start``, or when ``source`` resolves its series from the
+    queried window rather than from the control file -- see
+    ``_TAIL_NARROWABLE_SOURCES``.
+
+    The coarse ``start_date`` keeps the same 3-day retrieval padding the
+    full-window path applies, so providers that query by day boundary
+    still return the whole tail.
+    """
+    if tail_start is None or source not in _TAIL_NARROWABLE_SOURCES:
+        return start_date, start_date_full
+    padded = tail_start - timedelta(days=3)
+    return padded.strftime('%Y%m%d'), tail_start.strftime('%Y%m%d-%H:%M:%S')
+
+
 def _fetch_and_format_station(
     station_info, station_metadata, variable, name_var, datum, datum_list,
     start_date, end_date, start_date_full, end_date_full, ofs,
     data_observations_1d_station_path, logger, control_files_path, config_file=None,
+    obs_signature=None, merge_into_existing=False,
 ):
     """Fetch observation data for a single station, format it, and write .obs file.
 
@@ -377,6 +446,12 @@ def _fetch_and_format_station(
         Output directory for .obs files
     logger : logging.Logger
         Logger instance
+    merge_into_existing : bool
+        Continuation run: the caller narrowed the window to this
+        station's missing tail, so the formatted rows are merged into the
+        ``.obs`` already on disk instead of replacing it. Also switches
+        off the window-dependent retrieval fallbacks -- see the guard
+        comments below.
 
     Returns
     -------
@@ -386,8 +461,8 @@ def _fetch_and_format_station(
     try:
         station_id = station_info[0]
         source = station_info[3]
-        datum_list = (utils.Utils(config_file).read_config_section('datums', logger)\
-                           ['datum_list']).split(' ')
+        # ``datum_list`` arrives as a parameter, read from config once by
+        # the caller — no per-station config re-read here.
 
         # Each worker gets its own RetrieveProperties — critical for
         # thread safety since the object carries mutable request state.
@@ -432,11 +507,53 @@ def _fetch_and_format_station(
                 retrieve_input.variable = variable
                 retrieve_input.datum = common_value
 
+                # For currents, restrict retrieval to the one bin this ctl
+                # row asked for. Without ``only_bins`` the retrieval walks
+                # every bin of the parent ADCP (30-day chunks each) and this
+                # caller keeps one — K bins per station meant K× the CO-OPS
+                # requests per row, all through the shared rate limiter.
+                only_bins = {bin_num} if bin_num is not None else None
                 timeseries = retrieve_t_and_c_station(
                     retrieve_input, logger,
                     control_files_path,
                     config_file=config_file,
+                    only_bins=only_bins,
                     )
+
+                if (only_bins is not None
+                        and isinstance(timeseries, dict)
+                        and bin_num not in timeseries
+                        and merge_into_existing):
+                    # Continuation run: the unrestricted retry below can
+                    # resolve a *different* ADCP bin than the one the
+                    # existing rows came from, and nothing in the file
+                    # records which bin wrote which row. Appending that
+                    # would splice two instruments into one series, so
+                    # give up on the tail and keep the file as it is.
+                    logger.warning(
+                        'Continuation run: CO-OPS currents bin %s of '
+                        'station %s returned no data for the tail window; '
+                        'not retrying across all bins, since a different '
+                        'bin cannot be appended to this series.',
+                        bin_num, station_id)
+                    return None
+
+                if (only_bins is not None
+                        and isinstance(timeseries, dict)
+                        and bin_num not in timeseries):
+                    # The pinned bin returned nothing. Preserve the legacy
+                    # any-available-bin fallback by retrying unrestricted;
+                    # rare path, so the extra fetch only happens when the
+                    # requested bin is genuinely absent.
+                    logger.warning(
+                        'CO-OPS currents bin %s of station %s returned no '
+                        'data with a restricted fetch; retrying across all '
+                        'bins.', bin_num, station_id)
+                    timeseries = retrieve_t_and_c_station(
+                        retrieve_input, logger,
+                        control_files_path,
+                        config_file=config_file,
+                        )
 
                 if variable == 'currents' and isinstance(timeseries, dict):
                     # Pick out the requested bin. When no bin suffix was
@@ -445,6 +562,32 @@ def _fetch_and_format_station(
                     if bin_num is not None and bin_num in timeseries:
                         timeseries = timeseries[bin_num]
                         logger.info('Picked currents bin successfully!')
+                    elif bin_num is not None and timeseries:
+                        # Virtual bin row whose exact bin is still absent
+                        # after the unrestricted retry. Substituting another
+                        # bin here would publish that bin's data under this
+                        # row's virtual ID and depth, silently corrupting
+                        # the skill statistics — skip the station instead.
+                        logger.error(
+                            'CO-OPS currents bin %s not found for station '
+                            '%s (available: %s); skipping station rather '
+                            'than substituting another bin\'s data.',
+                            bin_num, station_id,
+                            sorted(timeseries.keys()))
+                        return None
+                    elif timeseries and merge_into_existing:
+                        # Legacy inventory row with no bin encoded. Which
+                        # bin 'first available' resolves to depends on the
+                        # window, so in a continuation run it may not be
+                        # the bin the existing rows came from.
+                        logger.warning(
+                            'Continuation run: station %s has no bin '
+                            'encoded and the available bins for the tail '
+                            'window are %s; leaving the existing series '
+                            'alone rather than appending a possibly '
+                            'different bin.',
+                            station_id, sorted(timeseries.keys()))
+                        return None
                     elif timeseries:
                         fallback_key = sorted(timeseries.keys())[0]
                         logger.warning(
@@ -472,6 +615,7 @@ def _fetch_and_format_station(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
                         retrieve_input, logger, control_files_path, config_file=config_file,
+                        strict_datum=merge_into_existing,
                     )
 
                 formatted_series = _format_timeseries(
@@ -488,6 +632,7 @@ def _fetch_and_format_station(
                 retrieve_input.start_date = start_date
                 retrieve_input.end_date = end_date
                 retrieve_input.variable = variable
+                retrieve_input.datum = datum
                 timeseries = retrieve_usgs_station(
                     retrieve_input, logger
                 )
@@ -501,6 +646,7 @@ def _fetch_and_format_station(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
                         retrieve_input, logger, control_files_path, config_file=config_file,
+                        strict_datum=merge_into_existing,
                     )
 
                 formatted_series = _format_timeseries(
@@ -530,6 +676,7 @@ def _fetch_and_format_station(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
                         retrieve_input, logger, control_files_path, config_file=config_file,
+                        strict_datum=merge_into_existing,
                     )
 
                 formatted_series = _format_timeseries(
@@ -559,6 +706,7 @@ def _fetch_and_format_station(
                         timeseries, variable, station_id, source,
                         ofs, datum, datum_list, datum_shift,
                         retrieve_input, logger, control_files_path, config_file=config_file,
+                        strict_datum=merge_into_existing,
                     )
 
                 formatted_series = _format_timeseries(
@@ -577,14 +725,62 @@ def _fetch_and_format_station(
                     data_observations_1d_station_path,
                     str(station_id + '_' + ofs + '_' +
                         name_var + '_station.obs'))
-                with open(obs_path, 'w', encoding='utf-8') as output:
-                    for line in formatted_series:
-                        output.write(str(line) + '\n')
-                    logger.info(
-                        '%s_%s_%s_station.obs created successfully',
-                        station_id, ofs, name_var
-                    )
-                return station_id
+                if merge_into_existing:
+                    # Continuation run: these rows are only the tail, so
+                    # merge them into what is already on disk. A refused
+                    # merge (empty tail, duplicate timestamps, a hole at
+                    # the seam) deliberately leaves the file untouched --
+                    # the coverage gate will then find it short of the
+                    # window on the next pass and regenerate it in full,
+                    # which is always correct if slower.
+                    if merge_and_write(
+                            obs_path, formatted_series,
+                            series_header(name_var), logger,
+                            max_seam_gap_seconds=MAX_SEAM_GAP_HOURS * 3600,
+                            seam_window=timedelta(
+                                hours=SEAM_CHECK_WINDOW_HOURS)):
+                        # Re-stamp under the *extended* window's signature.
+                        # Without this the file still carries the shorter
+                        # window it was built for, and the next run reads
+                        # it as stale and deletes it -- undoing the very
+                        # work the continuation just did.
+                        if obs_signature is not None:
+                            cache_manifest.record_artifact(
+                                obs_path, obs_signature,
+                                data_observations_1d_station_path, logger)
+                        return station_id
+                    logger.warning(
+                        'Could not extend %s; it will be regenerated over '
+                        'the full window instead.', obs_path)
+                    return None
+                # FIX: Check for data before stamping the file
+                if len(formatted_series) > 0:
+                    with open(obs_path, 'w', encoding='utf-8') as output:
+                        output.write(series_header(name_var))
+                        for line in formatted_series:
+                            output.write(str(line) + '\n')
+                        logger.info(
+                            '%s_%s_%s_station.obs created successfully',
+                            station_id, ofs, name_var
+                        )
+                    # Stamp the run signature so a same-parameter rerun
+                    # reuses this file and a changed-parameter run treats
+                    # it as stale. Only reached once the file is known to
+                    # have rows, so an empty series is never stamped.
+                    # Without this the gate finds no entry for any .obs,
+                    # reads every one as stale, and re-fetches the whole
+                    # station set on every run.
+                    if obs_signature is not None:
+                        cache_manifest.record_artifact(
+                            obs_path, obs_signature,
+                            data_observations_1d_station_path, logger)
+                    return station_id
+                else:
+                    # Return None so it gets appended to the `failed` list
+                    logger.info('Formatted %s time series '
+                                'empty for station %s',
+                                variable, station_id)
+                    return None
             else:
                 logger.info('Formatted %s time series '
                             'not found for station %s',
@@ -609,11 +805,60 @@ def _fetch_and_format_station(
         return None
 
 
+def _create_station_ctl_file(
+    ctl_file_path, prop, datum, start_date, end_date, start_date_full,
+    end_date_full, path, ofs, stationowner, var_list, logger, config_file=None,
+):
+    """Build the station ctl files and return the parsed result for
+    ``ctl_file_path``.
+
+    Runs under ``_ctl_create_lock`` so only one variable thread executes
+    the full ``write_obs_ctlfile`` build; the others queue on the lock,
+    re-check existence after acquiring it, and find the file written by
+    the winning thread. The lock covers only this create path — threads
+    whose ctl file already exists never touch it.
+    """
+    with _ctl_create_lock:
+        read_station_ctl_file = station_ctl_file_extract(ctl_file_path)
+        if read_station_ctl_file is not None:
+            logger.info(
+                'Station ctl file %s was created by a concurrent '
+                'variable thread; skipping duplicate creation.',
+                ctl_file_path,
+            )
+            return read_station_ctl_file
+        try:
+            logger.info(
+                'Station ctl file not found. Creating station ctl file!. '
+                'This might take a couple of minutes'
+            )
+            write_obs_ctlfile(
+                start_date, end_date, start_date_full, end_date_full, datum, path, ofs,
+                stationowner, var_list, logger,
+                currents_bins_csv=getattr(
+                    prop, 'currents_bins_csv', None),
+                config_file=config_file,
+            )
+            read_station_ctl_file = station_ctl_file_extract(ctl_file_path)
+            logger.info('Station ctl file created '
+                        'successfully')
+            return read_station_ctl_file
+        except Exception as ex:
+            logger.error(
+                'Errors happened when creating station '
+                'ctl files -- %s.',
+                str(ex)
+            )
+            raise Exception('Error happened when '
+                            'creating station '
+                            'ctl files') from ex
+
+
 def _process_variable_obs(
     variable, prop, datum, datum_list, start_date, end_date,
     start_date_full, end_date_full, path, ofs, stationowner, var_list,
     control_files_path, data_observations_1d_station_path, logger,
-    config_file=None,
+    config_file=None, continuation=None,
 ):
     """Process observation retrieval for a single variable.
 
@@ -647,6 +892,10 @@ def _process_variable_obs(
         Output directory for .obs files.
     logger : logging.Logger
         Logger instance.
+    continuation : dict or None
+        Continuation-run plan mapping a normalized ``.obs`` path to the
+        timestamp its tail fetch should resume from. Stations not in the
+        plan behave exactly as they do without ``--Continue_Run``.
 
     Returns
     -------
@@ -684,11 +933,20 @@ def _process_variable_obs(
     # This will try to read the station ctl file for the given ofs and for
     # all variables. If not found then it will create it using
     # write_obs_ctlfile.py
-    read_station_ctl_file = \
-        station_ctl_file_extract(
-        r'' + control_files_path + '/' + ofs +\
-            '_' + name_var + '_station.ctl'
+    ctl_file_path = (
+        r'' + control_files_path + '/' + ofs +
+        '_' + name_var + '_station.ctl'
     )
+    # A station ctl left from a run with a different window / station-owner
+    # selection encodes the wrong station set; its filename does not record
+    # those parameters, so delete it when the recorded run signature differs
+    # (issue: stale cache reuse across runs). The manifest also covers the
+    # inventory + all sibling ctl files written in the same build pass.
+    obs_ctl_signature = cache_manifest.run_signature(prop, variable=variable)
+    cache_manifest.ensure_fresh(
+        ctl_file_path, obs_ctl_signature, control_files_path,
+        'obs ctl', logger)
+    read_station_ctl_file = station_ctl_file_extract(ctl_file_path)
 
     if read_station_ctl_file is not None:
         logger.info('Station ctl file (%s_%s_station.ctl) '
@@ -698,40 +956,28 @@ def _process_variable_obs(
                     'delete the current file.', ofs, name_var,
                     control_files_path)
     else:
-        try:
-            logger.info(
-                'Station ctl file not found. Creating station ctl file!. '
-                'This might take a couple of minutes'
-            )
-            write_obs_ctlfile(
-                start_date, end_date, datum, path, ofs,
-                stationowner, var_list, logger,
-                currents_bins_csv=getattr(
-                    prop, 'currents_bins_csv', None),
-                config_file=config_file,
-            )
-            read_station_ctl_file = (
-                station_ctl_file_extract(
-                    r''
-                    + control_files_path
-                    + '/'
-                    + ofs
-                    + '_'
-                    + name_var
-                    + '_station.ctl'
+        read_station_ctl_file = _create_station_ctl_file(
+            ctl_file_path, prop, datum, start_date, end_date, start_date_full,
+            end_date_full, path, ofs, stationowner, var_list, logger,
+            config_file=config_file,
+        )
+        # Record the signature for every station ctl the build produced, so
+        # sibling variables reuse them and a same-parameter rerun stays fast.
+        if read_station_ctl_file is not None:
+            for other_var in var_list:
+                other_name = _VAR_TO_NAME.get(other_var)
+                if other_name is None:
+                    continue
+                other_path = (
+                    r'' + control_files_path + '/' + ofs +
+                    '_' + other_name + '_station.ctl'
                 )
-            )
-            logger.info('Station ctl file created '
-                        'successfully')
-        except Exception as ex:
-            logger.error(
-                'Errors happened when creating station '
-                'ctl files -- %s.',
-                str(ex)
-            )
-            raise Exception('Error happened when '
-                            'creating station '
-                            'ctl files') from ex
+                if os.path.isfile(other_path):
+                    cache_manifest.record_artifact(
+                        other_path,
+                        cache_manifest.run_signature(prop, variable=other_var),
+                        control_files_path,
+                        logger)
 
     logger.info('Downloading data found in the station ctl files')
 
@@ -749,6 +995,15 @@ def _process_variable_obs(
 
         # Read parallel config for worker counts
         parallel_cfg = get_parallel_config(logger, config_file=config_file)
+
+        # Apply any configured CO-OPS rate-limit override before the
+        # station fan-out. Defaults (2 concurrent / 0.5 s gap) stay in
+        # force unless the [parallelization] section says otherwise.
+        configure_coops_rate_limit(
+            concurrency=parallel_cfg.get('coops_request_concurrency'),
+            gap_sec=parallel_cfg.get('coops_request_gap_sec'),
+            logger=logger,
+        )
 
         # Currents retrieval now issues one HTTP call per ADCP bin per
         # station, so it is orders of magnitude more request-dense than
@@ -812,7 +1067,40 @@ def _process_variable_obs(
                         data_observations_1d_station_path,
                         f'{station_info[0]}_{ofs}_{name_var}_station.obs',
                     )
-                    if not os.path.isfile(obs_path):
+                    # Reuse an existing .obs only if it was written for this
+                    # run's parameters; a file from an earlier window/options
+                    # is deleted and re-fetched (issue: stale cache reuse).
+                    obs_signature = cache_manifest.run_signature(
+                        prop, variable=variable)
+                    tail_start = (continuation or {}).get(
+                        os.path.normpath(obs_path))
+                    if tail_start is not None:
+                        # Continuation run: this file is *meant* to cover a
+                        # shorter window than the signature asks for, so the
+                        # window fields alone must not condemn it. Every
+                        # other field still has to match -- a different
+                        # datum or station owner means the rows on disk are
+                        # not the ones we would be extending, and the
+                        # artifact is deleted and refetched in full.
+                        if not cache_manifest.ensure_fresh(
+                                obs_path, obs_signature,
+                                data_observations_1d_station_path, 'obs',
+                                logger,
+                                ignore_keys=(
+                                    cache_manifest.CONTINUATION_WINDOW_KEYS)):
+                            tail_start = None
+                        reusable = False
+                    else:
+                        reusable = cache_manifest.ensure_fresh(
+                            obs_path, obs_signature,
+                            data_observations_1d_station_path, 'obs', logger)
+                    if not reusable:
+                        # A station in the continuation plan is fetched
+                        # over its missing tail only; every other station
+                        # keeps the original all-or-nothing behavior.
+                        fetch_dates = _tail_fetch_window(
+                            tail_start, station_info[3], start_date,
+                            end_date, start_date_full, end_date_full)
                         future = executor.submit(
                             _fetch_and_format_station,
                             station_info,
@@ -821,15 +1109,17 @@ def _process_variable_obs(
                             name_var,
                             effective_datum,
                             datum_list,
-                            start_date,
+                            fetch_dates[0],
                             end_date,
-                            start_date_full,
+                            fetch_dates[1],
                             end_date_full,
                             ofs,
                             data_observations_1d_station_path,
                             logger,
                             control_files_path,
                             config_file,
+                            obs_signature,
+                            tail_start is not None,
                         )
                         futures[future] = station_info[0]
                     else:
@@ -854,16 +1144,31 @@ def _process_variable_obs(
         return True
 
 
-def get_station_observations(prop,logger):
-    """
-    This is the final function.
-    This function calls the Tides and Currents, NDBC, and
-    USGS retrieval function in loop for all stations found
-    for the ofs_inventory(ofs, start_date, end_date, path)
-    and variables ['water_level', 'water_temperature',
-                   'salinity', 'currents'].
-    The output is a csv file for each station with DateTime
-    and OBS.
+def get_station_observations(prop, logger, continuation=None):
+    """Download and format 1D station observations for an OFS run window.
+
+    Inventories (or reuses) stations for the OFS extent, then retrieves
+    time series from CO-OPS, NDBC, USGS, and/or CHS for each requested
+    variable. Writes per-station ``.obs`` files and observation control
+    files under the paths in ``prop``.
+
+    Args:
+        prop: ``ModelProperties`` (or compatible) with ``ofs``,
+            ``start_date_full``, ``end_date_full``, ``datum``, ``path``,
+            ``stationowner``, and ``var_list`` set.
+        logger: Logger instance, or ``None`` to configure from
+            ``conf/logging.conf``.
+        continuation: Optional ``{normalized .obs path: tail start}``
+            plan from a continuation run. Listed stations are fetched
+            from their tail start instead of being skipped, and the
+            result is merged into the file already on disk rather than
+            replacing it.
+
+    Returns:
+        None. Side effects: observation and control files on disk.
+
+    Raises:
+        SystemExit: If logging config is missing when ``logger`` is ``None``.
     """
 
     # Hand out vars from the prop Santa
@@ -879,17 +1184,7 @@ def get_station_observations(prop,logger):
     # command line options)
 
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent.parent / log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(path)
     logger.info('--- Starting Station Observation Process ---')
 
     _conf = getattr(prop, 'config_file', None)
@@ -904,7 +1199,7 @@ def get_station_observations(prop,logger):
 
     # parameter validation
     ofs_extents_path =\
-        os.path.join(path, dir_params['ofs_extents_dir'])
+        utils.resolve_asset_path(path, dir_params['ofs_extents_dir'])
 
     argu_list = (start_date_full,
                  end_date_full,
@@ -914,6 +1209,12 @@ def get_station_observations(prop,logger):
                  datum,
                  var_list)
     parameter_validation(argu_list, datum_list, logger)
+
+    # PROJ vertical-datum grid preflight (issues #127, #216, #295). This
+    # pipeline converts every NAVD88 gauge into the requested datum, so a
+    # host that cannot build a PROJ pipeline writes a control file that
+    # is silently missing those stations. Fail here instead.
+    validate_proj_vdatum_grids(prop, logger)
 
     control_files_path = \
         os.path.join(path, dir_params['control_files_dir'])
@@ -988,6 +1289,7 @@ def get_station_observations(prop,logger):
                     data_observations_1d_station_path,
                     logger,
                     _conf,
+                    continuation,
                 )
                 var_futures[future] = variable
 
@@ -1023,6 +1325,7 @@ def get_station_observations(prop,logger):
                 data_observations_1d_station_path,
                 logger,
                 config_file=_conf,
+                continuation=continuation,
             )
             if is_blank:
                 blank_file += 1

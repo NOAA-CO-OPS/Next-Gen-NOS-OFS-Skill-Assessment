@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ofs_skill.utils.file_headers import strip_model_ctl_header
+
 
 def parse_ofs_ctlfile(filename: str) -> tuple[list[list[str]], list[int], list[int], list[float], list[str]]:
     """
@@ -79,8 +81,9 @@ def parse_ofs_ctlfile(filename: str) -> tuple[list[list[str]], list[int], list[i
     with open(filename, encoding='utf-8') as file:
         model_ctlfile = file.read()
 
-    # Split into lines and parse
-    raw_lines = model_ctlfile.split('\n')
+    # Split into lines; drop the single header line, if present (legacy
+    # files have none)
+    raw_lines = strip_model_ctl_header(model_ctlfile.split('\n'))
     split_lines: list[list[str]] = [line.split(' ') for line in raw_lines]
     # Remove empty strings from each line
     split_lines = [list(filter(None, line)) for line in split_lines]

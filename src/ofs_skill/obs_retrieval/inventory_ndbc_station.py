@@ -12,7 +12,6 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from logging import Logger
-from typing import Optional
 
 import pandas as pd
 
@@ -29,7 +28,7 @@ def inventory_ndbc_station(
     lon2: float,
     logger: Logger,
     config_file=None,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """
     Create inventory of all NDBC stations within geographic bounds.
 

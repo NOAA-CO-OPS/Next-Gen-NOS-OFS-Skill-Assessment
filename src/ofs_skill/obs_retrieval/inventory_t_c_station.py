@@ -11,7 +11,6 @@ import json
 import urllib.error
 import urllib.request
 from logging import Logger
-from typing import Optional
 
 import pandas as pd
 
@@ -23,7 +22,7 @@ def get_inventory(
     url_params: dict[str, str],
     variable: str,
     logger: Logger
-) -> Optional[dict]:
+) -> dict | None:
     """
     Retrieve station inventory from CO-OPS Metadata API.
 

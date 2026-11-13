@@ -27,7 +27,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from logging import Logger
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.error import HTTPError
 
 import pandas as pd
@@ -81,6 +81,38 @@ _exported_stations: set[str] = set()  # Tracks stations written to CSV in the cu
 _coops_last_request_time = 0.0  # pylint: disable=invalid-name
 
 
+def configure_coops_rate_limit(concurrency=None, gap_sec=None, logger=None):
+    """Override the process-wide CO-OPS limiter from configuration.
+
+    Called by ``get_station_observations`` before the station fan-out with
+    the ``coops_request_concurrency`` / ``coops_request_gap_sec`` values
+    from the [parallelization] config section. Replacing the semaphore is
+    only safe while no request is in flight, which holds at that call
+    point; requests already queued on the old semaphore finish under it.
+
+    No-ops (keeping the tuned defaults) when values are None or unchanged.
+    """
+    global _COOPS_CONCURRENCY_LIMIT, _COOPS_MIN_REQUEST_GAP_SEC, \
+        _coops_request_semaphore  # pylint: disable=global-statement
+    if concurrency is not None:
+        concurrency = max(1, int(concurrency))
+        if concurrency != _COOPS_CONCURRENCY_LIMIT:
+            _COOPS_CONCURRENCY_LIMIT = concurrency
+            _coops_request_semaphore = threading.Semaphore(concurrency)
+            if logger:
+                logger.info(
+                    'CO-OPS request concurrency set to %d (config '
+                    'override; default 2)', concurrency)
+    if gap_sec is not None:
+        gap_sec = max(0.0, float(gap_sec))
+        if gap_sec != _COOPS_MIN_REQUEST_GAP_SEC:
+            _COOPS_MIN_REQUEST_GAP_SEC = gap_sec
+            if logger:
+                logger.info(
+                    'CO-OPS request pacing gap set to %.2fs (config '
+                    'override; default 0.5s)', gap_sec)
+
+
 def _rate_limited_get(url: str, timeout: int = 120) -> requests.Response:
     """GET ``url`` through the shared session, gated by the CO-OPS semaphore
     and paced by a minimum inter-request gap.
@@ -108,14 +140,23 @@ _depth_cache: dict[str, Any] = {}  # station_id -> depth_data
 
 # Cache station-level metadata (``height_from_bottom`` etc.) keyed by
 # station_id. Populated via ``get_station_info``.
-_station_info_cache: dict[str, Optional[dict]] = {}
+_station_info_cache: dict[str, dict | None] = {}
 
 # Cache deployment-level metadata (``orientation``, ``sensor_depth`` etc.)
 # keyed by station_id. Populated via ``get_station_deployment``.
 # The station endpoint (``stations/{id}.json``) only returns a
 # ``deployments: {self: <url>}`` pointer; the actual deployment fields
 # live one level deeper at ``stations/{id}/deployments.json``.
-_station_deployment_cache: dict[str, Optional[dict]] = {}
+_station_deployment_cache: dict[str, dict | None] = {}
+
+# Per-run cache of ``check_bin_depth_changes`` results keyed by
+# station_id. The audit's expanded ``deployments,bins`` MDAPI request is
+# issued from both ``_retrieve_currents_all_bins`` and
+# ``log_and_export_deployment_info``, so an uncached lookup fires twice
+# per station scan (and again at the obs stage). Cleared by
+# ``reset_run_counters``.
+_bin_depth_change_cache: dict[str, bool] = {}
+_bin_depth_change_cache_lock = threading.Lock()
 
 # Canonical ADCP mounting symbols. Single source of truth — every
 # emitter, parser, label formatter, and run counter funnels through
@@ -139,8 +180,9 @@ _adcp_mounting_counter_lock = threading.Lock()
 def reset_run_counters() -> None:
     """Reset module-level run counters before a fresh skill-assessment run.
 
-    Currently only resets the ADCP mounting-type tally. Idempotent and
-    safe to call from any thread (counters are guarded by a lock).
+    Resets the ADCP mounting-type tally, the deployment-summary CSV
+    export dedup set, and the bin-depth-change audit cache. Idempotent
+    and safe to call from any thread (all state is guarded by locks).
     """
     with _adcp_mounting_counter_lock:
         for key in _adcp_mounting_counter:
@@ -148,6 +190,9 @@ def reset_run_counters() -> None:
 
     with _csv_export_lock:
         _exported_stations.clear()
+
+    with _bin_depth_change_cache_lock:
+        _bin_depth_change_cache.clear()
 
 
 def canonicalize_mounting_symbol(value: Any) -> str:
@@ -293,7 +338,8 @@ def _get_with_retry(
     station_id: str,
     context: str,
     logger: Logger,
-) -> Optional[dict]:
+    return_error_body: bool = False,
+) -> dict | None:
     """GET ``url`` with retries for transient CO-OPS errors.
 
     Retries only on network-level failures (ConnectionError, Timeout) or
@@ -305,7 +351,12 @@ def _get_with_retry(
     included in log messages so parallel workers can be disambiguated.
 
     Returns the parsed JSON payload on success, ``None`` when the call
-    hits a non-retryable error or all retries are exhausted.
+    hits a non-retryable error or all retries are exhausted. With
+    ``return_error_body=True`` a non-retryable HTTP error whose body is
+    a JSON ``{"error": ...}`` document is returned parsed instead of
+    ``None`` — callers that need to distinguish an API-level request
+    rejection (e.g. the currents "Wrong Bin Number" response, served
+    with HTTP 400) from a plain no-data drop opt in to this.
     """
     last_exc = None
     for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
@@ -361,6 +412,17 @@ def _get_with_retry(
             return None
 
         if status >= 400:
+            if return_error_body:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and 'error' in body:
+                    logger.info(
+                        'CO-OPS %s station=%s HTTP %d with API error '
+                        'body: %s', context, station_id, status,
+                        body.get('error'))
+                    return body
             # Non-retryable 4xx/5xx (400, 401, 404, etc.) - fail fast.
             # CO-OPS returns 400 "No data was found" for stations with
             # no observations in the requested window; retrying won't
@@ -387,11 +449,11 @@ def _get_with_retry(
 
 def _fetch_with_backup(
     primary_url: str,
-    backup_url: Optional[str],
+    backup_url: str | None,
     station_id: str,
     variable: str,
     logger: Logger,
-) -> tuple[Optional[dict], bool]:
+) -> tuple[dict | None, bool]:
     """Fetch the primary URL with retry; fall back to ``backup_url`` when set.
 
     The water_temperature / salinity backup URL points at the
@@ -433,7 +495,7 @@ def _fetch_with_backup(
 
 def get_station_info(
     station_id: str, mdapi_url: str, logger: Logger,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch station-level metadata (cached) from the MDAPI station endpoint.
 
     Returns the first entry of ``stations`` (fields include
@@ -463,7 +525,7 @@ def get_station_info(
 
 def get_station_deployment(
     station_id: str, mdapi_url: str, logger: Logger,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch deployment-level metadata (cached) from MDAPI.
 
     The station-level endpoint (``stations/{id}.json``) only returns a
@@ -506,7 +568,27 @@ def check_bin_depth_changes(
 
     Queries the MDAPI with expand=deployments,bins to get the full historical
     bin profiles, groups them by deployment ID, and compares the configurations.
+
+    Results are cached per station for the duration of the run — the
+    audit is invoked from multiple call sites per station scan and the
+    answer cannot change mid-run. The cache is cleared by
+    ``reset_run_counters``.
     """
+    with _bin_depth_change_cache_lock:
+        if station_id in _bin_depth_change_cache:
+            return _bin_depth_change_cache[station_id]
+    result = _check_bin_depth_changes_uncached(station_id, mdapi_url, logger)
+    with _bin_depth_change_cache_lock:
+        _bin_depth_change_cache[station_id] = result
+    return result
+
+
+def _check_bin_depth_changes_uncached(
+    station_id: str,
+    mdapi_url: str,
+    logger: Logger,
+) -> bool:
+    """Uncached implementation behind ``check_bin_depth_changes``."""
     url = f'{mdapi_url}/webapi/stations/{station_id}.json?expand=deployments,bins&units=metric'
 
     payload = _get_with_retry(url, station_id, 'bin-depth-audit', logger)
@@ -588,10 +670,10 @@ def _csv_safe(value: Any) -> Any:
 def log_and_export_deployment_info(
     station_id: str,
     mdapi_url: str,
-    control_files_path: Optional[str],
+    control_files_path: str | None,
     logger: Logger,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     actual_gap_str: str = 'N/A',
 ) -> None:
     """
@@ -744,7 +826,7 @@ def log_and_export_deployment_info(
 
 
 def resolve_mounting_type(
-    deployment_info: Optional[dict],
+    deployment_info: dict | None,
 ) -> str:
     """Canonicalise the MDAPI deployment ``orientation`` to a known symbol.
 
@@ -763,9 +845,9 @@ def resolve_mounting_type(
 
 
 def _resolve_side_real_time_bin(
-    bins_payload: Optional[dict],
-    deployment_info: Optional[dict],
-) -> Optional[int]:
+    bins_payload: dict | None,
+    deployment_info: dict | None,
+) -> int | None:
     """Return the bin number to use for a side-looking ADCP, or ``None``.
 
     Priority order, validated against the live MDAPI survey (issue #140):
@@ -803,7 +885,7 @@ def _resolve_side_real_time_bin(
     return None
 
 
-def _coerce_int(value: Any) -> Optional[int]:
+def _coerce_int(value: Any) -> int | None:
     """Best-effort int coercion that returns ``None`` instead of raising."""
     if value is None:
         return None
@@ -814,8 +896,8 @@ def _coerce_int(value: Any) -> Optional[int]:
 
 
 def _resolve_side_sensor_depth(
-    deployment_info: Optional[dict],
-) -> Optional[float]:
+    deployment_info: dict | None,
+) -> float | None:
     """Return the side-looking ADCP's sensor_depth (m, positive-down).
 
     Prefers the explicit ``sensor_depth`` field; falls back to
@@ -869,10 +951,11 @@ _get_station_deployment = get_station_deployment
 def retrieve_t_and_c_station(
     retrieve_input: Any,
     logger: Logger,
-    control_files_path: Optional[str] = None,
-    only_bins: Optional[set[int]] = None,
+    control_files_path: str | None = None,
+    only_bins: set[int] | None = None,
     config_file=None,
-) -> Optional[Union[pd.DataFrame, dict[int, pd.DataFrame]]]:
+    availability_probe: bool = False,
+) -> pd.DataFrame | dict[int, pd.DataFrame] | None:
     """
     Retrieve time series observations from NOAA Tides and Currents station.
 
@@ -895,6 +978,11 @@ def retrieve_t_and_c_station(
             When supplied, the datagetter is only called for those
             bins — used by ``write_obs_ctlfile`` to honour the user
             currents-bins CSV without fetching every bin.
+        availability_probe: When True (currents only), establish per-bin
+            data availability with the short probe (issue #239) instead
+            of downloading the full window for every bin. Only the
+            ctl-file creation stage sets this — the obs-retrieval stage
+            needs the actual timeseries and keeps full downloads.
 
     Returns:
         For ``variable == 'currents'``:
@@ -937,6 +1025,7 @@ def retrieve_t_and_c_station(
             logger=logger,
             only_bins=only_bins,
             control_files_path=control_files_path,
+            availability_probe=availability_probe,
         )
 
     t_c.start_dt = datetime.strptime(retrieve_input.start_date, '%Y%m%d')
@@ -1111,7 +1200,7 @@ def retrieve_t_and_c_station(
 
 
 def _extract_bin_records(
-    bins_payload: Optional[dict],
+    bins_payload: dict | None,
 ) -> list[dict]:
     """Return the list of bin records from a CO-OPS bins payload, or []."""
     if not bins_payload or not bins_payload.get('bins'):
@@ -1119,7 +1208,7 @@ def _extract_bin_records(
     return list(bins_payload['bins'])
 
 
-def _bin_depth_from_record(entry: dict) -> Optional[float]:
+def _bin_depth_from_record(entry: dict) -> float | None:
     """Resolve depth (m) for a single bin record.
 
     Returns the bin's ``depth`` value when provided by the MDAPI. For
@@ -1138,6 +1227,324 @@ def _bin_depth_from_record(entry: dict) -> Optional[float]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Ctl-stage currents availability probe (issue #239)
+#
+# At ctl-file creation the only download-derived fact the emitter uses
+# is per-bin data presence — every other field of a ctl row comes from
+# MDAPI metadata. The probe establishes that presence with one no-bin
+# full-window scan (30-day chunks, early stop at the first chunk with
+# in-window data) plus one short-range per-bin confirmation anchored at
+# the known-data timestamp, instead of downloading the full window for
+# every bin. Metadata scopes the candidate bins but never decides
+# emit/reject — the datagetter always has the final word, because MDAPI
+# deployment records and the observation archive diverge in both
+# directions on historical windows.
+# ---------------------------------------------------------------------------
+
+# Substring of the datagetter error body returned (HTTP 400) when a
+# no-bin currents request hits a station whose real_time_bin is null:
+# "Wrong Bin Number: The Bin Number cannot be null or empty for the
+# currents survey".
+_WRONG_BIN_ERROR_TEXT = 'wrong bin number'
+
+
+def _is_wrong_bin_error(obs: dict | None) -> bool:
+    """True when the datagetter rejected a no-bin currents request
+    because the station's real_time_bin is null."""
+    if not isinstance(obs, dict):
+        return False
+    error = obs.get('error')
+    if not isinstance(error, dict):
+        return False
+    return _WRONG_BIN_ERROR_TEXT in str(error.get('message', '')).lower()
+
+
+def _probe_rows_in_range(
+    obs: dict | None,
+    range_start: datetime,
+    range_end: datetime,
+    bin_num: int | None,
+    logger: Logger,
+) -> list[dict]:
+    """Filter datagetter rows to ``[range_start, range_end]``.
+
+    Applies the same per-row bin cross-check as the full retrieval
+    (rows whose ``b`` field mismatches an explicitly requested bin are
+    skipped). Rows with unparseable speed/direction still count — the
+    emit rule is timestamp presence, not value validity.
+    """
+    rows: list[dict] = []
+    if not isinstance(obs, dict):
+        return rows
+    for row in obs.get('data', []) or []:
+        if bin_num is not None:
+            row_bin = _coerce_int(row.get('b'))
+            if row_bin is not None and row_bin != bin_num:
+                logger.warning(
+                    'CO-OPS datagetter returned bin=%s for '
+                    'request bin=%s, skipping row', row_bin, bin_num)
+                continue
+        try:
+            row_dt = datetime.strptime(row['t'], '%Y-%m-%d %H:%M')
+        except (KeyError, TypeError, ValueError):
+            continue
+        if range_start <= row_dt <= range_end:
+            rows.append(row)
+    return rows
+
+
+def _probe_scan_for_data(
+    station_id: str,
+    bin_num: int | None,
+    fallback_bin: int | None,
+    scan_start: datetime,
+    scan_end: datetime,
+    api_url: str,
+    logger: Logger,
+) -> list[dict] | None:
+    """Scan ``[scan_start, scan_end]`` in 30-day chunks for any data row,
+    stopping at the first chunk that yields one.
+
+    ``bin_num=None`` issues no-bin requests (the datagetter then serves
+    the station's real_time_bin). When such a request is rejected with
+    the documented "Wrong Bin Number" error (real_time_bin null), the
+    same chunk is retried with ``fallback_bin`` pinned and the rest of
+    the scan continues with it. A negative scan must cover the FULL
+    window before the station can be rejected — 1-day head/tail
+    sampling false-rejects stations whose data starts mid-window.
+
+    Returns the first chunk's in-range rows, or ``None`` when the whole
+    scan came back empty.
+    """
+    delta = timedelta(days=30)
+    cur = scan_start
+    while cur <= scan_end:
+        date_i = cur.strftime('%Y%m%d')
+        date_f = (cur + delta).strftime('%Y%m%d')
+        bin_qs = f'&bin={bin_num}' if bin_num is not None else ''
+        url = (
+            f'{api_url}/datagetter?begin_date={date_i}&end_date={date_f}'
+            f'&station={station_id}&product=currents{bin_qs}'
+            f'&time_zone=gmt&units=metric&format=json'
+        )
+        context = (f'currents bin={bin_num} (probe scan)'
+                   if bin_num is not None else 'currents (probe scan)')
+        obs = _get_with_retry(url, station_id, context, logger,
+                              return_error_body=True)
+
+        if bin_num is None and _is_wrong_bin_error(obs):
+            if fallback_bin is None:
+                logger.warning(
+                    'CO-OPS station %s no-bin probe rejected '
+                    '(real_time_bin is null) and no metadata bin is '
+                    'available for an explicit retry; treating as no '
+                    'data.', station_id)
+                return None
+            logger.info(
+                'CO-OPS station %s no-bin probe rejected (real_time_bin '
+                'is null); retrying chunk with explicit bin=%d.',
+                station_id, fallback_bin)
+            bin_num = fallback_bin
+            continue  # re-request the same chunk with the explicit bin
+
+        rows = _probe_rows_in_range(obs, scan_start, scan_end, bin_num,
+                                    logger)
+        if rows:
+            return rows
+        cur += delta
+    return None
+
+
+def _probe_confirm_bin(
+    station_id: str,
+    bin_num: int,
+    anchor_dt: datetime,
+    range_start: datetime,
+    range_end: datetime,
+    api_url: str,
+    logger: Logger,
+) -> list[dict]:
+    """Short-range per-bin confirmation anchored at a known-data timestamp.
+
+    Mirrors the backward-search URL shape of ``_fetch_currents_chunked``
+    (``end_date=<day>&range=24``); the end date is the day AFTER the
+    anchor so the 24-hour window covers the anchor's own day. Per-bin
+    presence cannot be inferred from the station-level scan because the
+    historical archive is not uniform across bins.
+
+    Returns the in-range rows (empty list when the bin has no data at
+    the anchor).
+    """
+    end_date = (anchor_dt + timedelta(days=1)).strftime('%Y%m%d')
+    url = (
+        f'{api_url}/datagetter?end_date={end_date}&range=24'
+        f'&station={station_id}&product=currents&bin={bin_num}'
+        f'&time_zone=gmt&units=metric&format=json'
+    )
+    obs = _get_with_retry(
+        url, station_id, f'currents bin={bin_num} (probe confirm)', logger)
+    return _probe_rows_in_range(obs, range_start, range_end, bin_num, logger)
+
+
+def _probe_scan_range(
+    station_id: str,
+    deployment_info: dict | None,
+    has_depth_shifts: bool,
+    start_dt_0: datetime,
+    end_dt_0: datetime,
+    logger: Logger,
+) -> tuple[datetime, datetime]:
+    """Return the date range the availability probe may treat as decisive.
+
+    Mirrors the most-recent-deployment restriction of the full
+    retrieval (see ``_fetch_currents_chunked``): when bin depths shift
+    across deployments and more than one deployment period overlaps the
+    window, only data inside the most recent period can flip a station
+    to emit, so the probe scans (and anchors its confirms) inside that
+    period only.
+    """
+    if not has_depth_shifts:
+        return start_dt_0, end_dt_0
+    periods, _ = _active_deployment_periods(
+        deployment_info, start_dt_0, end_dt_0, logger)
+    if len(periods) <= 1:
+        return start_dt_0, end_dt_0
+    keep_start, keep_end = periods[-1]
+    logger.info(
+        'CO-OPS station %s availability probe restricted to the most '
+        'recent deployment period (%s to %s) to match the '
+        'bin-depth-shift handling of the full retrieval.',
+        station_id, keep_start.strftime('%Y-%m-%d %H:%M'),
+        keep_end.strftime('%Y-%m-%d %H:%M'))
+    return keep_start, keep_end
+
+
+def _make_probe_frame(rows: list[dict]) -> pd.DataFrame:
+    """Assemble the small probe DataFrame in the same column shape as
+    the full retrieval so downstream attrs consumers are indifferent."""
+    dates: list[str] = []
+    speeds: list[float] = []
+    dirs: list[float] = []
+    for row in rows:
+        try:
+            speed_m = float(row['s']) / 100  # cm/s → m/s
+        except (TypeError, ValueError, KeyError):
+            speed_m = float('nan')
+        try:
+            direction = float(row['d'])
+        except (TypeError, ValueError, KeyError):
+            direction = float('nan')
+        dates.append(row['t'])
+        speeds.append(speed_m)
+        dirs.append(direction)
+    df = pd.DataFrame({
+        'DateTime': pd.to_datetime(dates),
+        'DEP01': pd.to_numeric(0.0),
+        'DIR': pd.to_numeric(dirs),
+        'OBS': pd.to_numeric(speeds),
+    })
+    return df.sort_values(by='DateTime').drop_duplicates(subset='DateTime')
+
+
+def _probe_updown_currents_availability(
+    station_id: str,
+    start_dt_0: datetime,
+    end_dt_0: datetime,
+    api_url: str,
+    bin_records: list[dict],
+    deployment_info: dict | None,
+    hfb: float | None,
+    orientation_label: str,
+    mounting_type: str,
+    only_bins: set[int] | None,
+    has_depth_shifts: bool,
+    logger: Logger,
+) -> dict[int, pd.DataFrame] | None:
+    """Availability-probe replacement for the per-bin full-window
+    downloads of the up/down fan-out path at ctl-file time.
+
+    Emits exactly the bins whose short-range confirmation returns data;
+    a station whose full-window scan finds nothing is rejected with the
+    same ``None`` the full path returns for an empty result.
+    """
+    candidates: list[tuple[int, float | None]] = []
+    for entry in bin_records:
+        try:
+            bin_num = int(entry.get('num', entry.get('bin')))  # type: ignore[arg-type]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if only_bins is not None and bin_num not in only_bins:
+            continue
+        candidates.append((bin_num, _bin_depth_from_record(entry)))
+
+    if not candidates:
+        logger.info(
+            'CO-OPS currents retrieval for station %s returned no bins '
+            'with data.', station_id)
+        return None
+
+    scan_start, scan_end = _probe_scan_range(
+        station_id, deployment_info, has_depth_shifts,
+        start_dt_0, end_dt_0, logger)
+    scan_rows = _probe_scan_for_data(
+        station_id, None, candidates[0][0], scan_start, scan_end,
+        api_url, logger)
+    if scan_rows is None:
+        logger.info(
+            'CO-OPS currents availability probe for station %s found no '
+            'data in the requested window; station rejected.', station_id)
+        return None
+
+    # Safe parse: rows already passed strptime in _probe_rows_in_range.
+    anchor_dt = datetime.strptime(scan_rows[0]['t'], '%Y-%m-%d %H:%M')
+
+    result: dict[int, pd.DataFrame] = {}
+    missing_depth: list[int] = []
+    for bin_num, depth in candidates:
+        if depth is None:
+            missing_depth.append(bin_num)
+            depth = 0.0
+        confirm_rows = _probe_confirm_bin(
+            station_id, bin_num, anchor_dt, scan_start, scan_end,
+            api_url, logger)
+        if not confirm_rows:
+            logger.info(
+                'CO-OPS station %s bin %d not confirmed at known-data '
+                'timestamp %s; bin not emitted.', station_id, bin_num,
+                anchor_dt.strftime('%Y-%m-%d %H:%M'))
+            continue
+        df = _make_probe_frame(confirm_rows)
+        df['DEP01'] = pd.to_numeric(depth)
+        df.attrs['bin'] = bin_num
+        df.attrs['depth'] = depth
+        df.attrs['orientation'] = orientation_label
+        df.attrs['mounting_type'] = mounting_type
+        df.attrs['height_from_bottom'] = hfb
+        df.attrs['has_historical_depth_shifts'] = has_depth_shifts
+        result[bin_num] = df
+
+    if missing_depth:
+        logger.error(
+            'CO-OPS station %s (%s) bins endpoint returned no depth for '
+            'bins %s; depth recorded as 0.0 m. This is unexpected for '
+            'non-side ADCPs — check MDAPI metadata.',
+            station_id, mounting_type, missing_depth)
+
+    if not result:
+        logger.info(
+            'CO-OPS currents retrieval for station %s returned no bins '
+            'with data.', station_id)
+        return None
+
+    _record_mounting(mounting_type)
+    logger.info(
+        'CO-OPS currents availability probe for station %s (%s, %d '
+        'bin(s)): %s', station_id, mounting_type, len(result),
+        sorted(result.keys()))
+    return result
+
+
 def _retrieve_currents_all_bins(
     station_id: str,
     start_date: str,
@@ -1145,9 +1552,10 @@ def _retrieve_currents_all_bins(
     api_url: str,
     mdapi_url: str,
     logger: Logger,
-    only_bins: Optional[set[int]] = None,
-    control_files_path: Optional[str] = None,
-) -> Optional[dict[int, pd.DataFrame]]:
+    only_bins: set[int] | None = None,
+    control_files_path: str | None = None,
+    availability_probe: bool = False,
+) -> dict[int, pd.DataFrame] | None:
     """Retrieve CO-OPS currents data for every bin of an ADCP station.
 
     Flow:
@@ -1177,6 +1585,13 @@ def _retrieve_currents_all_bins(
     When ``only_bins`` is provided, the bin iteration is restricted to
     that set — short-circuits the CO-OPS HTTP traffic when a user has
     supplied a currents-bins override CSV listing only specific bins.
+
+    ``availability_probe=True`` (ctl-file creation only, issue #239)
+    replaces the full-window per-bin downloads with the availability
+    probe: metadata resolution, the deployment-summary CSV export, and
+    the mounting tally are unchanged, and the returned dict has the
+    same shape and ``df.attrs``, but each DataFrame holds only the
+    short confirmation sample rather than the full window.
 
     Returns ``dict[int, DataFrame]`` keyed by bin number, or ``None`` if
     no bin yielded any in-window data.
@@ -1256,6 +1671,7 @@ def _retrieve_currents_all_bins(
             only_bins=only_bins,
             has_depth_shifts=has_depth_shifts,
             logger=logger,
+            availability_probe=availability_probe,
         )
 
     # up / down / unknown: per-bin fan-out path. The bins endpoint
@@ -1274,6 +1690,22 @@ def _retrieve_currents_all_bins(
             hfb=hfb,
             orientation_label=orientation_label,
             mounting_type=mounting_type,
+            has_depth_shifts=has_depth_shifts,
+            logger=logger,
+        )
+
+    elif availability_probe:
+        final_result = _probe_updown_currents_availability(
+            station_id=station_id,
+            start_dt_0=start_dt_0,
+            end_dt_0=end_dt_0,
+            api_url=api_url,
+            bin_records=bin_records,
+            deployment_info=deployment_info,
+            hfb=hfb,
+            orientation_label=orientation_label,
+            mounting_type=mounting_type,
+            only_bins=only_bins,
             has_depth_shifts=has_depth_shifts,
             logger=logger,
         )
@@ -1346,15 +1778,23 @@ def _retrieve_currents_all_bins(
     # --- CALCULATE OVERALL ACTUAL GAP AND TRIGGER CSV EXPORT ---
     actual_gap_str = 'N/A'
     if final_result:
-        # Determine the maximum gap found across all successfully returned bins
-        max_gap_days = max(
-            (df.attrs.get('actual_gap_days', 0.0) for df in final_result.values()),
-            default=0.0
-        )
-        if max_gap_days > 0.01:
-            actual_gap_str = f'{max_gap_days:.2f} days'
+        if availability_probe:
+            # The probe downloads only availability samples, so the
+            # observed gap coverage is unknown at ctl time; reporting
+            # 'None' here would falsely claim gap-free data.
+            actual_gap_str = 'N/A (availability probe)'
         else:
-            actual_gap_str = 'None'
+            # Determine the maximum gap found across all successfully
+            # returned bins
+            max_gap_days = max(
+                (df.attrs.get('actual_gap_days', 0.0)
+                 for df in final_result.values()),
+                default=0.0
+            )
+            if max_gap_days > 0.01:
+                actual_gap_str = f'{max_gap_days:.2f} days'
+            else:
+                actual_gap_str = 'None'
     else:
         # Complete failure/empty window
         try:
@@ -1378,9 +1818,9 @@ def _retrieve_currents_all_bins(
 
 
 def _resolve_height_from_bottom(
-    deployment_info: Optional[dict],
-    station_info: Optional[dict],
-) -> Optional[float]:
+    deployment_info: dict | None,
+    station_info: dict | None,
+) -> float | None:
     """Return ``height_from_bottom`` (m), preferring the deployments source.
 
     Both endpoints expose ``height_from_bottom`` and the surveyed values
@@ -1407,15 +1847,16 @@ def _retrieve_side_looking_currents(
     start_dt_0: datetime,
     end_dt_0: datetime,
     api_url: str,
-    bins_payload: Optional[dict],
-    deployment_info: Optional[dict],
+    bins_payload: dict | None,
+    deployment_info: dict | None,
     bin_records: list[dict],
-    hfb: Optional[float],
+    hfb: float | None,
     orientation_label: str,
-    only_bins: Optional[set[int]],
+    only_bins: set[int] | None,
     has_depth_shifts: bool,
     logger: Logger,
-) -> Optional[dict[int, pd.DataFrame]]:
+    availability_probe: bool = False,
+) -> dict[int, pd.DataFrame] | None:
     """Side-looking ADCP currents retrieval (issue #140).
 
     Resolves the dissemination bin from MDAPI (``bins.json`` top-level
@@ -1468,18 +1909,34 @@ def _retrieve_side_looking_currents(
 
     depth_unknown = sensor_depth is None
     depth_value = sensor_depth if sensor_depth is not None else 0.0
+    if availability_probe:
+        probe_scan_start, probe_scan_end = _probe_scan_range(
+            station_id, deployment_info, has_depth_shifts,
+            start_dt_0, end_dt_0, logger)
     result: dict[int, pd.DataFrame] = {}
     for chosen_bin in chosen_bins:
-        df = _fetch_currents_chunked(
-            station_id=station_id,
-            bin_num=chosen_bin,
-            start_dt_0=start_dt_0,
-            end_dt_0=end_dt_0,
-            api_url=api_url,
-            logger=logger,
-            deployment_info=deployment_info,
-            has_depth_shifts=has_depth_shifts,
-        )
+        if availability_probe:
+            # A side-looking station already fetches a single pinned bin
+            # over the window, so the probe is the same scan with early
+            # stop — no per-bin confirmation pass exists here. The bin
+            # stays pinned explicitly: a no-bin request resolves to the
+            # era dissemination bin, which can diverge from the current
+            # real_time_bin on historical windows.
+            scan_rows = _probe_scan_for_data(
+                station_id, chosen_bin, None, probe_scan_start,
+                probe_scan_end, api_url, logger)
+            df = _make_probe_frame(scan_rows) if scan_rows else None
+        else:
+            df = _fetch_currents_chunked(
+                station_id=station_id,
+                bin_num=chosen_bin,
+                start_dt_0=start_dt_0,
+                end_dt_0=end_dt_0,
+                api_url=api_url,
+                logger=logger,
+                deployment_info=deployment_info,
+                has_depth_shifts=has_depth_shifts,
+            )
         if df is None:
             logger.info(
                 'CO-OPS side-looking station %s (bin=%d) returned no '
@@ -1519,15 +1976,15 @@ def _retrieve_currents_legacy_fallback(
     start_dt_0: datetime,
     end_dt_0: datetime,
     api_url: str,
-    station_info: Optional[dict],
-    bins_payload: Optional[dict],
-    deployment_info: Optional[dict],  # <-- ADDED
-    hfb: Optional[float],
+    station_info: dict | None,
+    bins_payload: dict | None,
+    deployment_info: dict | None,  # <-- ADDED
+    hfb: float | None,
     orientation_label: str,
     mounting_type: str,
     has_depth_shifts: bool,
     logger: Logger,
-) -> Optional[dict[int, pd.DataFrame]]:
+) -> dict[int, pd.DataFrame] | None:
     """No bin records on MDAPI: fall back to one unfiltered datagetter call.
 
     Used when the bins endpoint returns nothing (transient MDAPI
@@ -1572,8 +2029,8 @@ def _retrieve_currents_legacy_fallback(
     return {fallback_bin: legacy}
 
 def _legacy_fallback_bin(
-    station_info: Optional[dict],
-    bins_payload: Optional[dict],
+    station_info: dict | None,
+    bins_payload: dict | None,
 ) -> int:
     """Best-effort bin number for the legacy fallback path.
 
@@ -1608,10 +2065,10 @@ def _legacy_fallback_bin(
     return 1
 
 def _active_deployment_periods(
-    deployment_info: Optional[dict],
+    deployment_info: dict | None,
     start_dt_0: datetime,
     end_dt_0: datetime,
-    logger: Optional[Logger] = None,
+    logger: Logger | None = None,
 ) -> tuple[list[tuple[datetime, datetime]], bool]:
     """Intersect each deployment with ``[start_dt_0, end_dt_0]``.
 
@@ -1657,14 +2114,14 @@ def _active_deployment_periods(
 
 def _fetch_currents_chunked(
     station_id: str,
-    bin_num: Optional[int],
+    bin_num: int | None,
     start_dt_0: datetime,
     end_dt_0: datetime,
     api_url: str,
     logger: Logger,
-    deployment_info: Optional[dict] = None,
+    deployment_info: dict | None = None,
     has_depth_shifts: bool = False,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Pull currents data for a station (optionally a specific bin) in
     30-day chunks and return a DataFrame with DateTime/DIR/OBS columns.
 
@@ -1981,7 +2438,7 @@ def retrieve_tidal_predictions(
     retrieve_input: Any,
     logger: Logger,
     config_file=None,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """
     Retrieve tidal predictions from CO-OPS API.
 
@@ -2106,7 +2563,7 @@ def retrieve_harmonic_constants(
     logger: Logger,
     units: str = 'metric',
     config_file=None,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Retrieve accepted harmonic constants from the CO-OPS API.
 
@@ -2320,7 +2777,7 @@ def find_nearest_tidal_station(
     lon: float,
     logger: Logger,
     config_file=None,
-) -> tuple[Optional[str], Optional[str], Optional[float]]:
+) -> tuple[str | None, str | None, float | None]:
     """
     Find the single nearest CO-OPS station with tidal predictions.
 

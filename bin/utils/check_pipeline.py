@@ -23,6 +23,37 @@ Pipeline Developmental Stages:
     7. **HTML Generated**: The final localized web-visualization product (`.html`)
        is complete.
 
+Drop reasons (joined from the station-drop ledger):
+    The 7-stage matrix says how far a station got; it does not say why it
+    stopped. When the skill run has left a combined station-drop ledger at
+    `control_files/station_ledger_{ofs}.csv`, three extra columns are
+    appended to the summary CSV -- `Drop_Stage`, `Drop_Reason`, and
+    `Bins_Pruned`.
+
+    `Drop_Stage`/`Drop_Reason` carry the earliest recorded stage that
+    dropped the station and its explanation (e.g. `node_match` / "nearest
+    model location 6.2 km away (> 4.0 km cutoff)"). They are populated only
+    when this audit's own matrix agrees that the station stalled: a ledger
+    reason is shown only if the station has a `No` at or after the column
+    that stage would have blocked (see `LEDGER_STAGE_MIN_COLUMN`). A station
+    that reached all seven stages is never annotated as dropped, whatever
+    the ledger holds -- ledger rows are per bin for ADCP currents and can be
+    left over from a run whose stages this run never re-executed.
+
+    `Bins_Pruned` counts CO-OPS ADCP virtual bins the skill run removed
+    because they sat below the model bottom. That is routine for shallow
+    stations and is deliberately kept out of `Drop_Stage`: the parent
+    station is still assessed on its remaining bins. It becomes the drop
+    reason only when the station is itself missing from the model control
+    file, i.e. nothing survived the prune.
+
+    Ledger rows stamped `whichcast=all` describe artifacts shared by every
+    cast and are applied to each audited whichcast; rows for a different
+    `filetype` (a `-t fields` run) are skipped, since this tool audits the
+    `stations` product. All three columns are left blank when no ledger file
+    is present, so older output directories still audit cleanly. The
+    heatmaps are unaffected: they select their columns by name.
+
 Visual Chunking & Provider Grouping Rules (threshold = MAX_STATIONS_PER_PLOT):
     - **Combined Mode**: If the cumulative unique stations for a variable is at or
       below the threshold, all observation data sources are consolidated into one
@@ -38,7 +69,9 @@ Dependencies:
     - Standard Library: `os`, `csv`, `argparse`, `pathlib`
     - Data Processing: `pandas`, `numpy`
     - Visualization: `matplotlib`, `seaborn`
-    - Internal Domain: `ofs_skill.obs_retrieval.utils`
+    - Internal Domain: `ofs_skill.obs_retrieval.utils`,
+      `ofs_skill.obs_retrieval.currents_bins_override`,
+      `ofs_skill.model_processing.station_ledger`
 
 Author: PWL
 Date: June 2026
@@ -46,10 +79,13 @@ Date: June 2026
 
 import argparse
 import csv
+import logging
 import os
 from pathlib import Path
 
+from ofs_skill.model_processing.station_ledger import stage_rank
 from ofs_skill.obs_retrieval import utils
+from ofs_skill.obs_retrieval.currents_bins_override import split_virtual_currents_id
 
 # ==========================================
 # CONFIGURATION
@@ -63,6 +99,52 @@ HTML_VAR_MAP = {
 }
 
 ALLOWED_WHICHCASTS = ['nowcast', 'forecast_b', 'forecast_a', 'hindcast']
+
+# The station-drop ledger names variables the way the pipeline does; this
+# tool uses its own shorter term for temperature. Translate so the join on
+# the ledger cannot silently miss every temperature row.
+LEDGER_VAR_TERMS = {
+    'water_level': 'water_level',
+    'water_temperature': 'temperature',
+    'salinity': 'salinity',
+    'currents': 'currents',
+}
+
+# Whichcast stamp the ledger uses for stages whose artifacts are shared by
+# every cast (inventory, control files, station matching).
+LEDGER_CAST_ALL = 'all'
+
+# Product this tool audits. The combined ledger holds `stations` and `fields`
+# rows side by side, told apart by its `filetype` column.
+LEDGER_FILETYPE = 'stations'
+
+# Earliest 7-stage column a ledger drop can explain. A station dropped at
+# `obs_ctl` never reaches the observation control file (column 2); one
+# dropped at `node_match` never reaches the model control file (column 4);
+# one that failed pairing has its `.obs` but no usable pair, which shows up
+# from the `.prd`/`.int` columns onwards (column 5). A ledger reason whose
+# column is later than this station's first `No` describes a stall that did
+# not happen here, so it is not shown.
+LEDGER_STAGE_MIN_COLUMN = {
+    'inventory': 2,
+    'inventory_variable_flag': 2,
+    'obs_ctl': 2,
+    'node_match': 4,
+    'node_match_collision': 4,
+    'depth_match': 4,
+    'model_ctl': 4,
+    'id_mismatch': 5,
+    'temporal_overlap': 5,
+    'pairing': 5,
+}
+
+# Fallback for a stage this tool has not been taught about: require only
+# that the station stalled somewhere.
+DEFAULT_LEDGER_STAGE_COLUMN = 1
+
+# Ledger stage recorded per ADCP bin rather than per station. Surfaced in
+# its own column instead of as the parent station's drop reason.
+LEDGER_BIN_STAGE = 'depth_match'
 
 # Maximum stations rendered in a single heatmap before the layout splits by
 # provider and, if still too dense, sub-chunks a provider into numbered parts.
@@ -306,6 +388,149 @@ def generate_visualizations(csv_file_path, home_dir, ofs):
 
 
 # ==========================================
+# STATION-DROP LEDGER JOIN
+# ==========================================
+
+def _load_ledger_reasons(dir_ctl, ofs, target_whichcasts,
+                         filetype=LEDGER_FILETYPE):
+    """Load drop stages/reasons from the combined station-drop ledger.
+
+    The skill run writes ``control_files/station_ledger_{ofs}.csv``, which
+    records *why* a station stopped progressing. This tool records *how far*
+    each station got. Joining the two turns a bare "No" in the stage matrix
+    into an explanation.
+
+    Per-bin ADCP prunings are kept apart from station-level drops. A bin
+    removed for sitting below the model bottom does not stop its parent
+    station, which is still assessed on the bins that remain, so those
+    records are returned as a count rather than as the station's reason.
+
+    Args:
+        dir_ctl (str or pathlib.Path): Control-files directory to look in.
+        ofs (str): OFS identifier, used to build the ledger file name.
+        target_whichcasts (list of str): Whichcasts this run is auditing.
+            Ledger rows stamped ``all`` (stages whose artifacts are shared
+            by every cast) are expanded across all of them.
+        filetype (str): Product being audited. Ledger rows carrying a
+            different ``filetype`` are skipped, so a ``-t fields`` run's
+            drop reasons are not attributed to the stations audit.
+
+    Returns:
+        tuple: ``(reasons, bin_prunes)``. ``reasons`` maps
+        ``(station_id, variable_term, whichcast)`` to ``(stage, reason)``
+        with lower-cased station IDs, ADCP virtual bin IDs collapsed to
+        their parent station, and the earliest pipeline stage winning when
+        a station was recorded at more than one. ``bin_prunes`` maps the
+        same key to ``(bin_count, sample_reason)`` for below-bottom bin
+        removals. Both are empty when no ledger file is present, so the
+        join is a no-op on older output directories.
+    """
+    reasons = {}
+    bin_prunes = {}
+    ledger_path = Path(os.path.join(dir_ctl, f'station_ledger_{ofs}.csv'))
+    if not ledger_path.exists():
+        print(f'  -> No station ledger at {ledger_path}; '
+              f'drop reasons will be blank.')
+        return reasons, bin_prunes
+
+    try:
+        with open(ledger_path, newline='') as ledger_file:
+            rows = list(csv.DictReader(ledger_file))
+    except (OSError, csv.Error, UnicodeDecodeError):
+        print(f'  -> Warning: could not read {ledger_path}; '
+              f'drop reasons will be blank.')
+        return reasons, bin_prunes
+
+    for row in rows:
+        if (row.get('record_type') or 'drop').strip() != 'drop':
+            continue
+        # A blank filetype means an older/hand-made ledger: accept it rather
+        # than silently dropping every row.
+        row_filetype = (row.get('filetype') or '').strip()
+        if row_filetype and row_filetype != filetype:
+            continue
+        # A leading quote is the ledger's spreadsheet-formula guard.
+        raw_id = (row.get('station_id') or '').strip().lstrip("'").lower()
+        if not raw_id:
+            continue
+        station_id, bin_num = split_virtual_currents_id(raw_id)
+        ledger_var = (row.get('variable') or '').strip()
+        var_term = LEDGER_VAR_TERMS.get(ledger_var, ledger_var)
+        stage = (row.get('stage') or '').strip()
+        reason = (row.get('reason') or '').strip().lstrip("'")
+        row_cast = (row.get('whichcast') or '').strip()
+        casts = (target_whichcasts if row_cast == LEDGER_CAST_ALL
+                 else [row_cast])
+        for cast in casts:
+            key = (station_id, var_term, cast)
+            if stage == LEDGER_BIN_STAGE and bin_num is not None:
+                count, sample = bin_prunes.get(key, (0, reason))
+                bin_prunes[key] = (count + 1, sample)
+                continue
+            current = reasons.get(key)
+            # Earliest stage wins: it is the one that actually stopped the
+            # station, and later records are consequences of it.
+            if current is None or stage_rank(stage) < stage_rank(current[0]):
+                reasons[key] = (stage, reason)
+    return reasons, bin_prunes
+
+
+def _first_failed_stage(stage_flags):
+    """Return the 1-based index of the earliest ``False`` stage, or None.
+
+    ``stage_flags`` is the seven booleans of one summary row, in pipeline
+    order. ``None`` means the station completed every stage.
+    """
+    for index, reached in enumerate(stage_flags, start=1):
+        if not reached:
+            return index
+    return None
+
+
+def _explain_row(stage_flags, reason_entry, prune_entry):
+    """Pick the drop annotation for one summary row.
+
+    A ledger reason is only shown when this audit agrees the station
+    stalled, and only when the stall is at or after the column that stage
+    would have blocked. That keeps a stale record from a previous run -- or
+    a per-bin currents record -- from labelling a station the auditor's own
+    matrix reports as complete.
+
+    Args:
+        stage_flags (list of bool): The row's seven stage outcomes, in
+            pipeline order.
+        reason_entry (tuple or None): ``(stage, reason)`` from the ledger.
+        prune_entry (tuple or None): ``(bin_count, sample_reason)`` of
+            below-bottom ADCP bins removed for this station.
+
+    Returns:
+        tuple: ``(drop_stage, drop_reason, bins_pruned_text)``.
+    """
+    bins_pruned, prune_reason = prune_entry or (0, '')
+    bins_text = str(bins_pruned) if bins_pruned else ''
+    first_no = _first_failed_stage(stage_flags)
+    if first_no is None:
+        # The station reached the end of the pipeline. Whatever the ledger
+        # says, it was not dropped in this run.
+        return '', '', bins_text
+
+    if reason_entry:
+        stage, reason = reason_entry
+        min_column = LEDGER_STAGE_MIN_COLUMN.get(
+            stage, DEFAULT_LEDGER_STAGE_COLUMN)
+        if first_no >= min_column:
+            return stage, reason, bins_text
+
+    # Nothing else explains a currents station that never reached the model
+    # control file, so an exhaustive bin prune is the explanation.
+    if bins_pruned and first_no == LEDGER_STAGE_MIN_COLUMN[LEDGER_BIN_STAGE]:
+        return LEDGER_BIN_STAGE, (
+            f'{bins_pruned} ADCP bin(s) removed as below the model bottom; '
+            f'e.g. {prune_reason}'), bins_text
+    return '', '', bins_text
+
+
+# ==========================================
 # MAIN SCRIPT
 # ==========================================
 
@@ -329,7 +554,7 @@ def main(args):
             target_whichcasts.append(wc)
 
     if not target_whichcasts:
-        print(f"Error: No valid whichcasts provided. Allowed choices are: "
+        print(f'Error: No valid whichcasts provided. Allowed choices are: '
               f"{', '.join(ALLOWED_WHICHCASTS)}")
         raise SystemExit(1)
 
@@ -339,10 +564,20 @@ def main(args):
         target_vars = [var_selection]
 
     home_dir = Path(args.Path)
+    # A relative -c is looked for under the working directory first, then
+    # under the installation root, so an external -p still finds the
+    # shipped config instead of dying on a path that cannot exist.
+    # Split into components before resolving: resolve_asset_path joins its
+    # *parts with os.path.join, so handing it the whole 'conf/ofs_dps.conf'
+    # string would splice a forward slash into an otherwise native path and
+    # yield a mixed-separator path like 'C:\...\conf/ofs_dps.conf' on Windows.
+    resolved_conf = (
+        conf_path if os.path.isabs(conf_path)
+        else utils.resolve_asset_path(home_dir, *Path(conf_path).parts)
+    )
     try:
-        dir_params = utils.Utils(
-            os.path.join(home_dir, conf_path)
-        ).read_config_section('directories', None)
+        dir_params = utils.Utils(resolved_conf).read_config_section(
+            'directories', logging.getLogger(__name__))
     except FileNotFoundError as exc:
         print('No configuration file found! Please check the path.')
         raise SystemExit(1) from exc
@@ -372,6 +607,9 @@ def main(args):
     prd_files = get_filenames(dir_prd, '.prd')
     int_files = get_filenames(dir_int, '.int')
     html_files = get_filenames(dir_html, '.html')
+
+    ledger_reasons, ledger_bin_prunes = _load_ledger_reasons(
+        dir_ctl, ofs, target_whichcasts)
 
     all_csv_rows = []
 
@@ -460,6 +698,17 @@ def main(args):
                 html_found = any(
                     all(term in fname for term in req_html) for fname in html_files)
 
+                # Explain the first stage that stopped this station, when
+                # the skill run's ledger recorded one and this audit agrees
+                # the station actually stalled there.
+                ledger_key = (st_id, html_var_term, wc)
+                drop_stage, drop_reason, bins_pruned = _explain_row(
+                    [s['inv'], s['obs_ctl'], obs_found, s['mod_ctl'],
+                     prd_found, int_found, html_found],
+                    ledger_reasons.get(ledger_key),
+                    ledger_bin_prunes.get(ledger_key),
+                )
+
                 # UPDATED: Included 'Provider' key into output rows mapping
                 all_csv_rows.append({
                     'Station_ID': st_id,
@@ -472,7 +721,10 @@ def main(args):
                     '4_In_Model_CTL': 'Yes' if s['mod_ctl'] else 'No',
                     '5_PRD_Generated': 'Yes' if prd_found else 'No',
                     '6_INT_Generated': 'Yes' if int_found else 'No',
-                    '7_HTML_Generated': 'Yes' if html_found else 'No'
+                    '7_HTML_Generated': 'Yes' if html_found else 'No',
+                    'Drop_Stage': drop_stage,
+                    'Drop_Reason': drop_reason,
+                    'Bins_Pruned': bins_pruned
                 })
 
     if not all_csv_rows:
@@ -484,7 +736,8 @@ def main(args):
     fieldnames = [
         'Station_ID', 'Variable', 'Whichcast', 'Provider',
         '1_In_Inventory', '2_In_OBS_CTL', '3_OBS_Generated',
-        '4_In_Model_CTL', '5_PRD_Generated', '6_INT_Generated', '7_HTML_Generated'
+        '4_In_Model_CTL', '5_PRD_Generated', '6_INT_Generated', '7_HTML_Generated',
+        'Drop_Stage', 'Drop_Reason', 'Bins_Pruned'
     ]
 
     def write_csv(csv_path):

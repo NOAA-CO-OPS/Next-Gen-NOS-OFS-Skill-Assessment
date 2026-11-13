@@ -222,3 +222,164 @@ def test_module_import_enables_pyproj_network():
     # The import already happened at module scope; verify side-effect.
     import pyproj
     assert pyproj.network.is_network_enabled() is True
+
+
+# ---------------------------------------------------------------------------
+# GEOID18 grid discovery and remediation text (issues #127, #216, #295)
+#
+# PROJ reports an absent GEOID18 grid and an unreachable NOAA bucket with
+# byte-identical text -- both are "Error 1029 (File not found or
+# invalid)". Verified on pyproj 3.7.2 / PROJ 9.7.1 by running a real
+# conversion twice: once with the grid removed from every PROJ data
+# directory, and once with the grid on disk but outbound HTTPS pointed
+# at a dead proxy. So the exception text cannot be used to classify the
+# fault, and the retry policy must stay uniform. The filesystem is
+# consulted only to choose what the operator is told.
+# ---------------------------------------------------------------------------
+
+REAL_PROJ_1029 = (
+    'Invalid projection +proj=pipeline +step +proj=vgridshift '
+    '+grids=us_noaa_g2018u0.tif: (Internal Proj Error: proj_create: '
+    'Error 1029 (File not found or invalid): pipeline: Pipeline: Bad step '
+    'definition: proj=vgridshift (File not found or invalid))')
+
+
+def test_real_proj_1029_text_still_retries(monkeypatch):
+    """The wording PROJ actually emits must not short-circuit the retries.
+
+    A transient NOAA-bucket outage produces this exact text with the
+    GEOID18 grid sitting on disk, so treating it as a permanent
+    missing-grid fault would strip the #127 protection from the case it
+    was written for.
+    """
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS',
+                        {('navd88', 'mllw')})
+    sleeps = []
+    monkeypatch.setattr(vdatum_resilient, '_sleep_with_backoff',
+                        lambda attempt: sleeps.append(attempt))
+
+    err = pyproj.exceptions.ProjError(REAL_PROJ_1029)
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert',
+            side_effect=[err, err, (36.0, -76.0, 9.0)]) as mock_convert:
+        out = vdatum_resilient.convert('navd88', 'mllw', 36.94, -76.33, 10.0)
+
+    assert out == (36.0, -76.0, 9.0)
+    assert mock_convert.call_count == 3
+    assert sleeps == [0, 1]
+
+
+def test_real_proj_1029_still_reaches_the_offline_fallback(monkeypatch):
+    """After the retries are exhausted the online=False fallback still runs.
+
+    With a warm PROJ cache and a dead network that fallback succeeds, so
+    skipping it would drop stations that are perfectly convertible.
+    """
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS',
+                        {('navd88', 'mllw')})
+    monkeypatch.setattr(vdatum_resilient, '_sleep_with_backoff',
+                        lambda attempt: None)
+
+    err = pyproj.exceptions.ProjError(REAL_PROJ_1029)
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert',
+            side_effect=[err, err, err, err,
+                         (36.0, -76.0, 9.0)]) as mock_convert:
+        out = vdatum_resilient.convert('navd88', 'mllw', 36.94, -76.33, 10.0)
+
+    assert out == (36.0, -76.0, 9.0)
+    assert mock_convert.call_args.kwargs['online'] is False
+
+
+def test_find_geoid18_grid_searches_every_proj_data_dir(monkeypatch,
+                                                        tmp_path):
+    """The grid may sit in any PROJ data directory, not just the first."""
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    holding = tmp_path / 'holding'
+    holding.mkdir()
+    grid = holding / vdatum_resilient.GEOID18_GRID
+    grid.write_bytes(b'not a real grid')
+
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [empty, holding])
+    assert vdatum_resilient.find_geoid18_grid() == grid
+
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [empty])
+    assert vdatum_resilient.find_geoid18_grid() is None
+
+
+def test_proj_data_dirs_splits_multi_directory_settings(monkeypatch,
+                                                        tmp_path):
+    """PROJ_DATA may hold several directories joined by os.pathsep."""
+    import os
+
+    first = tmp_path / 'a'
+    second = tmp_path / 'b'
+    monkeypatch.setattr(vdatum_resilient.pyproj.datadir, 'get_data_dir',
+                        lambda: os.pathsep.join([str(first), str(second)]))
+    monkeypatch.setattr(vdatum_resilient.pyproj.datadir,
+                        'get_user_data_dir', lambda: '')
+
+    assert vdatum_resilient._proj_data_dirs() == [first, second]
+
+
+def test_remediation_for_a_missing_grid_says_download_it(monkeypatch,
+                                                         tmp_path):
+    """Grid absent -> point the operator at the downloader."""
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [tmp_path])
+    text = vdatum_resilient.grid_remediation()
+    assert 'make proj-grids' in text
+    assert vdatum_resilient.GEOID18_GRID in text
+    assert str(tmp_path) in text
+
+
+def test_remediation_for_a_present_grid_blames_network_egress(monkeypatch,
+                                                              tmp_path):
+    """Grid present -> the download is not the problem, egress is."""
+    grid = tmp_path / vdatum_resilient.GEOID18_GRID
+    grid.write_bytes(b'not a real grid')
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [tmp_path])
+
+    text = vdatum_resilient.grid_remediation()
+    assert vdatum_resilient.VDATUM_GRID_HOST in text
+    assert 'outbound' in text.lower()
+    # Do not send the operator after a download that is already done.
+    assert 'make proj-grids' not in text
+
+
+def test_the_two_remedies_are_never_the_same_text(monkeypatch, tmp_path):
+    """The whole point: identical PROJ text, two distinguishable remedies."""
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [tmp_path])
+    missing = vdatum_resilient.grid_remediation()
+    (tmp_path / vdatum_resilient.GEOID18_GRID).write_bytes(b'not a grid')
+    present = vdatum_resilient.grid_remediation()
+    assert missing != present
+
+
+def test_permanent_failure_message_carries_the_remediation(monkeypatch,
+                                                           caplog, tmp_path):
+    """A dropped station must be told how to fix the environment."""
+    monkeypatch.setattr(vdatum_resilient, '_PRIMED_PAIRS',
+                        {('navd88', 'mllw')})
+    monkeypatch.setattr(vdatum_resilient, '_sleep_with_backoff',
+                        lambda attempt: None)
+    monkeypatch.setattr(vdatum_resilient, '_proj_data_dirs',
+                        lambda: [tmp_path])
+
+    with mock.patch.object(
+            vdatum_resilient.vdatum, 'convert',
+            side_effect=pyproj.exceptions.ProjError(REAL_PROJ_1029)):
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(pyproj.exceptions.ProjError):
+                vdatum_resilient.convert('navd88', 'mllw', 36.94, -76.33,
+                                         10.0, station_id='8638901')
+
+    msgs = [r.message for r in caplog.records]
+    assert any('make proj-grids' in m for m in msgs), msgs
+    assert any(vdatum_resilient.GEOID18_GRID in m for m in msgs), msgs
+    assert any('8638901' in m for m in msgs), msgs

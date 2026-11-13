@@ -1,3 +1,7 @@
+# Conda env for local / CI installs.
+# Keep pip Git pins below in sync with pyproject.toml [project] dependencies
+# (searvey + coastalmodeling-vdatum tags). Other stacks differ on purpose:
+# conda provides geospatial binaries; pyproject declares the pip package surface.
 name: ofs_dps
 channels:
   - conda-forge
@@ -16,6 +20,13 @@ dependencies:
   - matplotlib=3.8.*
   - cartopy>=0.23.0
   - plotly=5.*
+  # Plotly's JSON engine defaults to 'auto': it uses orjson when the
+  # package happens to be importable and the stdlib json module
+  # otherwise. The two escape non-ASCII characters differently, so an
+  # environment that has orjson and one that does not produce different
+  # (though equivalent) HTML. Declare it so every install agrees -- and
+  # because it serialises a typical station figure ~13x faster.
+  - orjson>=3.9.0
   - seaborn>=0.13.2
 
   # --- Geospatial ---
@@ -26,6 +37,7 @@ dependencies:
 
   # --- Data Access / IO ---
   - netcdf4>=1.6.5
+  - h5py
   - h5netcdf
   - intake>=2.0.0
   - conda-forge::intake-xarray>=2.0.0
@@ -52,17 +64,40 @@ dependencies:
 
   - pip
   - pip:
+    # Keep Git pins in sync with pyproject.toml [project] dependencies.
+    # Pin to immutable commit SHAs; release tags stay in comments.
     - global-land-mask==1.0.0
     - tkcalendar==1.6.1
-    - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git
-    - git+https://github.com/oceanmodeling/searvey.git@master
+    # coastalmodeling-vdatum v0.3.2
+    - git+https://github.com/oceanmodeling/coastalmodeling-vdatum.git@0d63b2bbc0b0634e20a0ec55023a53354fab1b47
+    # searvey v0.4.2
+    - git+https://github.com/oceanmodeling/searvey.git@4c2afb8655dfc052f49855db1c9f30ad64b68522
     - utide>=0.3.0
 
 # Activation-time env vars exported into the conda env.
-# PROJ_NETWORK=ON lets PROJ fetch the remote MLLW <-> NAVD88 / IGLD85
-# vdatum grids from the NOAA S3 bucket on demand. Without this, the
-# coastalmodeling_vdatum.convert calls in obs_retrieval and
-# model_processing fail with ProjError 1029 ("File not found or
-# invalid") for stations whose datum conversion needs the remote grid.
+# PROJ_NETWORK=ON lets PROJ fetch grids over the network instead of
+# requiring every one of them on local disk. It is necessary but NOT
+# sufficient for MLLW <-> NAVD88 / IGLD85 conversion, because the grids
+# come from two different places:
+#
+#  * Seven of the coastalmodeling-vdatum grids are named by absolute
+#    https:// URL on the NOAA bucket
+#    (noaa-nos-stofs2d-pds.s3.amazonaws.com). PROJ_NETWORK=ON plus
+#    outbound HTTPS to that host is all they need; they are fetched at
+#    run time and cached.
+#  * The GEOID18 grid is named by *bare filename*
+#    (us_noaa_g2018u0.tif), so PROJ resolves it from its local data
+#    directories and only falls back to cdn.proj.org — a different host
+#    that many operational networks do not allow. This environment
+#    ships no .tif grids, so the file must be put on disk first with
+#    `make proj-grids`.
+#
+# On a host that can reach cdn.proj.org, PROJ streams GEOID18 into its
+# network cache and conversions work without the download. On one that
+# cannot — which is the operational case — skipping `make proj-grids`
+# leaves every conversion needing GEOID18 failing with ProjError 1029
+# ("File not found or invalid"), and the affected stations are dropped
+# from the run. See CONTRIBUTING.md, "Vertical datum grids and network
+# access".
 variables:
   PROJ_NETWORK: "ON"

@@ -24,7 +24,6 @@ return_two_d : Calculate 2D statistics from 3D arrays
 import logging
 import sys
 from logging import Logger
-from typing import Union
 
 import numpy as np
 from numpy import isnan
@@ -40,7 +39,7 @@ def return_one_d(
     mod_data: np.ndarray,
     logger: Logger,
     errorrange: float = 3,
-) -> list[Union[float, np.floating]]:
+) -> list[float | np.floating]:
     """
     Return single statistics from 2D arrays.
 

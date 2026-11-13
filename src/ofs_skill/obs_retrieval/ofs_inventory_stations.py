@@ -80,13 +80,10 @@ Remarks:
 """
 # Libraries:
 import argparse
-import logging
-import logging.config
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
@@ -148,6 +145,7 @@ def retrieving_inventories(geo, start_date, end_date, ofs, stationowner,
                            logger, config_file=None):
     """ Retrieving Inventories """
     lat1, lat2, lon1, lon2 = geo[-4], geo[-3], geo[-2], geo[-1]
+
 
     t_c_future = None
     usgs_future = None
@@ -264,6 +262,20 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
         'has_salt': 'max',
         'has_cu': 'max',
     }
+
+    # groupby().agg(dict) drops every column the dict does not name, so any
+    # column added upstream has to be listed here or it never reaches the
+    # inventory CSV. Only CHS supplies 'operating', so it is absent when
+    # CHS is not among the selected providers -- naming it unconditionally
+    # would raise KeyError on a -so run that excludes CHS. 'max' keeps a
+    # station if any duplicate row reports it operating, matching the
+    # never-drop-on-ambiguity rule used for the capability flags.
+    optional_cols = [
+        col for col in ['operating'] if col in dataset.columns
+    ]
+    for col in optional_cols:
+        agg_dict[col] = 'max'
+
     dataset_dedup = dataset.groupby(
         ['Source', 'ID'], as_index=False
     ).agg(agg_dict)
@@ -271,6 +283,15 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
     # Convert back to bool
     for col in var_cols:
         dataset_dedup[col] = dataset_dedup[col].astype(bool)
+
+    # Providers other than CHS contribute no 'operating' value, so their
+    # rows are NaN after the concat. Default those to True: an unknown
+    # flag must never drop a station.
+    for col in optional_cols:
+        # .where rather than .fillna: filling an object column and then
+        # casting emits a pandas downcasting FutureWarning.
+        values = dataset_dedup[col]
+        dataset_dedup[col] = values.where(values.notna(), True).astype(bool)
 
     dataset_final = dataset_dedup.reset_index(drop=True)
 
@@ -315,21 +336,30 @@ def get_inventory_datasets(geo, t_c, usgs, ndbc, chs, logger):
 
 def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
                            logger, config_file=None):
-    """ Specify defaults (can be overridden with command line options) """
+    """Inventory observation stations inside an OFS domain for a date window.
+
+    Queries configured providers (CO-OPS, NDBC, USGS, CHS, and/or a fixed
+    station-id list), filters to the OFS extent, and writes inventory
+    artifacts under the control-files directory.
+
+    Args:
+        ofs: OFS identifier.
+        start_date: Inventory window start.
+        end_date: Inventory window end.
+        path: Working directory root.
+        stationowner: Provider selection string/list (may include ``list``
+            for ids from config).
+        logger: Logger instance, or ``None`` to configure from
+            ``conf/logging.conf``.
+        config_file: Optional path to ``ofs_dps.conf``.
+
+    Returns:
+        Provider-specific inventory structures written to disk; also used
+        downstream when building observation CTL files.
+    """
 
     if logger is None:
-        log_config_file = 'conf/logging.conf'
-        log_config_file = (Path(__file__).parent.parent.parent.parent/\
-                           log_config_file).resolve()
-
-        # Check if log file exists
-        if not os.path.isfile(log_config_file):
-            sys.exit(-1)
-
-        # Creater logger
-        logging.config.fileConfig(log_config_file)
-        logger = logging.getLogger('root')
-        logger.info('Using log config %s', log_config_file)
+        logger = utils.init_root_logger(path)
 
     logger.info('--- Starting Inventory Retrieval Process ---')
 
@@ -342,7 +372,7 @@ def ofs_inventory_stations(ofs, start_date, end_date, path, stationowner,
                         ['station_id_list']).replace(',','').split(' ')
 
     # parameter validation
-    ofs_extents_path = os.path.join(path, dir_params['ofs_extents_dir'])
+    ofs_extents_path = utils.resolve_asset_path(path, dir_params['ofs_extents_dir'])
 
     argu_list = (start_date, end_date, path, ofs, ofs_extents_path)
     parameter_validation(argu_list, logger)

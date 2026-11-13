@@ -42,6 +42,7 @@ Revisions:
 from __future__ import annotations
 
 import os
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
 from typing import Any
@@ -51,6 +52,13 @@ import numpy as np
 import xarray as xr
 
 from ofs_skill.model_processing.get_fcst_cycle import get_fcst_hours
+from ofs_skill.model_processing.model_file_validation import (
+    cached_path_for_url,
+    scrub_cached_copies,
+    validate_model_files,
+)
+from ofs_skill.model_processing.netcdf_engine import resolve_engine
+from ofs_skill.obs_retrieval.utils import get_s3_cache_dir
 
 
 def _extract_filename_from_encoding(ds):
@@ -81,7 +89,7 @@ def _extract_filename_from_encoding(ds):
     return ''
 
 
-def make_preprocess_with_filename(urlpaths):
+def make_preprocess_with_filename(urlpaths, prop=None):
     """Create a preprocess function that maps datasets to filenames.
 
     When files are opened through simplecache or other fsspec wrappers,
@@ -92,6 +100,14 @@ def make_preprocess_with_filename(urlpaths):
     call_count = [0]  # mutable counter for closure
 
     def preprocess_with_filename(ds):
+   
+        # Do not assign 'filename' coordinate for STOFS models
+        if prop.ofs in ('stofs_3d_atl', 'stofs_3d_pac'):
+            # Drop filename if it already exists as a variable/coord in the raw netCDF
+            if 'filename' in ds.variables or 'filename' in ds.coords:
+                ds = ds.drop_vars('filename', errors='ignore')
+            return ds
+        
         filename = _extract_filename_from_encoding(ds)
         if not filename or filename == 'unknown':
             # Fall back to the original urlpath by call order
@@ -117,6 +133,57 @@ def preprocess_with_filename(ds):
     if not filename:
         filename = 'unknown'
     return ds.assign_coords(filename=filename)
+
+
+def _resolve_remote_stations_files(
+    urlpaths: list,
+    cache_dir: str,
+    logger: Logger,
+) -> list:
+    """Replace remote stations-file URLs with date-keyed local cache copies.
+
+    Every http(s) URL is mapped to the ``cached_path_for_url`` location
+    (``<cache_dir>/<url-date-directory>/<basename>``) and downloaded there
+    when absent; local paths pass through unchanged. The date-directory
+    key is what prevents STOFS points files — whose basenames are
+    identical for every forecast date — from colliding in the cache and
+    silently serving one date's data for another (issue #267).
+
+    Downloads go to a ``.part`` temp name and are moved into place with
+    ``os.replace`` so an interrupted run cannot leave a partial file
+    under the trusted name. A failed download falls back to the direct
+    URL (matching the previous mixed-list behavior) so a transient
+    network error degrades rather than aborts.
+    """
+    resolved = []
+    n_downloaded = 0
+    n_reused = 0
+    for f in urlpaths:
+        if not (isinstance(f, str) and f.startswith('http')):
+            resolved.append(f)
+            continue
+        local_path = cached_path_for_url(f, cache_dir)
+        if os.path.isfile(local_path):
+            n_reused += 1
+        else:
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            try:
+                urllib.request.urlretrieve(f, local_path + '.part')
+                os.replace(local_path + '.part', local_path)
+                n_downloaded += 1
+            except Exception as dl_err:
+                logger.warning(
+                    'Failed to cache %s: %s. Using direct URL.', f, dl_err)
+                resolved.append(f)
+                continue
+        resolved.append(local_path)
+    if n_downloaded or n_reused:
+        logger.info(
+            'Resolved %d remote station file(s) to local cache: '
+            '%d downloaded, %d reused (cache: %s)',
+            n_downloaded + n_reused, n_downloaded, n_reused, cache_dir)
+    return resolved
+
 
 def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     """
@@ -228,20 +295,28 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
         ]
         time_name = 'time'
 
-    # Custom NECOFS free-run station files are NetCDF3 and need the scipy
-    # engine. They are identified by this filename marker; if other NetCDF3
-    # custom files are added, extend this list. The intake_model call below
-    # also falls back with a clear error if the wrong engine is selected.
-    _netcdf3_filename_markers = ('2017_free_run_station',)
-    if prop.ofs in ['stofs_2d_glo'] or any(
-            marker in f
-            for f in file_list
-            for marker in _netcdf3_filename_markers):
-        engine = 'scipy'
-    elif prop.ofs in ['necofs', 'loofs2', 'secofs']:
-        engine = 'netcdf4'
-    else:
-        engine = 'h5netcdf'
+    # Choose the engine by detecting the batch's on-disk format (magic
+    # bytes) rather than a hardcoded per-OFS list — formats differ per
+    # OFS, per file type (stofs_2d_glo stations are NetCDF-3 while its
+    # fields are HDF5), and per source archive. See netcdf_engine.py;
+    # the [settings] engine_strategy config key can force an engine.
+    engine = resolve_engine(file_list, prop, logger)
+
+    # Drop unreadable / incomplete / dimensionally inconsistent files
+    # up front (with warnings) instead of letting them crash the
+    # multi-file open — files left behind by an interrupted forecast
+    # were failing whole multi-month runs (issue #194).
+    file_list, dropped_files, file_dims = validate_model_files(
+        file_list, engine, time_name, prop.ofsfiletype, logger)
+    if dropped_files:
+        # Corrupt files sniff as 'unknown' and can pull the whole batch
+        # down to netcdf4; re-resolve now that they are gone (cached
+        # sniffs make this cheap).
+        engine = resolve_engine(file_list, prop, logger)
+
+    # Record the engine so downstream extraction (get_node_ofs) can relax
+    # the thread-serialization guard when the engine is thread-safe.
+    prop.netcdf_engine = engine
 
     urlpaths = file_list
     if len(urlpaths) == 0:
@@ -262,14 +337,31 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
     dim_ref: Any = None
 
     if prop.ofsfiletype == 'stations':
-        try:
-            dim_compat, dim_ref = get_station_dim(
-                engine, urlpaths, drop_variables or [], logger)
-        except Exception as ex:
-            logger.warning('Could not check number of stations before '
-                           'combining netcdfs in intake! Error: %s. '
-                           'Continuing...',
-                           ex)
+        # The validation pass already probed every local file's
+        # dimensions — reuse them instead of re-opening all files
+        # (get_station_dim was a second multi-minute pass over slow
+        # archive storage). Fall back to get_station_dim whenever any
+        # file wasn't probed (remote URLs) or lacks a station dim.
+        station_dims = [
+            file_dims[f]['station'] for f in urlpaths
+            if f in file_dims and 'station' in file_dims[f]
+        ]
+        if len(station_dims) == len(urlpaths):
+            if np.nanmax(np.diff(station_dims)) != 0:
+                dim_compat = False
+                dim_ref = int(np.argmin(station_dims))
+            logger.info(
+                'Station dimension check reused validation probes for '
+                '%d files (compatible=%s)', len(urlpaths), dim_compat)
+        else:
+            try:
+                dim_compat, dim_ref = get_station_dim(
+                    engine, urlpaths, drop_variables or [], logger)
+            except Exception as ex:
+                logger.warning('Could not check number of stations before '
+                               'combining netcdfs in intake! Error: %s. '
+                               'Continuing...',
+                               ex)
     # Build storage_options for S3 streaming when remote files are present.
     # Only use S3-specific options (anon, block_size) when URLs use s3://
     # protocol. For https:// URLs, use simpler HTTP-compatible options.
@@ -289,78 +381,32 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
             }
         # For https:// URLs, no special storage_options needed
 
-        # Apply fsspec caching for remote URLs to avoid re-downloading
+        # Apply local caching for remote URLs to avoid re-downloading
         if has_remote and not has_s3_proto:
             # For https:// URLs (NODD S3 via HTTPS)
-            cache_dir = os.path.join(os.path.expanduser('~'), '.ofs_cache', 's3')
+            cache_dir = get_s3_cache_dir(
+                getattr(prop, 'config_file', None), logger)
             os.makedirs(cache_dir, exist_ok=True)
 
-            # Check if all files are remote — simplecache cannot handle
-            # mixed local + remote file lists (fsspec protocol mismatch)
-            all_remote = all(
-                isinstance(f, str) and f.startswith('http')
-                for f in urlpaths
-            )
-
-            if prop.ofsfiletype == 'stations' and all_remote:
-                # simplecache: cache whole files (stations files are small,
-                # typically 1-10 MB each)
-                try:
-                    cached_urlpaths = [
-                        f'simplecache::{url}' for url in urlpaths
-                    ]
-                    urlpaths = cached_urlpaths
-                    s3_storage_opts = {
-                        'storage_options': {
-                            'simplecache': {
-                                'cache_storage': cache_dir,
-                                'same_names': True,
-                            },
-                        }
-                    }
-                    logger.info(
-                        'Using simplecache for %d remote station files '
-                        '(cache: %s)', remote_count, cache_dir,
-                    )
-                except Exception as cache_err:
-                    logger.warning(
-                        'Failed to set up simplecache, falling back to '
-                        'direct access: %s', cache_err,
-                    )
-                    # Restore original urlpaths on failure
-                    urlpaths = file_list
-                    if prop.ofsfiletype == 'stations' \
-                            and prop.whichcast == 'forecast_a':
-                        urlpaths = urlpaths + urlpaths
-            elif prop.ofsfiletype == 'stations' and not all_remote:
-                # Mixed local + remote: download remote files to cache
-                # so all paths are local (fsspec requires uniform protocol)
-                import urllib.request
-                remote_n = sum(1 for f in urlpaths
-                               if isinstance(f, str) and f.startswith('http'))
-                local_n = len(urlpaths) - remote_n
-                logger.info(
-                    'Mixed file list: downloading %d remote files to '
-                    'local cache (%d already local)', remote_n, local_n,
-                )
-                resolved = []
-                for f in urlpaths:
-                    if isinstance(f, str) and f.startswith('http'):
-                        local_path = os.path.join(
-                            cache_dir, os.path.basename(f))
-                        if not os.path.isfile(local_path):
-                            try:
-                                urllib.request.urlretrieve(f, local_path)
-                            except Exception as dl_err:
-                                logger.warning(
-                                    'Failed to cache %s: %s. '
-                                    'Using direct URL.', f, dl_err)
-                                resolved.append(f)
-                                continue
-                        resolved.append(local_path)
-                    else:
-                        resolved.append(f)
-                urlpaths = resolved
+            if prop.ofsfiletype == 'stations':
+                # Stations files are small (typically 1-25 MB), so remote
+                # URLs are downloaded to a local cache keyed by the URL's
+                # date directory plus basename (cached_path_for_url).
+                # A basename-only cache (the previous fsspec simplecache
+                # ``same_names=True`` setup) silently served one date's
+                # file for every other date, because STOFS points
+                # filenames are identical in every NODD date directory
+                # (issue #267). Resolving to local paths here also
+                # handles mixed local + remote lists, which fsspec
+                # protocol chaining could not.
+                #
+                # Delete any partial cached copies left by an
+                # interrupted run before trusting them (issues
+                # #176/#193); downloads use a temp name so a kill
+                # mid-download can't leave a partial file behind.
+                scrub_cached_copies(urlpaths, cache_dir, time_name, logger)
+                urlpaths = _resolve_remote_stations_files(
+                    urlpaths, cache_dir, logger)
             else:
                 # For fields files, caching is skipped (files are 100-500 MB
                 # each and would quickly exhaust local disk)
@@ -370,96 +416,146 @@ def intake_model(file_list: list[str], prop: Any, logger: Logger) -> xr.Dataset:
                 )
 
     # Build a preprocess function that knows the original urlpaths,
-    # so it can recover filenames even when simplecache hides them.
-    # Strip simplecache:: prefixes to get the real filenames.
+    # so it can recover filenames even when the source path is hidden
+    # by the open. Strip any fsspec protocol-chain prefixes.
     raw_paths = [
         p.split('::')[-1] if isinstance(p, str) and '::' in p else p
         for p in urlpaths
     ]
-    preprocess_fn = make_preprocess_with_filename(raw_paths)
+    preprocess_fn = make_preprocess_with_filename(raw_paths, prop=prop)
 
-    if dim_compat:  # This will only be FALSE for stations files when
-        # station dimensions do not match! Always True for fields
-        # files
-        # If station dimensions are all the same/compatible, send in all file
-        # names (urlpaths) at one time and let xarray/intake automagically
-        # combine datasets
-        if prop.model_source == 'schism':
-            if  prop.ofsfiletype == 'fields':
-                source = intake.open_netcdf(
-                    urlpath=urlpaths,
-                    xarray_kwargs={
-                        'combine': 'by_coords',  # <-- align files by coordinates
-                        'engine': engine,
-                        'preprocess': preprocess_fn,
-                        'drop_variables': drop_variables,
-                        'chunks': {'time': 1},
-                    },
-                    **s3_storage_opts,
-                )
+    def _open_dataset(open_engine):
+        if dim_compat:  # This will only be FALSE for stations files when
+            # station dimensions do not match! Always True for fields
+            # files
+            # If station dimensions are all the same/compatible, send in
+            # all file names (urlpaths) at one time and let xarray/intake
+            # automagically combine datasets
+            if prop.model_source == 'schism':
+                if prop.ofsfiletype == 'fields':
+                    source = intake.open_netcdf(
+                        urlpath=urlpaths,
+                        xarray_kwargs={
+                            'combine': 'by_coords', 
+                            'compat': 'override',    
+                            'coords': 'minimal',
+                            'data_vars': 'minimal',  
+                            'engine': open_engine,
+                            'preprocess': preprocess_fn,
+                            'drop_variables': drop_variables,
+                            'chunks': {'time': 1},
+                        },
+                        **s3_storage_opts,
+                    )
+                else:
+                    source = intake.open_netcdf(
+                        urlpath=urlpaths,
+                        xarray_kwargs={
+                            'combine': 'nested',
+                            'engine': open_engine,
+                            'preprocess': preprocess_fn,
+                            'concat_dim': time_name,
+                            'decode_times': True,
+                            'chunks': 'auto',  # Enables lazy loading with Dask
+                        },
+                        **s3_storage_opts,
+                    )
+
             else:
+                # For fields files, chunk by single time step to bound memory
+                # for monthly/yearly runs with hundreds of files. Stations
+                # files have small spatial dims, so auto-chunking is safe.
+                chunk_spec: Any
+                if prop.ofsfiletype == 'fields':
+                    chunk_spec = {time_name: 1}
+                else:
+                    chunk_spec = 'auto'
+                # ``data_vars='minimal'`` stops xarray from replicating static
+                # mesh vars (lon, lat, lonc, latc, h, siglay, ...) along the
+                # concat time dim during multi-file open. On long windows
+                # this saves the per-whichcast cost of materializing static
+                # coords across hundreds of backing files and frees the
+                # downstream resample helper from having to walk those vars.
+                # ``indexing.py`` was previously coupled to the legacy
+                # ``(time, station)`` replicated shape via ad-hoc ``[0]`` /
+                # ``[1]`` time slicing; the ``_static_coord_1d`` helper in
+                # indexing.py now normalises both shapes so the call sites
+                # are happy under either mode.
                 source = intake.open_netcdf(
                     urlpath=urlpaths,
                     xarray_kwargs={
                         'combine': 'nested',
-                        'engine': engine,
+                        'engine': open_engine,
                         'preprocess': preprocess_fn,
                         'concat_dim': time_name,
+                        'data_vars': 'minimal',
                         'decode_times': True,
-                        'chunks': 'auto',  # Enables lazy loading with Dask
+                        'drop_variables': drop_variables,
+                        'chunks': chunk_spec,
                     },
                     **s3_storage_opts,
                 )
-
-        else:
-            # For fields files, chunk by single time step to bound memory
-            # for monthly/yearly runs with hundreds of files. Stations
-            # files have small spatial dims, so auto-chunking is safe.
-            chunk_spec: Any
-            if prop.ofsfiletype == 'fields':
-                chunk_spec = {time_name: 1}
-            else:
-                chunk_spec = 'auto'
-            # ``data_vars='minimal'`` stops xarray from replicating static
-            # mesh vars (lon, lat, lonc, latc, h, siglay, ...) along the
-            # concat time dim during multi-file open. On long windows
-            # this saves the per-whichcast cost of materializing static
-            # coords across hundreds of backing files and frees the
-            # downstream resample helper from having to walk those vars.
-            # ``indexing.py`` was previously coupled to the legacy
-            # ``(time, station)`` replicated shape via ad-hoc ``[0]`` /
-            # ``[1]`` time slicing; the ``_static_coord_1d`` helper in
-            # indexing.py now normalises both shapes so the call sites
-            # are happy under either mode.
-            source = intake.open_netcdf(
-                urlpath=urlpaths,
-                xarray_kwargs={
-                    'combine': 'nested',
-                    'engine': engine,
-                    'preprocess': preprocess_fn,
-                    'concat_dim': time_name,
-                    'data_vars': 'minimal',
-                    'decode_times': True,
-                    'drop_variables': drop_variables,
-                    'chunks': chunk_spec,
-                },
-                **s3_storage_opts,
-            )
-        # Read the dataset lazily
-        logger.info('No dimension changes needed, lazy loading catalog ...')
-        ds = source.to_dask()
-    else:
+            # Read the dataset lazily
+            logger.info('No dimension changes needed, lazy loading catalog ...')
+            return source.to_dask()
         logger.info('Station dimensions are inconsistent! Slicing stations...')
-        ds = remove_extra_stations(
-            engine,
+        return remove_extra_stations(
+            open_engine,
             urlpaths, dim_ref, drop_variables or [],
             time_name or '', logger,
         )
+
+    try:
+        ds = _open_dataset(engine)
+    except ValueError as ex:
+        if 'buffer size must be a multiple of element size' in str(ex):
+            # Signature of a partially downloaded file in the fsspec
+            # cache (issues #176/#193). The pre-open cache scrub should
+            # remove these; if one slips through, say what happened
+            # instead of leaving a bare numpy error.
+            logger.error(
+                'Model open failed with "%s" — this is the signature '
+                'of a partially cached model file (a previous run was '
+                'likely interrupted mid-download). Clear the model '
+                'file cache (s3_cache_dir in ofs_dps.conf, default: '
+                '~/.ofs_cache/s3/) and rerun.', ex)
+        raise
+    except xr.MergeError as ex:
+        logger.error(
+            'Model files could not be combined: %s. Static metadata '
+            '(station coordinates/names/sigma levels) differs between '
+            'files in the batch even though their dimensions match — '
+            'the assessment window likely spans a model configuration '
+            'change. Stations batches with a clear majority drop the '
+            'minority files automatically during validation; otherwise '
+            'split the assessment window at the configuration-change '
+            'date.', ex)
+        raise
+    except OSError as ex:
+        # h5netcdf refuses non-HDF5 files with "file signature not
+        # found". Formats are detected before opening, but a sampled
+        # batch can hide a stray NetCDF-3 file — degrade to the
+        # netcdf4-family engine, which reads every format.
+        if engine == 'h5netcdf' and 'signature not found' in str(ex):
+            engine = 'netcdf4'
+            prop.netcdf_engine = engine
+            logger.warning(
+                'h5netcdf could not open the batch (%s); retrying with '
+                "engine='netcdf4'", ex)
+            ds = _open_dataset(engine)
+        else:
+            raise
 
     # If ADCIRC, we need to subset times to the appropriate whichcast.
     # Note that this needs to be done before removal of duplicate times.
     if prop.model_source == 'adcirc':
         ds = fix_adcirc_dataset(prop, ds, urlpaths, logger)
+    # STOFS-3D (SCHISM) points files have the same per-cycle
+    # nowcast+forecast concatenated layout as ADCIRC and need the same
+    # per-cast subsetting; without it, the duplicate-time removal below
+    # silently substitutes other casts for the requested one.
+    elif needs_schism_points_cast_subsetting(prop):
+        ds = fix_schism_points_dataset(prop, ds, logger)
 
     # Round all times to nearest minute
     try:
@@ -935,6 +1031,283 @@ def fix_adcirc_dataset(
     return data_set
 
 
+def needs_schism_points_cast_subsetting(prop: Any) -> bool:
+    """
+    Decide whether a dataset needs SCHISM points-file cast subsetting.
+
+    Only the STOFS-3D points (stations) products bundle the nowcast and
+    forecast periods in a single per-cycle file; the other SCHISM-based
+    OFS (loofs2, secofs) publish separate per-cast stations files, and
+    SCHISM fields files are per-cast too. Those must not be touched.
+
+    Parameters
+    ----------
+    prop : ModelProperties
+        ModelProperties object containing model_source, ofs, and
+        ofsfiletype.
+
+    Returns
+    -------
+    bool
+        True if fix_schism_points_dataset should run on the dataset.
+    """
+    return (getattr(prop, 'model_source', None) == 'schism'
+            and getattr(prop, 'ofsfiletype', None) == 'stations'
+            and getattr(prop, 'ofs', None) in ('stofs_3d_atl',
+                                               'stofs_3d_pac'))
+
+
+def fix_schism_points_dataset(
+    prop: Any,
+    data_set: xr.Dataset,
+    logger: Logger
+) -> xr.Dataset:
+    """
+    Subset concatenated SCHISM points files to the requested whichcast.
+
+    STOFS-3D points (stations) files have the same structure as the
+    ADCIRC / STOFS-2D-Global ones handled by ``fix_adcirc_dataset``:
+    each per-cycle file contains the nowcast and forecast periods
+    concatenated on a single time axis. Verified against operational
+    NODD output (STOFS-3D-Atl ``stofs_3d_atl.t12z.points.*.nc``): 1200
+    timesteps at 6-minute spacing spanning ``cycle - 24 h + dt``
+    through ``cycle + 96 h``; the first 240 steps (times <= cycle
+    time) are the nowcast segment and the remaining 960 (times > cycle
+    time) are the forecast segment.
+
+    Without this subsetting the only whichcast discrimination applied
+    to SCHISM points files is the downstream duplicate-time removal,
+    which silently substitutes later cycles' nowcast output for the
+    requested forecast (forecast_b) or an older initialization for the
+    requested one (forecast_a), biasing the reported forecast skill.
+
+    Parameters
+    ----------
+    prop : ModelProperties
+        ModelProperties object containing:
+        - ofs : str
+            OFS model name ('stofs_3d_atl' or 'stofs_3d_pac')
+        - ofsfiletype : str
+            Must be 'stations'
+        - whichcast : str
+            'nowcast', 'forecast_a', 'forecast_b'
+        - startdate : str
+            'YYYYMMDDHH' assessment start (forecast_a only)
+        - forecast_hr : str
+            Requested forecast cycle, e.g. '12z' (forecast_a only)
+    data_set : xr.Dataset
+        SCHISM points dataset (one or more concatenated cycles)
+    logger : Logger
+        Logger instance for logging messages
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with timesteps only for the appropriate whichcast.
+
+    Notes
+    -----
+    Unlike ``fix_adcirc_dataset`` this works from the actual time
+    coordinate instead of hard-coded timestep counts: file blocks are
+    the maximal runs of uniformly spaced times, and each block's cycle
+    time is its first time minus one timestep plus the nowcast length
+    (24 h / cycles-per-day from ``get_fcst_hours``). Selection per
+    whichcast:
+
+    - nowcast: keep each block's times <= its cycle time. Blocks never
+      overlap there, and the later dedup (keep='last') is a no-op.
+    - forecast_b: keep each block's times > its cycle time. Consecutive
+      cycles' forecasts overlap; the later dedup (keep='last') then
+      stitches them preferring the most recent cycle, mirroring what
+      forecast_b means for every other OFS.
+    - forecast_a: keep times > cycle time for the single requested
+      initialization (prop.startdate at prop.forecast_hr) only.
+    """
+    if prop.model_source != 'schism' or prop.ofsfiletype != 'stations':
+        raise ValueError('Function fix_schism_points_dataset should only '
+                         'be used with SCHISM points (stations) data!')
+
+    time_vals = data_set['time'].values
+    if time_vals.size < 2:
+        logger.warning('SCHISM points temporal subsetting: dataset has '
+                       f'{time_vals.size} timesteps; nothing to subset.')
+        return data_set
+
+    keep_t_s = _schism_points_keep_mask(prop, time_vals, logger)
+    if keep_t_s is None:
+        logger.warning('SCHISM points temporal subsetting: time axis has '
+                       'no increasing spacing; skipping subsetting.')
+        return data_set
+
+    if not keep_t_s.any():
+        raise ValueError(
+            'SCHISM points temporal subsetting: no timesteps matched '
+            f'whichcast {prop.whichcast}. The requested cycle file may '
+            'be missing from the run.')
+
+    logger.info('SCHISM points temporal subsetting: keeping '
+                f'{int(keep_t_s.sum())} of {time_vals.size} timesteps '
+                f'for whichcast {prop.whichcast}.')
+
+    # Positional selection: the concatenated axis has repeated labels,
+    # so label-based selection is not safe here.
+    return data_set.isel(time=keep_t_s)
+
+
+def _split_uniform_time_blocks(time_vals: np.ndarray) -> Any:
+    """
+    Partition a concatenated time axis into per-file blocks.
+
+    File blocks are maximal runs of uniformly spaced times: the
+    timestep is inferred as the most common positive spacing (6
+    minutes in operational STOFS-3D points files), and any other
+    spacing is the seam between two files (each new cycle rewinds the
+    axis to its own nowcast start).
+
+    Parameters
+    ----------
+    time_vals : np.ndarray
+        datetime64 time coordinate of the concatenated dataset.
+
+    Returns
+    -------
+    tuple of (list of (int, int), np.timedelta64) or None
+        Half-open (start, end) index spans, one per file block, and
+        the inferred timestep. None if the axis never increases.
+    """
+    diffs = np.diff(time_vals)
+    positive = diffs[diffs > np.timedelta64(0)]
+    if positive.size == 0:
+        return None
+    spacings, counts = np.unique(positive, return_counts=True)
+    delta_t = spacings[np.argmax(counts)]
+    seams = np.flatnonzero(diffs != delta_t) + 1
+    starts = np.concatenate(([0], seams))
+    ends = np.concatenate((seams, [time_vals.size]))
+    return list(zip(starts, ends)), delta_t
+
+
+def _forecast_a_requested_cycle(prop: Any) -> np.datetime64:
+    """
+    Resolve the single model cycle a forecast_a run assesses.
+
+    The forecast_a file list holds the requested cycle plus the
+    previous day's cycle (dates_range looks one day behind for STOFS
+    forecasts), so the requested initialization must be identified
+    from prop.startdate ('YYYYMMDDHH', hour stripped upstream) and
+    prop.forecast_hr (e.g. '12z').
+
+    Returns
+    -------
+    np.datetime64
+        The requested cycle time.
+
+    Raises
+    ------
+    ValueError
+        If startdate/forecast_hr are missing or unparseable.
+    """
+    try:
+        cycle_hour = int(str(prop.forecast_hr).lower().rstrip('z'))
+        start_str = str(prop.startdate)[:8]
+        return (np.datetime64(
+                    f'{start_str[:4]}-{start_str[4:6]}-{start_str[6:8]}')
+                + np.timedelta64(cycle_hour, 'h'))
+    except (AttributeError, TypeError, ValueError) as ex:
+        raise ValueError(
+            'SCHISM points temporal subsetting: forecast_a requires '
+            'prop.startdate (YYYYMMDDHH) and prop.forecast_hr (e.g. '
+            f"'12z') to identify the requested cycle; got "
+            f'startdate={getattr(prop, "startdate", None)!r}, '
+            f'forecast_hr={getattr(prop, "forecast_hr", None)!r}'
+        ) from ex
+
+
+def _warn_on_odd_block(n_block: int, expected_len: int,
+                       cycle_time: np.datetime64, fcstcycles: Any,
+                       logger: Logger) -> None:
+    """Warn when a file block deviates from the expected layout."""
+    if n_block != expected_len:
+        logger.warning('SCHISM points temporal subsetting: file block '
+                       f'has {n_block} timesteps, expected '
+                       f'{expected_len}. Continuing with the time-based '
+                       'boundary...')
+    cycle_hour = int((cycle_time - cycle_time.astype('datetime64[D]'))
+                     / np.timedelta64(1, 'h'))
+    if cycle_hour not in fcstcycles:
+        logger.warning('SCHISM points temporal subsetting: inferred '
+                       f'cycle time {cycle_time} is not on a known '
+                       f'forecast cycle hour ({list(fcstcycles)}Z). '
+                       'The file may be truncated at the start. '
+                       'Continuing...')
+
+
+def _block_cast_mask(block: np.ndarray, cycle_time: np.datetime64,
+                     whichcast: str, requested_cycle: Any,
+                     logger: Logger) -> np.ndarray:
+    """
+    Boolean keep-mask for one file block and one whichcast.
+
+    Times at or before the block's cycle time are its nowcast segment;
+    times after it are its forecast segment. forecast_a keeps the
+    forecast segment of the requested initialization only.
+    """
+    if whichcast == 'nowcast':
+        return block <= cycle_time
+    if whichcast == 'forecast_b':
+        return block > cycle_time
+    if whichcast == 'forecast_a':
+        if cycle_time == requested_cycle:
+            return block > cycle_time
+        logger.info('SCHISM points temporal subsetting: dropping '
+                    f'cycle {cycle_time} (forecast_a requested '
+                    f'{requested_cycle}).')
+        return np.zeros(block.size, dtype=bool)
+    raise ValueError(f'whichcast {whichcast} not recognized.')
+
+
+def _schism_points_keep_mask(prop: Any, time_vals: np.ndarray,
+                             logger: Logger) -> Any:
+    """
+    Build the whichcast keep-mask for a concatenated points time axis.
+
+    Splits the axis into per-file blocks, infers each block's cycle
+    time from its first timestep (first time = cycle - nowcast length
+    + one timestep), and masks each block per the requested whichcast.
+
+    Returns
+    -------
+    np.ndarray or None
+        Boolean mask over time_vals, or None if the axis is degenerate
+        (never increases) and subsetting should be skipped.
+    """
+    blocks = _split_uniform_time_blocks(time_vals)
+    if blocks is None:
+        return None
+    block_spans, delta_t = blocks
+
+    fcst_len_hours, fcstcycles = get_fcst_hours(prop.ofs)
+    nowcast_td = np.timedelta64(int(24 / len(fcstcycles) * 3600), 's')
+    expected_len = round(
+        (nowcast_td + np.timedelta64(int(fcst_len_hours * 3600), 's'))
+        / delta_t)
+
+    requested_cycle = None
+    if prop.whichcast == 'forecast_a':
+        requested_cycle = _forecast_a_requested_cycle(prop)
+
+    keep_t_s = np.zeros(time_vals.size, dtype=bool)
+    for start, end in block_spans:
+        # First block time is cycle - nowcast length + delta_t, so:
+        cycle_time = time_vals[start] - delta_t + nowcast_td
+        _warn_on_odd_block(end - start, expected_len, cycle_time,
+                           fcstcycles, logger)
+        keep_t_s[start:end] = _block_cast_mask(
+            time_vals[start:end], cycle_time, prop.whichcast,
+            requested_cycle, logger)
+    return keep_t_s
+
+
 def get_station_dim(engine: str, urlpaths: list[str],
                     drop_variables: list[str], logger: Logger) -> tuple[bool, int]:
     """
@@ -1078,6 +1451,13 @@ def remove_extra_stations(engine: str,
         lat_key = 'lat_rho'
 
     reflat = np.array(refds[lat_key])
+    # reflat is a materialized numpy copy, so the reference dataset's file
+    # handle can be released now. Left open it would be finalized during
+    # interpreter shutdown after h5py is torn down (issue #94).
+    try:
+        refds.close()
+    except Exception:  # pragma: no cover - defensive cleanup only
+        pass
     # Now loop through datasets. Check for and remove extra stations.
     logger.info('Looping through each stations file, applying corrections...')
     for _i, file in enumerate(urlpaths):

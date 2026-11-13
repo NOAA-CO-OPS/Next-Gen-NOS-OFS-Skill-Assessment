@@ -69,7 +69,8 @@ def test_combine_basic_and_metadata(mod, tmp_path):
                ['c', 'd', 'e'])
 
     out = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs',
+        filetype='stations')
 
     assert out is not None and len(out) == 5
     assert {'source_file', 'variable', 'type'}.issubset(out.columns)
@@ -84,9 +85,11 @@ def test_combine_is_idempotent_on_rerun(mod, tmp_path):
                ['a', 'b'])
 
     first = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs',
+        filetype='stations')
     second = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs',
+        filetype='stations')
 
     assert len(first) == len(second) == 2
 
@@ -99,7 +102,7 @@ def test_combine_scopes_by_whichcast(mod, tmp_path):
 
     out = mod.combine_files_by_pattern(
         str(tmp_path), 'skill_cbofs_all_stations.csv',
-        search_string='cbofs', whichcasts=['nowcast'])
+        search_string='cbofs', whichcasts=['nowcast'], filetype='stations')
 
     assert len(out) == 2
     assert set(out['type']) == {'Nowcast'}
@@ -112,7 +115,8 @@ def test_combine_scopes_by_ofs(mod, tmp_path):
                ['x', 'y', 'z'])
 
     out = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs',
+        filetype='stations')
 
     assert len(out) == 2
     assert all('cbofs' in s for s in out['source_file'])
@@ -127,7 +131,8 @@ def test_combine_drops_stale_duplicates(mod, tmp_path):
                ['a'])
 
     out = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='cbofs',
+        filetype='stations')
 
     assert sorted(out['ID']) == ['a', 'b']
 
@@ -135,7 +140,8 @@ def test_combine_drops_stale_duplicates(mod, tmp_path):
 def test_combine_no_match_returns_none(mod, tmp_path):
     assert mod.combine_files_by_pattern(
         str(tmp_path), 'skill_cbofs_all_stations.csv',
-        search_string='cbofs') is None
+        search_string='cbofs',
+        filetype='stations') is None
 
 
 def test_combine_handles_glob_metacharacters(mod, tmp_path):
@@ -144,6 +150,7 @@ def test_combine_handles_glob_metacharacters(mod, tmp_path):
                ['a'])
 
     out = mod.combine_files_by_pattern(
-        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='c*b[o]')
+        str(tmp_path), 'skill_cbofs_all_stations.csv', search_string='c*b[o]',
+        filetype='stations')
 
     assert out is None  # literal 'c*b[o]' is not a substring of any file

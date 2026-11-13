@@ -56,6 +56,7 @@ def _sentinel(tag):
 # uses, without needing to run the full get_skill orchestrator.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_nowcast_then_forecast_b_re_invokes_intake(logger):
     """The reported bug: switching whichcast must not pass a stale cache."""
     prop = MockProps(whichcast='nowcast')
@@ -114,6 +115,7 @@ def test_date_range_change_invalidates(logger):
 # get_node_ofs. Proves the helpers land correctly in production code.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @patch('ofs_skill.skill_assessment.get_skill.os.path.getsize', return_value=0)
 @patch('ofs_skill.skill_assessment.get_skill.os.path.isfile',
        return_value=False)
@@ -136,6 +138,7 @@ def test_ofs_ctlfile_extract_caches_then_reuses(
     assert _get_valid_cached_model(prop) is nowcast_ds
 
 
+@pytest.mark.integration
 @patch('ofs_skill.skill_assessment.get_skill.os.path.getsize', return_value=0)
 @patch('ofs_skill.skill_assessment.get_skill.os.path.isfile',
        return_value=False)

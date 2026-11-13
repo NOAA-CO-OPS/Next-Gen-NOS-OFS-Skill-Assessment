@@ -13,31 +13,75 @@ from ofs_skill.model_processing import model_properties
 from ofs_skill.model_processing.get_node_ofs import get_node_ofs
 from ofs_skill.model_processing.model_source import get_model_source
 
-if __name__ == '__main__':
 
+def _run_pipeline(run_args):
+    """Execute model time-series extraction with the given arguments."""
+    prop1 = model_properties.ModelProperties()
+    prop1.ofs = run_args.OFS.lower()
+    prop1.path = run_args.Path
+    prop1.config_file = getattr(run_args, 'config', None)
+    prop1.start_date_full = run_args.StartDate_full
+    prop1.end_date_full = run_args.EndDate_full
+
+    whichcasts = getattr(run_args, 'Whichcasts', None) or getattr(
+        run_args, 'Whichcast', 'nowcast')
+    if isinstance(whichcasts, list):
+        prop1.whichcast = ','.join(whichcasts)
+    else:
+        prop1.whichcast = whichcasts
+
+    prop1.datum = getattr(run_args, 'Datum', 'MLLW').upper()
+    prop1.model_source = get_model_source(run_args.OFS)
+    prop1.ofsfiletype = getattr(run_args, 'OFS_Filetype', None) or getattr(
+        run_args, 'FileType', 'stations')
+    prop1.horizonskill = getattr(run_args, 'Horizon_Skill', False)
+
+    forecast_hr = getattr(run_args, 'Forecast_Hr', -999)
+    prop1.forecast_hr = str(forecast_hr) if forecast_hr != -999 else '00hr'
+
+    var_sel = getattr(run_args, 'Var_Selection', None)
+    if var_sel is None:
+        prop1.var_list = 'water_level,water_temperature,salinity,currents'
+    elif isinstance(var_sel, list):
+        prop1.var_list = ','.join(var_sel)
+    else:
+        prop1.var_list = var_sel
+
+    prop1.user_input_location = getattr(run_args, 'UserInput', False) or getattr(
+        run_args, 'User_Input', False)
+
+    if 'l' in prop1.ofs[0] and prop1.datum == 'MLLW':
+        prop1.datum = 'IGLD85'
+
+    get_node_ofs(prop1, None)
+
+
+def main(argv=None):
+    """Entry point for the get-node-ofs console script."""
     parser = argparse.ArgumentParser(
-        prog='python get_node_ofs.py',
+        prog='get-node-ofs',
         usage='%(prog)s',
         description='Create model control files & time series',
     )
     parser.add_argument(
         '-o', '--OFS',
-        required=True,
+        required=False,
+        default=None,
         help="""Choose from the list on the ofs_extents/folder,
         you can also create your own shapefile, add it at the
         ofs_extents/folder and call it here""", )
     parser.add_argument(
         '-p', '--Path',
-        required=True,
+        required=False,
         help='Path to your working directory', )
     parser.add_argument(
         '-s', '--StartDate_full',
-        required=True,
+        required=False,
         help='Assessment start date: YYYY-MM-DDThh:mm:ssZ '
         "e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument(
         '-e', '--EndDate_full',
-        required=True,
+        required=False,
         help='Assessment end date: YYYY-MM-DDThh:mm:ssZ '
         "e.g. '2023-01-01T12:34:00Z'")
     parser.add_argument(
@@ -87,25 +131,14 @@ if __name__ == '__main__':
         '-c', '--config',
         help='Path to configuration file (default: conf/ofs_dps.conf)')
 
+    args = parser.parse_args(argv)
 
-    args = parser.parse_args()
-    prop1 = model_properties.ModelProperties()
-    prop1.ofs = args.OFS.lower()
-    prop1.path = args.Path
-    prop1.config_file = args.config
-    prop1.start_date_full = args.StartDate_full
-    prop1.end_date_full = args.EndDate_full
-    prop1.whichcast = args.Whichcast
-    prop1.datum = args.Datum.upper()
-    prop1.model_source = get_model_source(args.OFS)
-    prop1.ofsfiletype = args.FileType
-    prop1.horizonskill = args.Horizon_Skill
-    prop1.forecast_hr = args.Forecast_Hr
-    prop1.var_list = args.Var_Selection
-    prop1.user_input_location = args.User_Input
+    if args.OFS is None:
+        from ofs_skill.visualization import create_gui_model
+        create_gui_model.create_gui_model(runner=_run_pipeline)
+    else:
+        _run_pipeline(args)
 
-    # Switch default datum if GLOFS
-    if 'l' in prop1.ofs[0] and prop1.datum == 'MLLW':
-        prop1.datum = 'IGLD85'
 
-    get_node_ofs(prop1, None)
+if __name__ == '__main__':
+    main()

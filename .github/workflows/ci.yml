@@ -4,77 +4,291 @@ on:
   pull_request:
     branches: ["**"]
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
 
-# Cancel in-progress runs for the same ref when a new push lands.
+# Least privilege by default. The `changes` job elevates to pull-requests:read
+# for dorny/paths-filter on pull_request events.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    shell: bash -el {0}
-
 jobs:
-  build-env:
-    name: Build conda environment
+  # Skip the heavy OS×Python test matrix on docs-only changes.
+  changes:
+    name: Detect code changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up micromamba and resolve environment.yml
-        uses: mamba-org/setup-micromamba@v2
+      - name: Filter paths
+        # Pin to full SHA (mutable tag was dorny/paths-filter@v3 / v3.0.4).
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad  # v3.0.4
+        id: filter
         with:
-          environment-file: environment.yml
-          cache-environment: true
-          cache-downloads: true
-          # Cache key tied to environment.yml content; bumping the file
-          # automatically invalidates the cache. Bump the trailing -v1
-          # suffix to force a rebuild without touching environment.yml.
-          cache-environment-key: env-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
-          cache-downloads-key: downloads-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
+          filters: |
+            code:
+              - 'src/**'
+              - 'bin/**'
+              - 'tests/**'
+              - 'environment.yml'
+              - 'pyproject.toml'
+              - 'Makefile'
+              - 'scripts/**'
+              - '.github/workflows/**'
+              - '.pre-commit-config.yaml'
+              - '.secrets.baseline'
 
-      - name: Report environment contents
+  lint:
+    name: Lint (ruff + detect-secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install lint tools
         run: |
-          micromamba info
-          micromamba list
+          python -m pip install --upgrade pip
+          pip install "ruff==0.7.0" "detect-secrets==1.5.0"
 
-  tests:
-    name: Pytest
+      - name: Ruff
+        run: ruff check src bin
+
+      - name: detect-secrets
+        run: |
+          git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
+
+  types:
+    name: Types (mypy)
     runs-on: ubuntu-latest
-    needs: build-env
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore conda environment from cache
-        uses: mamba-org/setup-micromamba@v2
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          environment-file: environment.yml
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install mypy and type stubs
+        run: |
+          python -m pip install --upgrade pip
+          pip install "mypy==1.16.1" "types-requests>=2.31.0" "types-python-dateutil>=2.9.0"
+
+      - name: mypy
+        run: mypy src/ofs_skill
+
+  docs:
+    name: Docs (mkdocs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install docs extras from pyproject
+        run: |
+          python -m pip install --upgrade pip
+          # Install only the `[docs]` optional deps (mkdocs + mkdocstrings),
+          # not the full scientific stack — API pages are built from `src/` via Griffe.
+          python -c "import tomllib; from pathlib import Path; print('\n'.join(tomllib.loads(Path('pyproject.toml').read_text())['project']['optional-dependencies']['docs']))" > /tmp/docs-reqs.txt
+          pip install -r /tmp/docs-reqs.txt
+
+      - name: MkDocs build (strict)
+        run: mkdocs build --strict
+
+  package:
+    name: Package (build + twine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Twine check
+        run: twine check dist/*
+
+  # Cross-platform suite: Ubuntu (primary fast path) + Windows + macOS × 3.11/3.12.
+  # Install path matches INSTALL_WINDOWS.md Method A (environment.yml → editable pip).
+  # Python 3.13 deferred until the conda-forge stack is ready.
+  tests:
+    name: Pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        # setup-micromamba activates the env for bash on Linux, macOS, and Windows.
+        shell: bash -el {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # environment.yml pins python=3.11.*; passing create-args python=3.12
+      # keeps BOTH pins and the solver fails. Rewrite the pin for this cell.
+      - name: Materialize matrix environment.yml
+        shell: bash
+        run: |
+          sed "s/^  - python=3\\.11\\.\\*/  - python=${{ matrix.python-version }}/" \
+            environment.yml > environment-ci.yml
+          # Fail loudly if the pin in environment.yml changed shape and the
+          # substitution above silently matched nothing.
+          if ! grep -q "^  - python=${{ matrix.python-version }}$" environment-ci.yml; then
+            echo "::error::Failed to rewrite python pin in environment.yml for ${{ matrix.python-version }}; update the sed pattern in ci.yml."
+            grep -n '^  - python' environment-ci.yml || true
+            exit 1
+          fi
+
+      - name: Set up micromamba
+        # Pin to full SHA (mutable tag was mamba-org/setup-micromamba@v2 / v2.0.7).
+        uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462  # v2.0.7
+        with:
+          environment-file: environment-ci.yml
           cache-environment: true
           cache-downloads: true
-          cache-environment-key: env-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
-          cache-downloads-key: downloads-${{ runner.os }}-${{ hashFiles('environment.yml') }}-v1
+          # Bump trailing -vN to force a rebuild without editing environment.yml.
+          cache-environment-key: env-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('environment.yml') }}-v2
+          cache-downloads-key: downloads-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('environment.yml') }}-v2
 
       - name: Install package (editable, no deps)
         run: pip install -e . --no-deps
 
       - name: Run pytest
+        env:
+          PROJ_NETWORK: "ON"
         run: |
+          # Unit + integration on every code PR. Live APIs stay on network-tests.yml.
+          # coverage.xml is regenerated every run (never restored from cache).
+          # Floor: pyproject.toml [tool.coverage.report] fail_under — ratchet up only.
+          FLOOR="$(python scripts/coverage_summary.py --print-fail-under)"
+          echo "Using coverage fail_under=${FLOOR} from pyproject.toml"
           pytest \
-            -m "not network" \
+            -m "not network and not manual" \
             -n auto \
             --cov=src/ofs_skill \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
+            --cov-fail-under="${FLOOR}" \
             -o addopts=""
 
+      - name: Coverage summary (repo-only)
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          python scripts/coverage_summary.py coverage.xml --fail-under-from-pyproject
+
+      - name: Reject lowering coverage floor vs base
+        if: >
+          github.event_name == 'pull_request' &&
+          matrix.os == 'ubuntu-latest' &&
+          matrix.python-version == '3.11'
+        run: |
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          python scripts/coverage_summary.py \
+            --check-floor-not-lowered \
+            --base-ref "origin/${{ github.base_ref }}"
+
       - name: Upload coverage report
-        if: always()
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: ignore
           retention-days: 14
+          # Do not cache coverage.xml across jobs/runs — always regenerate.
+
+  # Single required status check for branch protection.
+  #
+  # Protection rules can only require a check by name, and a check that
+  # never reports blocks a PR forever rather than failing it. The Pytest
+  # matrix is conditional (`if: needs.changes.outputs.code == 'true'`),
+  # so on a docs-only PR those six jobs are skipped and never report --
+  # requiring them directly would deadlock exactly the documentation PRs
+  # they are irrelevant to.
+  #
+  # This job always reports. It treats a skipped dependency as fine,
+  # because skipping is how the workflow expresses "not applicable here",
+  # and fails when any dependency actually failed or was cancelled.
+  # Require only this one check on main; the jobs below stay free to be
+  # renamed, split, or made conditional without touching the rule.
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, lint, types, docs, package, tests]
+    if: always()
+    steps:
+      - name: Summarize dependency results
+        run: |
+          {
+            echo '### CI gate'
+            echo
+            echo '| job | result |'
+            echo '| --- | --- |'
+            echo '| Detect code changes | ${{ needs.changes.result }} |'
+            echo '| Lint (ruff + detect-secrets) | ${{ needs.lint.result }} |'
+            echo '| Types (mypy) | ${{ needs.types.result }} |'
+            echo '| Docs (mkdocs) | ${{ needs.docs.result }} |'
+            echo '| Package (build + twine) | ${{ needs.package.result }} |'
+            echo '| Pytest matrix | ${{ needs.tests.result }} |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo '::error::One or more CI jobs did not succeed; see the run summary.'
+          exit 1
